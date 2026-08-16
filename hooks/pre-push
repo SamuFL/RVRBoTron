@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+if [ "$CURRENT_BRANCH" = "main" ]; then
+    echo
+    echo "pre-push hook: Direct pushes to main are blocked."
+    echo "Use a release/* or hotfix/* branch and a pull request."
+    exit 1
+fi
+
+if [ "$CURRENT_BRANCH" = "develop" ]; then
+    echo
+    echo "Warning: pushing directly to develop; prefer feature/<issue>-<slug>."
+fi

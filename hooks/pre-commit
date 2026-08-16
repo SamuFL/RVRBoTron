@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ERRORS=0
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+
+if [ -z "$STAGED_FILES" ]; then
+    exit 0
+fi
+
+CONFLICT_FILES=""
+for file in $STAGED_FILES; do
+    if [ -f "$file" ] && grep -qE "^(<{7}|={7}|>{7})" "$file" 2>/dev/null; then
+        CONFLICT_FILES="${CONFLICT_FILES}  ${file}\n"
+    fi
+done
+
+if [ -n "$CONFLICT_FILES" ]; then
+    echo "Merge conflict markers found in staged files:"
+    printf "%b" "$CONFLICT_FILES"
+    ERRORS=$((ERRORS + 1))
+fi
+
+LARGE_FILES=""
+for file in $STAGED_FILES; do
+    if [ -f "$file" ]; then
+        FILE_SIZE=$(wc -c < "$file" 2>/dev/null | tr -d ' ')
+        if [ "$FILE_SIZE" -gt 5242880 ] 2>/dev/null; then
+            SIZE_MB=$(awk "BEGIN {printf \"%.1f\", $FILE_SIZE / 1048576}")
+            LARGE_FILES="${LARGE_FILES}  ${file} (${SIZE_MB} MB)\n"
+        fi
+    fi
+done
+
+if [ -n "$LARGE_FILES" ]; then
+    echo "Large files staged (>5 MB); use Git LFS or ignore generated artifacts:"
+    printf "%b" "$LARGE_FILES"
+    ERRORS=$((ERRORS + 1))
+fi
+
+DEBUG_FILES=""
+for file in $STAGED_FILES; do
+    if echo "$file" | grep -qE '\.(cpp|h|hpp|cc|cxx)$' && [ -f "$file" ]; then
+        STAGED_CONTENT=$(git show ":$file" 2>/dev/null || true)
+        MATCHES=$(echo "$STAGED_CONTENT" | grep -nE '(std::cout\s*<<|printf\s*\(|#pragma\s+message)' 2>/dev/null | head -3 || true)
+        if [ -n "$MATCHES" ]; then
+            DEBUG_FILES="${DEBUG_FILES}  ${file}:\n$(echo "$MATCHES" | sed 's/^/    /')\n"
+        fi
+    fi
+done
+
+if [ -n "$DEBUG_FILES" ]; then
+    echo "Warning: possible debug statements in staged C++ files:"
+    printf "%b" "$DEBUG_FILES"
+fi
+
+SECRET_FILES=""
+for file in $STAGED_FILES; do
+    if [ -f "$file" ]; then
+        STAGED_CONTENT=$(git show ":$file" 2>/dev/null || true)
+        if echo "$STAGED_CONTENT" | grep -qEi '(api[_-]?key|api[_-]?secret|auth[_-]?token|password)\s*[:=]\s*["'\''][^"'\'']{8,}' 2>/dev/null; then
+            SECRET_FILES="${SECRET_FILES}  ${file}\n"
+        fi
+    fi
+done
+
+if [ -n "$SECRET_FILES" ]; then
+    echo "Possible secrets or API keys detected in staged files:"
+    printf "%b" "$SECRET_FILES"
+    ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+    echo
+    echo "Commit blocked. Fix the reported files before committing."
+    exit 1
+fi

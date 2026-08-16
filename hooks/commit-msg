@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+if echo "$COMMIT_MSG" | grep -qE "^Merge (branch|remote-tracking|tag)"; then
+    exit 0
+fi
+
+if echo "$COMMIT_MSG" | grep -qE "^Revert "; then
+    exit 0
+fi
+
+if echo "$COMMIT_MSG" | grep -qE "^(v[0-9]|Release |Tag )"; then
+    exit 0
+fi
+
+if echo "$COMMIT_MSG" | grep -qE "#[0-9]+"; then
+    exit 0
+fi
+
+echo
+echo "commit-msg hook: No GitHub issue or PR reference found."
+echo
+echo "Every normal commit must reference its GitHub issue or PR:"
+echo '  git commit -m "Implement energy-normalized Split (#12)"'
+echo
+echo "Merge commits, reverts, and version commits are exempt."
+exit 1
