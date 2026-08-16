@@ -1,4 +1,5 @@
-#include "rvrbotron/dsp/Composition.h"
+#include "rvrbotron/config/ResolvedConfigJson.h"
+#include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/io/WavStream.h"
 
 #include <cstddef>
@@ -43,21 +44,6 @@ RenderArguments parseArguments(const int argc, char** argv) {
   return arguments;
 }
 
-void writeResolvedConfig(const std::filesystem::path& path,
-                         const std::uint32_t sampleRate) {
-  std::ofstream output(path);
-  if (!output) {
-    throw std::runtime_error("could not write resolved.json");
-  }
-
-  output << "{\n"
-         << "  \"formatVersion\": 1,\n"
-         << "  \"seed\": 0,\n"
-         << "  \"sampleRate\": " << sampleRate << ",\n"
-         << "  \"composition\": {\"stages\": []}\n"
-         << "}\n";
-}
-
 void writeRenderMetadata(const std::filesystem::path& path,
                          const rvrbotron::io::WavInfo& info,
                          const std::uint64_t frameCount) {
@@ -69,7 +55,10 @@ void writeRenderMetadata(const std::filesystem::path& path,
   output << "{\n"
          << "  \"formatVersion\": 1,\n"
          << "  \"rendererVersion\": \"" << RVRBOTRON_VERSION << "\",\n"
-         << "  \"samplePrecision\": \"float32\",\n"
+         << "  \"samplePrecision\": \""
+         << (sizeof(rvrbotron::dsp::Sample) == sizeof(double) ? "float64"
+                                                              : "float32")
+         << "\",\n"
          << "  \"sampleRate\": " << info.sampleRate << ",\n"
          << "  \"channels\": " << info.channels << ",\n"
          << "  \"frames\": " << frameCount << ",\n"
@@ -95,8 +84,9 @@ void render(const RenderArguments& arguments) {
       1,
       0,
       info.sampleRate,
+      {},
   };
-  rvrbotron::dsp::Composition composition(config);
+  rvrbotron::dsp::Reverb reverb(config);
 
   std::vector<rvrbotron::dsp::Sample> samples(kBlockSize);
   rvrbotron::dsp::Sample* channels[]{samples.data()};
@@ -112,13 +102,14 @@ void render(const RenderArguments& arguments) {
         break;
       }
 
-      composition.process(channels, info.channels, framesRead);
+      reverb.process(channels, info.channels, framesRead);
       writer.writeFrames(samples.data(), framesRead);
       renderedFrames += framesRead;
     }
   }
 
-  writeResolvedConfig(arguments.output / "resolved.json", info.sampleRate);
+  rvrbotron::config::writeResolvedConfig(
+      arguments.output / "resolved.json", config);
   writeRenderMetadata(
       arguments.output / "render.json", info, renderedFrames);
 

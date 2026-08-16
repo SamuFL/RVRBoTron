@@ -7,9 +7,9 @@
 
 namespace rvrbotron::dsp {
 
-class Composition {
+class Reverb {
 public:
-  explicit Composition(const ResolvedConfig& config) noexcept;
+  explicit Reverb(const ResolvedConfig& config) noexcept;
 
   void process(Sample* const* channels,
                std::size_t channelCount,

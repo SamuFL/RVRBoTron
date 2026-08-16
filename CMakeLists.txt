@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(RVRBoTron VERSION 0.1.0 LANGUAGES CXX)
 
 option(BUILD_TESTING "Build tests" ON)
+option(RVRBOTRON_SAMPLE_DOUBLE "Use double-precision DSP samples" OFF)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -17,7 +18,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(dr_libs)
 
 add_library(rvrbotron_dsp
-  src/dsp/Composition.cpp
+  src/dsp/Reverb.cpp
 )
 
 target_include_directories(rvrbotron_dsp
@@ -26,6 +27,22 @@ target_include_directories(rvrbotron_dsp
 )
 
 target_compile_features(rvrbotron_dsp PUBLIC cxx_std_17)
+
+if(RVRBOTRON_SAMPLE_DOUBLE)
+  target_compile_definitions(rvrbotron_dsp PUBLIC RVRBOTRON_SAMPLE_DOUBLE=1)
+endif()
+
+add_library(rvrbotron_config
+  src/config/ResolvedConfigJson.cpp
+)
+
+target_include_directories(rvrbotron_config
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(rvrbotron_config PUBLIC rvrbotron_dsp)
+target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
 
 add_library(rvrbotron_wav
   src/io/WavStream.cpp
@@ -45,7 +62,12 @@ add_executable(rvrbotron
   src/cli/main.cpp
 )
 
-target_link_libraries(rvrbotron PRIVATE rvrbotron_wav)
+target_link_libraries(
+  rvrbotron
+  PRIVATE
+    rvrbotron_config
+    rvrbotron_wav
+)
 target_compile_features(rvrbotron PRIVATE cxx_std_17)
 target_compile_definitions(
   rvrbotron

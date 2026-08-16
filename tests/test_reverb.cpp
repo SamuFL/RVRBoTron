@@ -1,4 +1,4 @@
-#include "rvrbotron/dsp/Composition.h"
+#include "rvrbotron/dsp/Reverb.h"
 
 #include <array>
 #include <iostream>
@@ -8,8 +8,9 @@ int main() {
       1,
       0,
       48000,
+      {},
   };
-  rvrbotron::dsp::Composition composition(config);
+  rvrbotron::dsp::Reverb reverb(config);
 
   std::array<rvrbotron::dsp::Sample, 4> samples{
       0.5F,
@@ -20,7 +21,7 @@ int main() {
   const auto expected = samples;
   rvrbotron::dsp::Sample* channels[]{samples.data()};
 
-  composition.process(channels, 1, samples.size());
+  reverb.process(channels, 1, samples.size());
 
   if (samples != expected) {
     std::cerr << "empty Composition changed caller-owned samples\n";

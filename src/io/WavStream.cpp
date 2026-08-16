@@ -4,12 +4,13 @@
 #include "dr_wav.h"
 
 #include <stdexcept>
-#include <type_traits>
+#include <vector>
 
 namespace rvrbotron::io {
 
 struct WavReader::Implementation {
   drwav wav{};
+  std::vector<float> floatBuffer;
 };
 
 WavReader::WavReader(const std::filesystem::path& path)
@@ -33,13 +34,25 @@ WavInfo WavReader::info() const noexcept {
 
 std::size_t WavReader::readFrames(dsp::Sample* interleaved,
                                   const std::size_t frameCount) {
-  static_assert(
-      std::is_same_v<dsp::Sample, float>,
-      "The first identity tracer supports only the default float sample type");
-  return static_cast<std::size_t>(drwav_read_pcm_frames_f32(
-      &implementation_->wav,
-      static_cast<drwav_uint64>(frameCount),
-      interleaved));
+#if defined(RVRBOTRON_SAMPLE_DOUBLE)
+    implementation_->floatBuffer.resize(
+        frameCount * implementation_->wav.channels);
+    const auto framesRead = drwav_read_pcm_frames_f32(
+        &implementation_->wav,
+        static_cast<drwav_uint64>(frameCount),
+        implementation_->floatBuffer.data());
+    const auto sampleCount =
+        static_cast<std::size_t>(framesRead) * implementation_->wav.channels;
+    for (std::size_t index = 0; index < sampleCount; ++index) {
+      interleaved[index] = implementation_->floatBuffer[index];
+    }
+    return static_cast<std::size_t>(framesRead);
+#else
+    return static_cast<std::size_t>(drwav_read_pcm_frames_f32(
+        &implementation_->wav,
+        static_cast<drwav_uint64>(frameCount),
+        interleaved));
+#endif
 }
 
 struct WavWriter::Implementation {
@@ -55,7 +68,7 @@ WavWriter::WavWriter(const std::filesystem::path& path,
       DR_WAVE_FORMAT_IEEE_FLOAT,
       channels,
       sampleRate,
-      32,
+      static_cast<drwav_uint32>(sizeof(dsp::Sample) * 8),
   };
 
   if (!drwav_init_file_write(

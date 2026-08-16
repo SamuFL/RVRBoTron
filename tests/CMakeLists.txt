@@ -1,11 +1,11 @@
-add_executable(test_composition
-  test_composition.cpp
+add_executable(test_reverb
+  test_reverb.cpp
 )
 
-target_link_libraries(test_composition PRIVATE rvrbotron_dsp)
-target_compile_features(test_composition PRIVATE cxx_std_17)
+target_link_libraries(test_reverb PRIVATE rvrbotron_dsp)
+target_compile_features(test_reverb PRIVATE cxx_std_17)
 
-add_test(NAME composition_identity COMMAND test_composition)
+add_test(NAME empty_composition_identity COMMAND test_reverb)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
