@@ -75,3 +75,19 @@ _Avoid_: Resolved configuration
 **Resolved configuration**:
 The complete, versioned record of concrete values used to construct and reproduce a reverb.
 _Avoid_: Requested configuration
+
+**Composition**:
+The configured set, order, and wiring of reverb stages together with controls that apply to the complete wet path.
+_Avoid_: Pipeline, graph
+
+**Render Result**:
+The immutable audio and configuration evidence produced by one render, together with append-only analyses derived from it.
+_Avoid_: Output folder
+
+**Repeat determinism**:
+Exact decoded-sample reproduction for the same renderer binary, sample precision, input, and configuration.
+_Avoid_: Cross-platform equivalence
+
+**Cross-platform equivalence**:
+Agreement between supported platform builds within the numerical and measurement tolerances declared for the relevant reverb stage.
+_Avoid_: Repeat determinism, bit identity

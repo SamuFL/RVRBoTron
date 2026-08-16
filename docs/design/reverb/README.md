@@ -20,7 +20,7 @@ Consequence: which knobs eventually appear in the plugin is explicitly undecided
 
 **Energy is the organising invariant.** Every stage declares whether it preserves energy, and those claiming to are tested for it. Scaling is explicit and by stated convention, never incidental.
 
-**Determinism is mandatory.** Every randomised quantity derives from an explicit seed. Same configuration in, bit-identical audio out.
+**Determinism is mandatory.** Every randomised quantity derives from an explicit seed. The same renderer binary, sample precision, input, and configuration produce exactly the same decoded samples. Supported platform builds satisfy stage-specific numerical and measurement tolerances rather than universal bit identity; see [ADR-0001](../../adr/0001-cross-platform-reproducibility.md).
 
 **Measurement accompanies listening.** A measurement contradicting your ears is measuring the wrong thing; a preference you can't measure is an unfinished hypothesis.
 
@@ -96,7 +96,7 @@ Each stage document follows the same shape: what it does musically, what it does
 ## Part IV — Standing invariants
 
 1. **Allocation-free processing.** All allocation at configuration; none while audio flows.
-2. **Determinism.** Identical configuration gives bit-identical output across runs and machines.
+2. **Reproducibility.** Repeat renders are exact; supported platform builds satisfy the relevant stage's declared equivalence tolerances.
 3. **All-pass where claimed.** Verified against random input within tolerance.
 4. **Orthogonality.** Every mixing matrix satisfies MMᵀ = I.
 5. **Matrix validity.** No matrix constructed for an unsupported N.
