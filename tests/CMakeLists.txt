@@ -35,3 +35,15 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/configuration-round-trip
 )
+
+add_test(
+  NAME wav_compatibility
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_wav_compatibility.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/generate_wav_matrix.py
+    ${CMAKE_CURRENT_BINARY_DIR}/wav-compatibility
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)

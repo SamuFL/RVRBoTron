@@ -1,0 +1,212 @@
+{
+  "identity-mono-44100-float32.wav": {
+    "channels": 1,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "dc3f528a6129c265515c9db146558edbbc134e1b891413d680f9b85d149c063a"
+  },
+  "identity-mono-44100-float64.wav": {
+    "channels": 1,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "354bb9a2a763c59fe24e5a11626d2c33fa57191f6411f0c2ebecbe9b15abcbf4"
+  },
+  "identity-mono-44100-pcm16.wav": {
+    "channels": 1,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "a217260470d9cd301ad528cd66115fd13b35bbcf79f3112e04374014ff978867"
+  },
+  "identity-mono-44100-pcm24.wav": {
+    "channels": 1,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "550a5bc384432eb828a5ee2d1953a9ee172684066d379108434153c824d037e9"
+  },
+  "identity-mono-44100-pcm32.wav": {
+    "channels": 1,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "14806974fff05991b1304eeda25b780d49593e315456f734c1cdbb5b23d7cfb3"
+  },
+  "identity-mono-48000-float32.wav": {
+    "channels": 1,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "b6f1be7496e052b48f81f74fe6eb34c11fba8f9cdb76a5cd632b60c5d060bf8c"
+  },
+  "identity-mono-48000-float64.wav": {
+    "channels": 1,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "f351ce479c40d6d5b496dfd3f8bd00906721c44e33c1a3d36db14d72134f09d4"
+  },
+  "identity-mono-48000-pcm16.wav": {
+    "channels": 1,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "056290a2f32e9a8db2a487a91e1404978a1903eaf71f0415a24ae40b142457ce"
+  },
+  "identity-mono-48000-pcm24.wav": {
+    "channels": 1,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "77fb93f2c6cd80d80ed382f4d0759028cbfb096c25a9b9ffdb072b21bb033e65"
+  },
+  "identity-mono-48000-pcm32.wav": {
+    "channels": 1,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "9aeafe57963b7971ccd97005ba3c00e69fa276de5850dcd1b4db43e99dbbed03"
+  },
+  "identity-mono-96000-float32.wav": {
+    "channels": 1,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "827d0c8dc549c55ff49e83ed34877027428bf9f1566442f72623487988a2ffe6"
+  },
+  "identity-mono-96000-float64.wav": {
+    "channels": 1,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "a0f843d2e26fb9052984ebfd6cedfd54f769f70b4faf3ae2d51184c2fba9fec7"
+  },
+  "identity-mono-96000-pcm16.wav": {
+    "channels": 1,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "aa18d89b13046a3b14c73d9d4a3f5314a1a62bfd907030a4e5f2720779c15c97"
+  },
+  "identity-mono-96000-pcm24.wav": {
+    "channels": 1,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "f5dd28610f4f1ae5a2384364f30ec366a18be4fba178f2a370dbe08cccabea07"
+  },
+  "identity-mono-96000-pcm32.wav": {
+    "channels": 1,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "c94d4a7a8d18d242a47f025b0ac7a8d218dd343ad87e724f96c9030d271276e7"
+  },
+  "identity-stereo-44100-float32.wav": {
+    "channels": 2,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "dfadd198c66f052ad07a6337ab429d0384390cc3d1d49657327f0327c1c46b53"
+  },
+  "identity-stereo-44100-float64.wav": {
+    "channels": 2,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "f8a282f0a6c15353e301016528d04010c0683db0b4b827add4f6f0dcd530fbf1"
+  },
+  "identity-stereo-44100-pcm16.wav": {
+    "channels": 2,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "5c68f096bfe518be2b2c7b840f64dd5b8638a9ce11b9241b445bbf112663bdac"
+  },
+  "identity-stereo-44100-pcm24.wav": {
+    "channels": 2,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "0ab46a74477cfb02002a2e1a0bf8a84e4d74c577035d6b8739718ff07fa0385f"
+  },
+  "identity-stereo-44100-pcm32.wav": {
+    "channels": 2,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 44100,
+    "sha256": "09d4d386ca01667b6335a24ed4f34dc516a0b1286e4612c144bebe5bdcf313d2"
+  },
+  "identity-stereo-48000-float32.wav": {
+    "channels": 2,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "81f4ddcf8894dff830640f66886065feecdc6f9b7a404947741f76f33b777e84"
+  },
+  "identity-stereo-48000-float64.wav": {
+    "channels": 2,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "b4474d9a97a068bf8089d9e90302ae98e2def5abea3f75a4e6e2ece09b5c90df"
+  },
+  "identity-stereo-48000-pcm16.wav": {
+    "channels": 2,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "daed8ec4351cb9659023527b01c0d3815ecba1b6d5d0064c71ca0b055a956694"
+  },
+  "identity-stereo-48000-pcm24.wav": {
+    "channels": 2,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "0bdf9193596912e0ccbac01c85329b1969c5d47f8348122d2b82bad78bc61ef6"
+  },
+  "identity-stereo-48000-pcm32.wav": {
+    "channels": 2,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 48000,
+    "sha256": "322652dafc20812c9a15548b6a5a0ec6b13bf9c0c0da80e60e1d110bf9cdd150"
+  },
+  "identity-stereo-96000-float32.wav": {
+    "channels": 2,
+    "encoding": "float32",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "b1ab0e70c6bb20b28aa3fd503b76a8111605afaaed028aa5ba5fcf0c786df686"
+  },
+  "identity-stereo-96000-float64.wav": {
+    "channels": 2,
+    "encoding": "float64",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "24399a9d5ce5c6c73ba9937cdc30eaed9bfe6159a5a8fb6b4819dba155fb7635"
+  },
+  "identity-stereo-96000-pcm16.wav": {
+    "channels": 2,
+    "encoding": "pcm16",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "3da2e1d851b157bcc11dcd7d91baa140ad701b5533869e994acc1ee30cad6229"
+  },
+  "identity-stereo-96000-pcm24.wav": {
+    "channels": 2,
+    "encoding": "pcm24",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "c9f5ad6133c2b4ff1a45b75324fe8dbbb4d03b8bb6a38e81deebaf383768ebe9"
+  },
+  "identity-stereo-96000-pcm32.wav": {
+    "channels": 2,
+    "encoding": "pcm32",
+    "frames": 17,
+    "sampleRate": 96000,
+    "sha256": "ce64d2925f1057361821441b3f79ba96faab69a763ec5dbedbcc6953e310d0c7"
+  }
+}
