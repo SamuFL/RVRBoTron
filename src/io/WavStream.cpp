@@ -134,7 +134,9 @@ void validateWavHeader(const std::filesystem::path& path) {
   const auto expectedBlockAlign =
       static_cast<std::uint16_t>(channels * bytesPerSample);
   if (sampleRate == 0 || blockAlign != expectedBlockAlign ||
-      byteRate != sampleRate * expectedBlockAlign ||
+      static_cast<std::uint64_t>(byteRate) !=
+          static_cast<std::uint64_t>(sampleRate) *
+              static_cast<std::uint64_t>(expectedBlockAlign) ||
       dataSize % expectedBlockAlign != 0) {
     throw std::runtime_error("malformed input WAV");
   }
