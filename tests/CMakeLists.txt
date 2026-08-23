@@ -9,6 +9,12 @@ add_test(NAME empty_composition_identity COMMAND test_reverb)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(RVRBOTRON_SAMPLE_DOUBLE)
+  set(RVRBOTRON_TEST_SAMPLE_BITS 64)
+else()
+  set(RVRBOTRON_TEST_SAMPLE_BITS 32)
+endif()
+
 add_test(
   NAME renderer_identity
   COMMAND
@@ -17,6 +23,7 @@ add_test(
     $<TARGET_FILE:rvrbotron>
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/renderer-identity-result
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
 
 add_test(
