@@ -58,3 +58,17 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/render-result-contract
     ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
+
+add_test(
+  NAME analyzer_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_analyzer_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_render.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-mono-48000-float32.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-stereo-48000-float32.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-mono-48000-pcm16.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/analyzer-contract
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)
