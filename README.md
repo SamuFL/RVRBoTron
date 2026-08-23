@@ -91,3 +91,31 @@ build/default/rvrbotron render \
   --resolved build/requested-result/resolved.json \
   --output build/resolved-result
 ```
+
+## Analyze a Render Result
+
+Analysis is a separate Python command and is never required for rendering:
+
+```bash
+python3 tools/analyze_render.py build/identity-result
+```
+
+It prints a concise summary and atomically adds
+`analysis/baseline-v1.json`. The versioned artifact records frame count,
+duration, sample rate, channel count, and non-finite sample count, plus
+per-channel and combined peak absolute sample, RMS amplitude, and sum of
+squares. Metric definitions and linear units are embedded in the artifact.
+
+To compare the rendered audio with its source, provide the original WAV:
+
+```bash
+python3 tools/analyze_render.py \
+  build/identity-result \
+  --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+```
+
+Identity comparison runs only when the source SHA-256 matches `render.json`.
+It reports exact equality, differing-sample count, maximum absolute error,
+and the first mismatch. Analysis artifacts are append-only: repeating
+identical analysis succeeds without rewriting, while different content for
+the same analyzer version is rejected.
