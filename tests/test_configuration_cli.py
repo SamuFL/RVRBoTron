@@ -42,13 +42,14 @@ def main():
     request = workspace / "request.json"
     requested_result = workspace / "requested-result"
     resolved_result = workspace / "resolved-result"
-    request_text = """{
-  "formatVersion": 1,
-  "seed": 18446744073709551615,
-  "composition": {"stages": []}
-}
-"""
-    request.write_text(request_text)
+    request_bytes = (
+        b"{\r\n"
+        b'  "formatVersion": 1,\n'
+        b'  "seed": 18446744073709551615,\r\n'
+        b'  "composition": {"stages": []}\n'
+        b"}\r\n"
+    )
+    request.write_bytes(request_bytes)
 
     requested = run_renderer(
         renderer,
@@ -61,7 +62,7 @@ def main():
     )
     require_success(requested)
 
-    if (requested_result / "request.json").read_text() != request_text:
+    if (requested_result / "request.json").read_bytes() != request_bytes:
         raise AssertionError("Render Result did not preserve the raw request")
 
     resolved = json.loads((requested_result / "resolved.json").read_text())
@@ -230,6 +231,56 @@ def main():
         conflicting,
         "--config and --resolved are mutually exclusive",
         conflicting_output,
+    )
+
+    empty_config_output = workspace / "empty-config-result"
+    empty_config = run_renderer(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        "",
+        "--output",
+        empty_config_output,
+    )
+    require_failure(
+        empty_config,
+        "--config requires a non-empty path",
+        empty_config_output,
+    )
+
+    empty_resolved_output = workspace / "empty-resolved-result"
+    empty_resolved = run_renderer(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        "",
+        "--output",
+        empty_resolved_output,
+    )
+    require_failure(
+        empty_resolved,
+        "--resolved requires a non-empty path",
+        empty_resolved_output,
+    )
+
+    empty_conflicting_output = workspace / "empty-conflicting-result"
+    empty_conflicting = run_renderer(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        "",
+        "--resolved",
+        requested_result / "resolved.json",
+        "--output",
+        empty_conflicting_output,
+    )
+    require_failure(
+        empty_conflicting,
+        "--config and --resolved are mutually exclusive",
+        empty_conflicting_output,
     )
 
 

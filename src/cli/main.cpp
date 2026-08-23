@@ -22,8 +22,8 @@ constexpr std::size_t kBlockSize = 512;
 struct RenderArguments {
   std::filesystem::path input;
   std::filesystem::path output;
-  std::filesystem::path requestedConfig;
-  std::filesystem::path resolvedConfig;
+  std::optional<std::filesystem::path> requestedConfig;
+  std::optional<std::filesystem::path> resolvedConfig;
 };
 
 RenderArguments parseArguments(const int argc, char** argv) {
@@ -52,16 +52,24 @@ RenderArguments parseArguments(const int argc, char** argv) {
   if (arguments.input.empty() || arguments.output.empty()) {
     throw std::runtime_error("--input and --output are required");
   }
-  if (!arguments.requestedConfig.empty() &&
-      !arguments.resolvedConfig.empty()) {
+  if (arguments.requestedConfig.has_value() &&
+      arguments.resolvedConfig.has_value()) {
     throw std::runtime_error("--config and --resolved are mutually exclusive");
+  }
+  if (arguments.requestedConfig.has_value() &&
+      arguments.requestedConfig->empty()) {
+    throw std::runtime_error("--config requires a non-empty path");
+  }
+  if (arguments.resolvedConfig.has_value() &&
+      arguments.resolvedConfig->empty()) {
+    throw std::runtime_error("--resolved requires a non-empty path");
   }
 
   return arguments;
 }
 
-std::string readText(const std::filesystem::path& path) {
-  std::ifstream input(path);
+std::string readFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
   if (!input) {
     throw std::runtime_error(
         "could not open configuration: " + path.string());
@@ -72,13 +80,17 @@ std::string readText(const std::filesystem::path& path) {
   };
 }
 
-void writeText(const std::filesystem::path& path,
+void writeFile(const std::filesystem::path& path,
                const std::string_view contents) {
-  std::ofstream output(path);
+  std::ofstream output(path, std::ios::binary);
   if (!output) {
     throw std::runtime_error("could not write " + path.filename().string());
   }
-  output << contents;
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  output.flush();
+  if (!output) {
+    throw std::runtime_error("could not write " + path.filename().string());
+  }
 }
 
 void writeRenderMetadata(const std::filesystem::path& path,
@@ -116,14 +128,14 @@ void render(const RenderArguments& arguments) {
 
   rvrbotron::dsp::ResolvedConfig config;
   std::optional<std::string> rawRequest;
-  if (!arguments.requestedConfig.empty()) {
-    rawRequest = readText(arguments.requestedConfig);
+  if (arguments.requestedConfig.has_value()) {
+    rawRequest = readFile(*arguments.requestedConfig);
     const auto requested =
         rvrbotron::cli::parseRequestedConfig(*rawRequest);
     config = rvrbotron::config::resolveConfig(requested, info.sampleRate);
-  } else if (!arguments.resolvedConfig.empty()) {
+  } else if (arguments.resolvedConfig.has_value()) {
     config = rvrbotron::cli::parseResolvedConfig(
-        readText(arguments.resolvedConfig));
+        readFile(*arguments.resolvedConfig));
     if (config.sampleRate != info.sampleRate) {
       throw std::runtime_error(
           "configuration error at /sampleRate: expected input sample rate " +
@@ -164,7 +176,7 @@ void render(const RenderArguments& arguments) {
   rvrbotron::config::writeResolvedConfig(
       arguments.output / "resolved.json", config);
   if (rawRequest.has_value()) {
-    writeText(arguments.output / "request.json", *rawRequest);
+    writeFile(arguments.output / "request.json", *rawRequest);
   }
   writeRenderMetadata(
       arguments.output / "render.json", info, renderedFrames);
