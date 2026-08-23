@@ -28,3 +28,30 @@ build/default/rvrbotron render \
 
 The new result directory contains `output.wav`, `resolved.json`, and
 `render.json`.
+
+Pass a Requested Configuration with `--config`:
+
+```json
+{
+  "formatVersion": 1,
+  "seed": 0,
+  "composition": {"stages": []}
+}
+```
+
+```bash
+build/default/rvrbotron render \
+  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --config request.json \
+  --output build/requested-result
+```
+
+The Render Result also preserves the source request as `request.json`. To
+rerender exactly what was resolved, use the emitted configuration directly:
+
+```bash
+build/default/rvrbotron render \
+  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --resolved build/requested-result/resolved.json \
+  --output build/resolved-result
+```

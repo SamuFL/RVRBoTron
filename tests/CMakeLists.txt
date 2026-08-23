@@ -18,3 +18,13 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/renderer-identity-result
 )
+
+add_test(
+  NAME configuration_round_trip
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_configuration_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/configuration-round-trip
+)
