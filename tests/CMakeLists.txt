@@ -47,3 +47,14 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/wav-compatibility
     ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
+
+add_test(
+  NAME render_result_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_render_result_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-mono-48000-float32.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/render-result-contract
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)

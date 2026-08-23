@@ -1,10 +1,17 @@
+#include "rvrbotron/HarnessError.h"
 #include "rvrbotron/cli/ConfigJson.h"
+#include "rvrbotron/cli/FileSha256.h"
+#include "rvrbotron/cli/RenderMetadata.h"
+#include "rvrbotron/cli/RenderResultTransaction.h"
 #include "rvrbotron/config/ResolveConfig.h"
 #include "rvrbotron/config/ResolvedConfigJson.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/io/WavStream.h"
 
+#include <nlohmann/json.hpp>
+
 #include <charconv>
+#include <csignal>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +27,28 @@
 namespace {
 
 constexpr std::size_t kBlockSize = 512;
+volatile std::sig_atomic_t interruptedSignal = 0;
+
+void handleInterruption(const int signal) noexcept {
+  interruptedSignal = signal;
+}
+
+void installInterruptionHandlers() {
+  if (std::signal(SIGINT, handleInterruption) == SIG_ERR ||
+      std::signal(SIGTERM, handleInterruption) == SIG_ERR) {
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::internalProcessingFailure,
+        "could not install interruption handlers");
+  }
+}
+
+void throwIfInterrupted() {
+  if (interruptedSignal != 0) {
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::internalProcessingFailure,
+        "render interrupted");
+  }
+}
 
 struct RenderArguments {
   std::filesystem::path input;
@@ -29,23 +58,63 @@ struct RenderArguments {
   std::size_t blockSize{kBlockSize};
 };
 
+enum class ErrorFormat {
+  text,
+  json,
+};
+
+ErrorFormat requestedErrorFormat(const int argc, char** argv) noexcept {
+  for (int index = 2; index + 1 < argc; index += 2) {
+    if (std::string_view(argv[index]) == "--error-format" &&
+        std::string_view(argv[index + 1]) == "json") {
+      return ErrorFormat::json;
+    }
+  }
+  return ErrorFormat::text;
+}
+
+int reportError(const rvrbotron::HarnessError& error,
+                const ErrorFormat format) {
+  if (format == ErrorFormat::json) {
+    nlohmann::json diagnostic{
+        {"category", rvrbotron::categoryName(error.category())},
+        {"exitCode", rvrbotron::exitCode(error.category())},
+        {"reason", error.reason()},
+    };
+    if (error.location().has_value()) {
+      diagnostic["location"] = *error.location();
+    }
+    std::cerr << diagnostic.dump() << '\n';
+  } else {
+    std::cerr << rvrbotron::categoryName(error.category());
+    if (error.location().has_value()) {
+      std::cerr << " at " << *error.location();
+    }
+    std::cerr << ": " << error.reason() << '\n';
+  }
+  return rvrbotron::exitCode(error.category());
+}
+
 std::size_t parseBlockSize(const std::string_view value) {
   std::size_t blockSize = 0;
   const auto result =
       std::from_chars(value.data(), value.data() + value.size(), blockSize);
   if (result.ec != std::errc{} ||
       result.ptr != value.data() + value.size() || blockSize == 0) {
-    throw std::runtime_error("--block-size requires a positive integer");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--block-size requires a positive integer");
   }
   return blockSize;
 }
 
 RenderArguments parseArguments(const int argc, char** argv) {
   if (argc < 2 || std::string(argv[1]) != "render" || argc % 2 != 0) {
-    throw std::runtime_error(
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
         "usage: rvrbotron render --input <wav> [--config <request.json> | "
         "--resolved <resolved.json>] [--block-size <frames>] "
-        "--output <result-dir>");
+        "[--error-format <text|json>] --output <result-dir>");
   }
 
   RenderArguments arguments;
@@ -61,25 +130,42 @@ RenderArguments parseArguments(const int argc, char** argv) {
       arguments.resolvedConfig = argv[index + 1];
     } else if (option == "--block-size") {
       arguments.blockSize = parseBlockSize(argv[index + 1]);
+    } else if (option == "--error-format") {
+      const std::string_view format = argv[index + 1];
+      if (format != "text" && format != "json") {
+        throw rvrbotron::HarnessError(
+            rvrbotron::ErrorCategory::invalidArguments,
+            "--error-format requires text or json");
+      }
     } else {
-      throw std::runtime_error("unknown option: " + option);
+      throw rvrbotron::HarnessError(
+          rvrbotron::ErrorCategory::invalidArguments,
+          "unknown option: " + option);
     }
   }
 
   if (arguments.input.empty() || arguments.output.empty()) {
-    throw std::runtime_error("--input and --output are required");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--input and --output are required");
   }
   if (arguments.requestedConfig.has_value() &&
       arguments.resolvedConfig.has_value()) {
-    throw std::runtime_error("--config and --resolved are mutually exclusive");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--config and --resolved are mutually exclusive");
   }
   if (arguments.requestedConfig.has_value() &&
       arguments.requestedConfig->empty()) {
-    throw std::runtime_error("--config requires a non-empty path");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--config requires a non-empty path");
   }
   if (arguments.resolvedConfig.has_value() &&
       arguments.resolvedConfig->empty()) {
-    throw std::runtime_error("--resolved requires a non-empty path");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--resolved requires a non-empty path");
   }
 
   return arguments;
@@ -88,7 +174,8 @@ RenderArguments parseArguments(const int argc, char** argv) {
 std::string readFile(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input) {
-    throw std::runtime_error(
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::ioFailure,
         "could not open configuration: " + path.string());
   }
   return {
@@ -101,77 +188,66 @@ void writeFile(const std::filesystem::path& path,
                const std::string_view contents) {
   std::ofstream output(path, std::ios::binary);
   if (!output) {
-    throw std::runtime_error("could not write " + path.filename().string());
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::ioFailure,
+        "could not write " + path.filename().string());
   }
   output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
   output.flush();
   if (!output) {
-    throw std::runtime_error("could not write " + path.filename().string());
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::ioFailure,
+        "could not write " + path.filename().string());
   }
-}
-
-void writeRenderMetadata(const std::filesystem::path& path,
-                         const rvrbotron::io::WavInfo& info,
-                         const std::uint64_t frameCount,
-                         const std::size_t blockSize) {
-  std::ofstream output(path);
-  if (!output) {
-    throw std::runtime_error("could not write render.json");
-  }
-
-  output << "{\n"
-         << "  \"formatVersion\": 1,\n"
-         << "  \"rendererVersion\": \"" << RVRBOTRON_VERSION << "\",\n"
-         << "  \"samplePrecision\": \""
-         << (sizeof(rvrbotron::dsp::Sample) == sizeof(double) ? "float64"
-                                                              : "float32")
-         << "\",\n"
-         << "  \"sampleRate\": " << info.sampleRate << ",\n"
-         << "  \"channels\": " << info.channels << ",\n"
-         << "  \"frames\": " << frameCount << ",\n"
-         << "  \"blockSize\": " << blockSize << "\n"
-         << "}\n";
 }
 
 void render(const RenderArguments& arguments) {
-  if (std::filesystem::exists(arguments.output)) {
-    throw std::runtime_error("output path already exists");
-  }
+  rvrbotron::cli::RenderResultTransaction result(arguments.output);
+  const auto& resultPath = result.workingPath();
+  throwIfInterrupted();
 
   rvrbotron::io::WavReader reader(arguments.input);
   const auto info = reader.info();
   if (info.channels == 0 || info.channels > 2) {
-    throw std::runtime_error("the identity renderer requires mono or stereo input");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::unsupportedAudio,
+        "the identity renderer requires mono or stereo input");
   }
   const auto channelCount = static_cast<std::size_t>(info.channels);
   if (arguments.blockSize >
       std::numeric_limits<std::size_t>::max() / channelCount) {
-    throw std::runtime_error("--block-size is too large");
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--block-size is too large");
   }
 
   rvrbotron::dsp::ResolvedConfig config;
   std::optional<std::string> rawRequest;
+  auto configurationInput =
+      rvrbotron::cli::ConfigurationInput::defaults;
   if (arguments.requestedConfig.has_value()) {
+    configurationInput =
+        rvrbotron::cli::ConfigurationInput::requested;
     rawRequest = readFile(*arguments.requestedConfig);
     const auto requested =
         rvrbotron::cli::parseRequestedConfig(*rawRequest);
     config = rvrbotron::config::resolveConfig(requested, info.sampleRate);
   } else if (arguments.resolvedConfig.has_value()) {
+    configurationInput =
+        rvrbotron::cli::ConfigurationInput::resolved;
     config = rvrbotron::cli::parseResolvedConfig(
         readFile(*arguments.resolvedConfig));
     if (config.sampleRate != info.sampleRate) {
-      throw std::runtime_error(
-          "configuration error at /sampleRate: expected input sample rate " +
-          std::to_string(info.sampleRate) + ", got " +
-          std::to_string(config.sampleRate));
+      throw rvrbotron::HarnessError(
+          rvrbotron::ErrorCategory::invalidConfiguration,
+          "expected input sample rate " +
+              std::to_string(info.sampleRate) + ", got " +
+              std::to_string(config.sampleRate),
+          "/sampleRate");
     }
   } else {
     config =
         rvrbotron::config::resolveConfig({}, info.sampleRate);
-  }
-
-  if (!std::filesystem::create_directories(arguments.output)) {
-    throw std::runtime_error("could not create output directory");
   }
 
   rvrbotron::dsp::Reverb reverb(config);
@@ -189,11 +265,13 @@ void render(const RenderArguments& arguments) {
 
   {
     rvrbotron::io::WavWriter writer(
-        arguments.output / "output.wav", info.channels, info.sampleRate);
+        resultPath / "output.wav", info.channels, info.sampleRate);
 
     while (true) {
+      throwIfInterrupted();
       const auto framesRead =
           reader.readFrames(interleavedSamples.data(), arguments.blockSize);
+      throwIfInterrupted();
       if (framesRead == 0) {
         break;
       }
@@ -216,30 +294,54 @@ void render(const RenderArguments& arguments) {
       writer.writeFrames(interleavedSamples.data(), framesRead);
       renderedFrames += framesRead;
     }
+    writer.close();
   }
 
   rvrbotron::config::writeResolvedConfig(
-      arguments.output / "resolved.json", config);
+      resultPath / "resolved.json", config);
   if (rawRequest.has_value()) {
-    writeFile(arguments.output / "request.json", *rawRequest);
+    writeFile(resultPath / "request.json", *rawRequest);
   }
-  writeRenderMetadata(
-      arguments.output / "render.json",
-      info,
-      renderedFrames,
-      arguments.blockSize);
+  throwIfInterrupted();
+  rvrbotron::cli::writeRenderMetadata(
+      resultPath / "render.json",
+      {
+          arguments.input.filename().string(),
+          rvrbotron::cli::fileSha256(arguments.input),
+          configurationInput,
+          info,
+          renderedFrames,
+          arguments.blockSize,
+      });
 
+  throwIfInterrupted();
+  result.publish();
   std::cout << arguments.output.string() << '\n';
 }
 
 } // namespace
 
 int main(const int argc, char** argv) {
+  const auto errorFormat = requestedErrorFormat(argc, argv);
   try {
+    installInterruptionHandlers();
     render(parseArguments(argc, argv));
     return 0;
+  } catch (const rvrbotron::HarnessError& error) {
+    return reportError(error, errorFormat);
   } catch (const std::exception& error) {
-    std::cerr << error.what() << '\n';
-    return 1;
+    return reportError(
+        {
+            rvrbotron::ErrorCategory::internalProcessingFailure,
+            error.what(),
+        },
+        errorFormat);
+  } catch (...) {
+    return reportError(
+        {
+            rvrbotron::ErrorCategory::internalProcessingFailure,
+            "unknown internal error",
+        },
+        errorFormat);
   }
 }

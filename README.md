@@ -30,7 +30,15 @@ build/default/rvrbotron render \
 The new result directory contains `output.wav`, `resolved.json`, and
 `render.json`. The optional `--block-size` selects the processing block size;
 it defaults to 512 frames and the effective value is recorded in
-`render.json`.
+`render.json`. Rendering builds the evidence in a temporary sibling and
+publishes the directory atomically; an existing destination is never
+overwritten.
+
+`render.json` records the input filename and SHA-256, renderer version,
+platform, architecture, sample precision, block size, configuration input
+mode, sample rate, channel count, and frame count. It intentionally contains
+no timestamp, host or user identity, full input path, or source-tree
+fingerprint.
 
 The supported input matrix is mono or stereo PCM16, PCM24, PCM32, IEEE
 float32, or IEEE float64 WAV at 44.1, 48, or 96 kHz. Default builds emit
@@ -42,6 +50,20 @@ The committed compatibility fixtures are reproducible:
 ```bash
 python3 tests/fixtures/generate_wav_matrix.py
 ```
+
+Failures are written to stderr with stable exit categories:
+
+| Exit | Category |
+| ---: | --- |
+| 2 | `malformed_json` |
+| 3 | `unsupported_audio` |
+| 4 | `invalid_configuration` |
+| 5 | `io_failure` |
+| 6 | `internal_processing_failure` |
+| 7 | `invalid_arguments` |
+
+Pass `--error-format json` to receive the same category, reason, and optional
+configuration location as one JSON object.
 
 Pass a Requested Configuration with `--config`:
 

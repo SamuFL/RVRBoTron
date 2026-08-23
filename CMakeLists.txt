@@ -63,6 +63,9 @@ target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
 
 add_library(rvrbotron_cli_support
   src/cli/ConfigJson.cpp
+  src/cli/FileSha256.cpp
+  src/cli/RenderMetadata.cpp
+  src/cli/RenderResultTransaction.cpp
 )
 
 target_include_directories(rvrbotron_cli_support
@@ -78,6 +81,11 @@ target_link_libraries(
     nlohmann_json::nlohmann_json
 )
 target_compile_features(rvrbotron_cli_support PUBLIC cxx_std_17)
+target_compile_definitions(
+  rvrbotron_cli_support
+  PRIVATE
+    RVRBOTRON_VERSION="${PROJECT_VERSION}"
+)
 
 add_library(rvrbotron_wav
   src/io/WavStream.cpp
@@ -103,13 +111,9 @@ target_link_libraries(
     rvrbotron_cli_support
     rvrbotron_config
     rvrbotron_wav
+    nlohmann_json::nlohmann_json
 )
 target_compile_features(rvrbotron PRIVATE cxx_std_17)
-target_compile_definitions(
-  rvrbotron
-  PRIVATE
-    RVRBOTRON_VERSION="${PROJECT_VERSION}"
-)
 
 if(BUILD_TESTING)
   enable_testing()
