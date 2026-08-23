@@ -22,6 +22,8 @@ def read_canonical_wav(path: Path):
         chunk_size = struct.unpack_from("<I", contents, offset + 4)[0]
         chunk = contents[offset + 8 : offset + 8 + chunk_size]
         if chunk_id == b"fmt ":
+            if chunk_size < 16:
+                raise AssertionError(f"{path.name} has a truncated fmt chunk")
             format_info = struct.unpack_from("<HHIIHH", chunk)
         elif chunk_id == b"data":
             audio = chunk
