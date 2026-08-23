@@ -102,8 +102,8 @@ python3 tools/analyze_render.py build/identity-result
 
 It prints a concise summary and atomically adds
 `analysis/baseline-v1.json`. The versioned artifact records frame count,
-duration, sample rate, Channel count, and non-finite sample count, plus
-per-Channel and combined peak absolute sample, RMS amplitude, and sum of
+duration, sample rate, channel count, and non-finite sample count, plus
+per-channel and combined peak absolute sample, RMS amplitude, and sum of
 squares. Metric definitions and linear units are embedded in the artifact.
 
 To compare the rendered audio with its source, provide the original WAV:
