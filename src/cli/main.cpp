@@ -4,11 +4,13 @@
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/io/WavStream.h"
 
+#include <charconv>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -24,13 +26,26 @@ struct RenderArguments {
   std::filesystem::path output;
   std::optional<std::filesystem::path> requestedConfig;
   std::optional<std::filesystem::path> resolvedConfig;
+  std::size_t blockSize{kBlockSize};
 };
+
+std::size_t parseBlockSize(const std::string_view value) {
+  std::size_t blockSize = 0;
+  const auto result =
+      std::from_chars(value.data(), value.data() + value.size(), blockSize);
+  if (result.ec != std::errc{} ||
+      result.ptr != value.data() + value.size() || blockSize == 0) {
+    throw std::runtime_error("--block-size requires a positive integer");
+  }
+  return blockSize;
+}
 
 RenderArguments parseArguments(const int argc, char** argv) {
   if (argc < 2 || std::string(argv[1]) != "render" || argc % 2 != 0) {
     throw std::runtime_error(
         "usage: rvrbotron render --input <wav> [--config <request.json> | "
-        "--resolved <resolved.json>] --output <result-dir>");
+        "--resolved <resolved.json>] [--block-size <frames>] "
+        "--output <result-dir>");
   }
 
   RenderArguments arguments;
@@ -44,6 +59,8 @@ RenderArguments parseArguments(const int argc, char** argv) {
       arguments.requestedConfig = argv[index + 1];
     } else if (option == "--resolved") {
       arguments.resolvedConfig = argv[index + 1];
+    } else if (option == "--block-size") {
+      arguments.blockSize = parseBlockSize(argv[index + 1]);
     } else {
       throw std::runtime_error("unknown option: " + option);
     }
@@ -95,7 +112,8 @@ void writeFile(const std::filesystem::path& path,
 
 void writeRenderMetadata(const std::filesystem::path& path,
                          const rvrbotron::io::WavInfo& info,
-                         const std::uint64_t frameCount) {
+                         const std::uint64_t frameCount,
+                         const std::size_t blockSize) {
   std::ofstream output(path);
   if (!output) {
     throw std::runtime_error("could not write render.json");
@@ -111,7 +129,7 @@ void writeRenderMetadata(const std::filesystem::path& path,
          << "  \"sampleRate\": " << info.sampleRate << ",\n"
          << "  \"channels\": " << info.channels << ",\n"
          << "  \"frames\": " << frameCount << ",\n"
-         << "  \"blockSize\": " << kBlockSize << "\n"
+         << "  \"blockSize\": " << blockSize << "\n"
          << "}\n";
 }
 
@@ -122,8 +140,13 @@ void render(const RenderArguments& arguments) {
 
   rvrbotron::io::WavReader reader(arguments.input);
   const auto info = reader.info();
-  if (info.channels != 1) {
-    throw std::runtime_error("the first identity renderer requires mono input");
+  if (info.channels == 0 || info.channels > 2) {
+    throw std::runtime_error("the identity renderer requires mono or stereo input");
+  }
+  const auto channelCount = static_cast<std::size_t>(info.channels);
+  if (arguments.blockSize >
+      std::numeric_limits<std::size_t>::max() / channelCount) {
+    throw std::runtime_error("--block-size is too large");
   }
 
   rvrbotron::dsp::ResolvedConfig config;
@@ -153,8 +176,15 @@ void render(const RenderArguments& arguments) {
 
   rvrbotron::dsp::Reverb reverb(config);
 
-  std::vector<rvrbotron::dsp::Sample> samples(kBlockSize);
-  rvrbotron::dsp::Sample* channels[]{samples.data()};
+  std::vector<rvrbotron::dsp::Sample> interleavedSamples(
+      arguments.blockSize * channelCount);
+  std::vector<rvrbotron::dsp::Sample> channelSamples(
+      arguments.blockSize * channelCount);
+  std::vector<rvrbotron::dsp::Sample*> channels(channelCount);
+  for (std::size_t channel = 0; channel < channelCount; ++channel) {
+    channels[channel] =
+        channelSamples.data() + channel * arguments.blockSize;
+  }
   std::uint64_t renderedFrames = 0;
 
   {
@@ -162,13 +192,28 @@ void render(const RenderArguments& arguments) {
         arguments.output / "output.wav", info.channels, info.sampleRate);
 
     while (true) {
-      const auto framesRead = reader.readFrames(samples.data(), kBlockSize);
+      const auto framesRead =
+          reader.readFrames(interleavedSamples.data(), arguments.blockSize);
       if (framesRead == 0) {
         break;
       }
 
-      reverb.process(channels, info.channels, framesRead);
-      writer.writeFrames(samples.data(), framesRead);
+      for (std::size_t frame = 0; frame < framesRead; ++frame) {
+        for (std::size_t channel = 0; channel < channelCount; ++channel) {
+          channels[channel][frame] =
+              interleavedSamples[frame * channelCount + channel];
+        }
+      }
+
+      reverb.process(channels.data(), channelCount, framesRead);
+
+      for (std::size_t frame = 0; frame < framesRead; ++frame) {
+        for (std::size_t channel = 0; channel < channelCount; ++channel) {
+          interleavedSamples[frame * channelCount + channel] =
+              channels[channel][frame];
+        }
+      }
+      writer.writeFrames(interleavedSamples.data(), framesRead);
       renderedFrames += framesRead;
     }
   }
@@ -179,7 +224,10 @@ void render(const RenderArguments& arguments) {
     writeFile(arguments.output / "request.json", *rawRequest);
   }
   writeRenderMetadata(
-      arguments.output / "render.json", info, renderedFrames);
+      arguments.output / "render.json",
+      info,
+      renderedFrames,
+      arguments.blockSize);
 
   std::cout << arguments.output.string() << '\n';
 }
