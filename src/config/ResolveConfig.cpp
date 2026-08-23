@@ -1,6 +1,7 @@
 #include "rvrbotron/config/ResolveConfig.h"
 
-#include <stdexcept>
+#include "rvrbotron/HarnessError.h"
+
 #include <string>
 #include <string_view>
 
@@ -9,9 +10,10 @@ namespace {
 
 [[noreturn]] void fail(const std::string_view path,
                        const std::string_view reason) {
-  throw std::runtime_error(
-      "configuration error at " + std::string(path) + ": " +
-      std::string(reason));
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      std::string(reason),
+      std::string(path));
 }
 
 } // namespace

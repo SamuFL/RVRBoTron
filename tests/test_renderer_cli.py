@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
+import platform
 import shutil
 import struct
 import subprocess
@@ -106,10 +108,25 @@ def main():
         raise AssertionError(f"unexpected Resolved Configuration: {resolved}")
 
     render = json.loads((result / "render.json").read_text())
+    machine = platform.machine().lower()
     expected_render = {
+        "architecture": {
+            "amd64": "x86_64",
+            "x86_64": "x86_64",
+            "arm64": "arm64",
+            "aarch64": "arm64",
+        }.get(machine, machine),
         "formatVersion": 1,
         "rendererVersion": "0.1.0",
+        "platform": {
+            "Darwin": "macos",
+            "Windows": "windows",
+            "Linux": "linux",
+        }.get(platform.system(), platform.system().lower()),
         "samplePrecision": sample_precision,
+        "configurationInput": "defaults",
+        "inputFilename": fixture.name,
+        "inputSha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
         "sampleRate": 48000,
         "channels": 1,
         "frames": 32,

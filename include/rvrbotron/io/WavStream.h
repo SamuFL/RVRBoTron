@@ -42,6 +42,7 @@ public:
   WavWriter& operator=(const WavWriter&) = delete;
 
   void writeFrames(const dsp::Sample* interleaved, std::size_t frameCount);
+  void close();
 
 private:
   struct Implementation;

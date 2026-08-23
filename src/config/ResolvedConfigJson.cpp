@@ -1,15 +1,16 @@
 #include "rvrbotron/config/ResolvedConfigJson.h"
 
-#include <fstream>
-#include <stdexcept>
+#include "rvrbotron/HarnessError.h"
 
+#include <fstream>
 namespace rvrbotron::config {
 
 void writeResolvedConfig(const std::filesystem::path& path,
                          const dsp::ResolvedConfig& config) {
   std::ofstream output(path);
   if (!output) {
-    throw std::runtime_error("could not write resolved.json");
+    throw HarnessError(
+        ErrorCategory::ioFailure, "could not write resolved.json");
   }
 
   output << "{\n"
@@ -18,6 +19,11 @@ void writeResolvedConfig(const std::filesystem::path& path,
          << "  \"sampleRate\": " << config.sampleRate << ",\n"
          << "  \"composition\": {\"stages\": []}\n"
          << "}\n";
+  output.flush();
+  if (!output) {
+    throw HarnessError(
+        ErrorCategory::ioFailure, "could not write resolved.json");
+  }
 }
 
 } // namespace rvrbotron::config

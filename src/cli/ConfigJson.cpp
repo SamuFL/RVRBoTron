@@ -1,12 +1,12 @@
 #include "rvrbotron/cli/ConfigJson.h"
 
+#include "rvrbotron/HarnessError.h"
 #include "rvrbotron/config/ResolveConfig.h"
 
 #include <nlohmann/json.hpp>
 
 #include <initializer_list>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -17,16 +17,25 @@ using Json = nlohmann::json;
 
 [[noreturn]] void fail(const std::string_view path,
                        const std::string_view reason) {
-  throw std::runtime_error(
-      "configuration error at " + std::string(path) + ": " +
-      std::string(reason));
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      std::string(reason),
+      std::string(path));
 }
 
 Json parseJson(const std::string_view contents) {
   try {
     return Json::parse(contents);
   } catch (const Json::parse_error& error) {
-    fail("/", "malformed JSON: " + std::string(error.what()));
+    throw HarnessError(
+        ErrorCategory::malformedJson,
+        "malformed JSON: " + std::string(error.what()),
+        "/");
+  } catch (const Json::exception& error) {
+    throw HarnessError(
+        ErrorCategory::malformedJson,
+        "malformed JSON: " + std::string(error.what()),
+        "/");
   }
 }
 

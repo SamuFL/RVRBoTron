@@ -64,6 +64,13 @@ def main():
 
     if (requested_result / "request.json").read_bytes() != request_bytes:
         raise AssertionError("Render Result did not preserve the raw request")
+    if (
+        json.loads((requested_result / "render.json").read_text())[
+            "configurationInput"
+        ]
+        != "requested"
+    ):
+        raise AssertionError("Render Result did not record requested input mode")
 
     resolved = json.loads((requested_result / "resolved.json").read_text())
     expected = {
@@ -88,6 +95,13 @@ def main():
 
     if (resolved_result / "request.json").exists():
         raise AssertionError("resolved render synthesized request.json")
+    if (
+        json.loads((resolved_result / "render.json").read_text())[
+            "configurationInput"
+        ]
+        != "resolved"
+    ):
+        raise AssertionError("Render Result did not record resolved input mode")
     if (resolved_result / "resolved.json").read_bytes() != (
         requested_result / "resolved.json"
     ).read_bytes():
@@ -123,27 +137,27 @@ def main():
     invalid_requests = [
         (
             '{"unexpected": true}',
-            "configuration error at /unexpected: unknown field",
+            "invalid_configuration at /unexpected: unknown field",
         ),
         (
             '{"composition": {"unexpected": true}}',
-            "configuration error at /composition/unexpected: unknown field",
+            "invalid_configuration at /composition/unexpected: unknown field",
         ),
         (
             '{"formatVersion": 2}',
-            "configuration error at /formatVersion: expected integer 1",
+            "invalid_configuration at /formatVersion: expected integer 1",
         ),
         (
             '{"seed": -1}',
-            "configuration error at /seed: expected unsigned 64-bit integer",
+            "invalid_configuration at /seed: expected unsigned 64-bit integer",
         ),
         (
             '{"composition": {"stages": [{}]}}',
-            "configuration error at /composition/stages: expected empty array",
+            "invalid_configuration at /composition/stages: expected empty array",
         ),
         (
             '{"seed": ',
-            "configuration error at /: malformed JSON:",
+            "malformed_json at /: malformed JSON:",
         ),
     ]
     for index, (contents, expected_error) in enumerate(invalid_requests):
@@ -184,7 +198,7 @@ def main():
     )
     require_failure(
         mismatch,
-        "configuration error at /sampleRate: expected input sample rate 48000, got 44100",
+        "invalid_configuration at /sampleRate: expected input sample rate 48000, got 44100",
         mismatched_output,
     )
 
@@ -211,7 +225,7 @@ def main():
     )
     require_failure(
         oversized,
-        "configuration error at /sampleRate: expected unsigned 32-bit integer",
+        "invalid_configuration at /sampleRate: expected unsigned 32-bit integer",
         oversized_output,
     )
 
