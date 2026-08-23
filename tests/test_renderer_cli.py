@@ -15,7 +15,7 @@ def read_float_wav(path: Path):
 
     offset = 12
     audio_format = channels = sample_rate = bits_per_sample = None
-    samples = None
+    data_chunk = None
     while offset + 8 <= len(data):
         chunk_id = data[offset : offset + 4]
         chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
@@ -24,8 +24,18 @@ def read_float_wav(path: Path):
             audio_format, channels, sample_rate = struct.unpack_from("<HHI", chunk)
             bits_per_sample = struct.unpack_from("<H", chunk, 14)[0]
         elif chunk_id == b"data":
-            samples = struct.unpack("<" + "f" * (chunk_size // 4), chunk)
+            data_chunk = chunk
         offset += 8 + chunk_size + (chunk_size % 2)
+
+    if data_chunk is None:
+        raise AssertionError("output WAV is missing a data chunk")
+
+    if bits_per_sample == 32:
+        samples = struct.unpack("<" + "f" * (len(data_chunk) // 4), data_chunk)
+    elif bits_per_sample == 64:
+        samples = struct.unpack("<" + "d" * (len(data_chunk) // 8), data_chunk)
+    else:
+        raise AssertionError(f"unexpected bits per sample: {bits_per_sample}")
 
     return audio_format, channels, sample_rate, bits_per_sample, samples
 
