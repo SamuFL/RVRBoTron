@@ -32,6 +32,17 @@ The new result directory contains `output.wav`, `resolved.json`, and
 it defaults to 512 frames and the effective value is recorded in
 `render.json`.
 
+The supported input matrix is mono or stereo PCM16, PCM24, PCM32, IEEE
+float32, or IEEE float64 WAV at 44.1, 48, or 96 kHz. Default builds emit
+canonical IEEE float32 WAV; `cmake --preset double` builds a renderer that
+emits canonical IEEE float64 WAV.
+
+The committed compatibility fixtures are reproducible:
+
+```bash
+python3 tests/fixtures/generate_wav_matrix.py
+```
+
 Pass a Requested Configuration with `--config`:
 
 ```json
