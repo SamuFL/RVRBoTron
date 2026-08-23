@@ -89,7 +89,10 @@ void validateWavHeader(const std::filesystem::path& path) {
     const auto chunkData = offset + 8;
     const auto chunkEnd = chunkData + chunkSize;
     const auto paddedEnd = chunkEnd + (chunkSize % 2);
-    if (chunkEnd > riffEnd || paddedEnd > fileSize) {
+    if (chunkEnd > riffEnd) {
+      throw std::runtime_error("malformed input WAV");
+    }
+    if (paddedEnd > fileSize) {
       throw std::runtime_error("truncated input WAV");
     }
 
