@@ -197,6 +197,10 @@ def identity_analysis(source, rendered, precision):
     for index, (source_sample, rendered_sample) in enumerate(
         zip(source_samples, rendered_samples)
     ):
+        if not (math.isfinite(source_sample) and math.isfinite(rendered_sample)):
+            raise ValueError(
+                f"identity comparison encountered non-finite sample at index {index}"
+            )
         error = abs(source_sample - rendered_sample)
         if source_sample != rendered_sample:
             differing_count += 1
