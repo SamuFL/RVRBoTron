@@ -45,7 +45,7 @@ if(RVRBOTRON_SAMPLE_DOUBLE)
 endif()
 
 add_library(rvrbotron_config
-  src/config/ConfigJson.cpp
+  src/config/ResolveConfig.cpp
   src/config/ResolvedConfigJson.cpp
 )
 
@@ -58,10 +58,26 @@ target_link_libraries(
   rvrbotron_config
   PUBLIC
     rvrbotron_dsp
+)
+target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
+
+add_library(rvrbotron_cli_support
+  src/cli/ConfigJson.cpp
+)
+
+target_include_directories(rvrbotron_cli_support
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(
+  rvrbotron_cli_support
+  PUBLIC
+    rvrbotron_config
   PRIVATE
     nlohmann_json::nlohmann_json
 )
-target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
+target_compile_features(rvrbotron_cli_support PUBLIC cxx_std_17)
 
 add_library(rvrbotron_wav
   src/io/WavStream.cpp
@@ -84,6 +100,7 @@ add_executable(rvrbotron
 target_link_libraries(
   rvrbotron
   PRIVATE
+    rvrbotron_cli_support
     rvrbotron_config
     rvrbotron_wav
 )

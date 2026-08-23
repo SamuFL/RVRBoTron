@@ -1,4 +1,5 @@
-#include "rvrbotron/config/ConfigJson.h"
+#include "rvrbotron/cli/ConfigJson.h"
+#include "rvrbotron/config/ResolveConfig.h"
 #include "rvrbotron/config/ResolvedConfigJson.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/io/WavStream.h"
@@ -7,8 +8,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -56,6 +60,27 @@ RenderArguments parseArguments(const int argc, char** argv) {
   return arguments;
 }
 
+std::string readText(const std::filesystem::path& path) {
+  std::ifstream input(path);
+  if (!input) {
+    throw std::runtime_error(
+        "could not open configuration: " + path.string());
+  }
+  return {
+      std::istreambuf_iterator<char>(input),
+      std::istreambuf_iterator<char>(),
+  };
+}
+
+void writeText(const std::filesystem::path& path,
+               const std::string_view contents) {
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("could not write " + path.filename().string());
+  }
+  output << contents;
+}
+
 void writeRenderMetadata(const std::filesystem::path& path,
                          const rvrbotron::io::WavInfo& info,
                          const std::uint64_t frameCount) {
@@ -90,12 +115,15 @@ void render(const RenderArguments& arguments) {
   }
 
   rvrbotron::dsp::ResolvedConfig config;
+  std::optional<std::string> rawRequest;
   if (!arguments.requestedConfig.empty()) {
-    config = rvrbotron::config::resolveRequestedConfig(
-        arguments.requestedConfig, info.sampleRate);
+    rawRequest = readText(arguments.requestedConfig);
+    const auto requested =
+        rvrbotron::cli::parseRequestedConfig(*rawRequest);
+    config = rvrbotron::config::resolveConfig(requested, info.sampleRate);
   } else if (!arguments.resolvedConfig.empty()) {
-    config =
-        rvrbotron::config::readResolvedConfig(arguments.resolvedConfig);
+    config = rvrbotron::cli::parseResolvedConfig(
+        readText(arguments.resolvedConfig));
     if (config.sampleRate != info.sampleRate) {
       throw std::runtime_error(
           "configuration error at /sampleRate: expected input sample rate " +
@@ -103,7 +131,8 @@ void render(const RenderArguments& arguments) {
           std::to_string(config.sampleRate));
     }
   } else {
-    config = rvrbotron::config::resolveDefaultConfig(info.sampleRate);
+    config =
+        rvrbotron::config::resolveConfig({}, info.sampleRate);
   }
 
   if (!std::filesystem::create_directories(arguments.output)) {
@@ -134,9 +163,8 @@ void render(const RenderArguments& arguments) {
 
   rvrbotron::config::writeResolvedConfig(
       arguments.output / "resolved.json", config);
-  if (!arguments.requestedConfig.empty()) {
-    std::filesystem::copy_file(
-        arguments.requestedConfig, arguments.output / "request.json");
+  if (rawRequest.has_value()) {
+    writeText(arguments.output / "request.json", *rawRequest);
   }
   writeRenderMetadata(
       arguments.output / "render.json", info, renderedFrames);
