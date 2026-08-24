@@ -38,9 +38,9 @@ Skipping the scaling compounds silently — four steps at N=8 would add 36 dB.
 
 ### Echo arithmetic and alignment
 
-One echo present in all N channels: the per-channel delays move it to N different times, then the matrix distributes every channel into every other, so each output channel holds all N times. One echo in, N out, per channel.
+One Echo path present in all N Channels branches through N per-channel delays before mixing. The step therefore creates N structural paths per incoming path. Timing collisions, zero matrix coefficients, or cancellation can make the number of Distinct arrivals smaller; that observable count belongs to analysis rather than the structural invariant.
 
-The output channels therefore share the **same set of echo times**. With Hadamard every entry has equal magnitude, so they differ only in sign. The echoes are **aligned across channels** again — which is why the next step's delay does the same job as this one's.
+With dense equal-magnitude Hadamard mixing, output Channels share the same set of arrival times and differ only in sign. Other valid matrices and timing collisions can reduce that overlap, so analysis reports an Alignment score rather than assuming perfect support equality for every N and matrix.
 
 Alignment is a property of the signal, not of the stage:
 
@@ -51,13 +51,13 @@ Stages 7 and 8 depend on this distinction.
 
 ### Choosing delay times
 
-Range [0, `lengthMs`]. `segmented-random` is the default: divide the range into N equal segments, pick one random value in each, one per channel. Approximately even spread with no regular pattern — velvet-noise tap placement applied across channels. Even spacing produces comb coloration; uniform random clumps.
+Range [0, `lengthMs`]. `segmented-random` is the default: partition the resolved integer sample positions into N non-empty segments and pick one value from each. `even` also resolves distinct sample positions. Both reject a step too short to provide N positions. `uniform-random` deliberately samples with replacement, so clumping and collisions remain part of that comparison.
 
 Segment ordering across channels is irrelevant, because the shuffle immediately follows.
 
 ### Why shuffle and polarity are separate from the matrix
 
-They're mathematically redundant — both are orthogonal matrices and could be folded into one precomputed matrix with identical arithmetic. They stay separate because **the mixing matrix is the same in every step while the shuffle and polarity pattern must differ in every step**, and folding hides that.
+They're mathematically redundant — both are orthogonal matrices and could be folded into one precomputed matrix with identical arithmetic. They stay separate because **a matrix of a given type is shared across steps while the shuffle and polarity pattern must differ in every step**, and folding hides that.
 
 The distinction is load-bearing. The normalised Sylvester–Hadamard matrix is symmetric and orthogonal, hence its own inverse: applied twice it returns the input. Consecutive steps with the same matrix are structurally self-cancelling, and only the intervening delays prevent literal cancellation. The residual regularity in the phase response is the metallic ring. Varying shuffle and polarity per step breaks the symmetry.
 
@@ -81,7 +81,7 @@ The distinction is load-bearing. The normalised Sylvester–Hadamard matrix is s
 | `delayStrategy` | `segmented-random` | Default. |
 | | `uniform-random` / `even` | Comparison and diagnostic. |
 | `mix` | `hadamard` | Default. Powers of two only. |
-| | `householder` / `random-orthogonal` | Any N. |
+| | `householder` / `random-orthogonal` | Any N. RandomOrthogonal is seeded and dense, without a Haar-uniformity claim. |
 | `shuffle` | `true` / `false` | `false` is an ablation. |
 | `polarity` | `seeded-random` / `none` | |
 
@@ -109,7 +109,9 @@ Members in signal order; reading the class should read as the diagram.
 
 ## What this forces on the architecture
 
-**Seeds derive positionally, not from a stream.** A single sequential RNG consumed as steps are constructed would mean that comparing a 3-step diffuser with a 4-step one also changes the delay times of the first three — four unrelated diffusers, and the plots would look fine. Each step's randomness must be a pure function of the global seed and the step index. Cheap now; retrofitting invalidates every existing render.
+**Seeds derive positionally, not from a shared stream.** A single sequential RNG consumed as steps are constructed would mean that comparing a 3-step diffuser with a 4-step one also changes the delay times of the first three — four unrelated diffusers, and the plots would look fine. Format version 1 uses domain-separated SplitMix64 derivation from the global seed, usage tag, and item indices; see [ADR-0002](../../../adr/0002-version-positional-random-resolution.md).
+
+RandomOrthogonal starts from a versioned, seeded dense matrix with values in [−1, 1], then applies deterministic Householder QR with a fixed sign convention. The resolved coefficient matrix is serialized; it is not regenerated when rendering from `resolved.json`.
 
 **Ablation is a first-class feature.** `shuffle: false`, `polarity: none`, and `delayStrategy: even` exist so their contributions can be heard and measured. Validation must permit deliberately bad reverbs.
 
@@ -119,8 +121,8 @@ Members in signal order; reading the class should read as the diagram.
 
 - **All-pass.** Energy out equals energy in for any N, strategy, and matrix.
 - **Matrix normalisation.** MMᵀ = I, not N·I. Test on random vectors, not on the construction.
-- **Echo multiplication.** An aligned impulse produces exactly N distinct echo times per output channel.
-- **Alignment.** Output echo times are identical across channels; with Hadamard only the sign differs.
+- **Echo multiplication.** Every incoming Echo path creates N structural paths; Distinct arrivals are measured after timing collisions and cancellation.
+- **Alignment.** Hadamard output has identical arrival support across Channels absent cancellation; other matrix cases are measured with Alignment score.
 - **Seed stability.** A step at index *i* is unaffected by how many steps precede or follow it.
 - **Hadamard involution.** Applying the matrix twice returns the input — documents why per-step shuffling exists, and fails if the construction is changed to something non-symmetric.
 - **No feedback.** One block and many blocks give bit-identical output.

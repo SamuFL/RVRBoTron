@@ -44,6 +44,20 @@ Configuration is processed in four phases, in this order:
 
 Validation is total: every rejection names the offending parameter and why. A research tool that fails with "invalid configuration" is worse than one that crashes.
 
+### Ordered stage data
+
+`composition.stages` is an ordered array of typed stage objects. Format version 1 preserves the empty array as the exact identity Composition established by the first milestone. For finite diffusion, the valid shapes are:
+
+```text
+[]
+[split, downmix]
+[split, diffuser, downmix]
+```
+
+Impossible ordering or signal dimensions are rejected rather than repaired implicitly. Stage objects use the `type` discriminator and do not require user-authored IDs while each type is unique in the Composition.
+
+When included stage fields are omitted, they resolve from the Reference configuration: N=8 duplicate Split, four Diffusion Steps over 300 ms with doubling distribution, segmented-random delays, Hadamard mixing, shuffle, seeded polarity, and select Downmix. This is an experimental baseline for one-axis sweeps, not a product preset. A non-empty diffusion Composition emits wet-only output in this milestone.
+
 ### Rules collected from the stages
 
 | Rule | Source |
@@ -72,11 +86,13 @@ One global seed. Every randomised quantity derives from it positionally — a pu
 
 This is what makes the step-count sweep mean anything: step 2 gets identical delays whether the chain has three steps or thirty. Retrofitting it invalidates every render already made.
 
+The positional derivation algorithm is part of the configuration-version contract; see [ADR-0002](../../../adr/0002-version-positional-random-resolution.md).
+
 ---
 
 ## resolved.json
 
-Every render emits its fully resolved configuration beside the audio: actual step lengths, per-channel delay times in samples and milliseconds, decay gains, shelf coefficients, tap arrival times, buffer sizes, and the config format version.
+Every render emits its fully resolved configuration beside the audio: input and output Channel counts, actual step lengths, per-channel delay times in samples and milliseconds, resolved permutations and polarity, every matrix coefficient, buffer sizes, and the config format version. Coefficients are serialized as binary64-round-trippable JSON numbers so one Resolved Configuration gives float and double DSP the same structure.
 
 Two reasons. Analysis needs to know what was built rather than what was requested — a doubling distribution over four steps is not something to recompute by hand when reading a plot weeks later. And a resolved configuration re-renders identically, which makes any past experiment reproducible without the original request file.
 
@@ -99,6 +115,10 @@ Reverb           : owns the stages, built from ResolvedConfig
 **Two-phase construction throughout.** Every stage takes resolved values and allocates in `configure`. No stage computes its own delay times, gains, or buffer sizes; those arrive already decided. This is what makes the allocation-free invariant checkable, and it means a stage can be tested with hand-written resolved values and no configuration machinery at all.
 
 **The config format is versioned from the first commit.** Format changes are certain, renders accumulate, and an unversioned `resolved.json` becomes unreadable the first time a field is renamed.
+
+**Research evidence stays outside sonic configuration.** `--capture-stages all` is a renderer option recorded in `render.json`, not part of Requested or Resolved Configuration. It writes manifested multi-Channel Stage captures through an optional capture-sink seam on `Reverb`; see [ADR-0003](../../../adr/0003-capture-internal-stage-evidence.md).
+
+**Finite response is drained automatically.** The renderer feeds silence for the resolved total Diffuser sample budget after source EOF. `render.json` keeps `frames` as output length and adds `inputFrames`; Stage captures share the final output timeline.
 
 ---
 

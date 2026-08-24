@@ -22,7 +22,9 @@ Consequence: which knobs eventually appear in the plugin is explicitly undecided
 
 **Determinism is mandatory.** Every randomised quantity derives from an explicit seed. The same renderer binary, sample precision, input, and configuration produce exactly the same decoded samples. Supported platform builds satisfy stage-specific numerical and measurement tolerances rather than universal bit identity; see [ADR-0001](../../adr/0001-cross-platform-reproducibility.md).
 
-**Measurement accompanies listening.** A measurement contradicting your ears is measuring the wrong thing; a preference you can't measure is an unfinished hypothesis.
+**Measurement accompanies listening.** A measurement contradicting your ears is measuring the wrong thing; a preference you can't measure is an unfinished hypothesis. Internal measurements use opt-in Stage captures so Python measures the actual C++ signal without reimplementing the DSP.
+
+**Performance is empirical.** A DSP benchmark measures processing-time distributions, missed real-time deadlines, DSP-owned storage, and process-memory change around `Reverb::process`. It is environment-qualified evidence, not deterministic Render Result analysis.
 
 **`dsp/` depends on nothing** outside the standard library. No file I/O, no JSON, no logging. This makes the iPlug2 lift a copy rather than a port.
 
@@ -36,11 +38,14 @@ Consequence: which knobs eventually appear in the plugin is explicitly undecided
 | **N** | Internal channel count. The most consequential structural parameter. |
 | **All-pass** | Output energy equals input energy. Energy may move between channels and in time; none is created or lost. The multi-channel generalisation of flat frequency response. |
 | **Orthogonal matrix** | A mixing matrix that is all-pass. All mixing matrices here are orthogonal. |
-| **Echo density** | Distinct echoes per second. Around 2000–4000/s they fuse into continuous sound. |
+| **Echo path** | One structural propagation route through the Diffuser. k steps over N Channels create Nᵏ paths before timing collisions or cancellation. |
+| **Distinct arrival** | One output time containing energy from one or more Echo paths after timing collisions and cancellation. |
+| **Echo density** | Distinct arrivals per second. Around 2000–4000/s they fuse into continuous sound. |
 | **Aligned** | All channels carry the same echo times, differing in sign or amplitude. The diffuser produces aligned output; the feedback loop destroys alignment. Determines whether channels may be summed. |
+| **Alignment score** | Pairwise overlap of active arrival times between Channels, independent of amplitude sign. |
 | **Coloration** | Timbral character imposed by the reverb itself, usually from regularity in the phase response. |
 | **RT60** | Time to decay 60 dB. An input the user requests; gain is solved from it. Defined at the undamped reference band. |
-| **Correlation** | Similarity between channels. 1.0 identical, 0.0 independent. Diffusion drives it toward 0. |
+| **Correlation** | Signed normalized zero-lag similarity: 1.0 identical, −1.0 polarity-inverted, 0.0 linearly independent. Diffusion drives its magnitude toward 0. |
 
 ### Mixing matrices
 
@@ -50,7 +55,7 @@ A first-class abstraction with a validity rule, because matrix choice is a resea
 |---|---|---|
 | **Householder** | any N | Mean of channels, subtracted twice from each. Cheap, mild mixing. Default in the feedback loop. |
 | **Hadamard** | powers of two | Maximum mixing, N·log₂N additions. Default in the diffuser. |
-| **RandomOrthogonal** | any N | Seeded. Tests whether maximum mixing is genuinely best. |
+| **RandomOrthogonal** | any N | Seeded dense orthogonal matrix, with no claim of Haar-uniform sampling. Tests whether maximum mixing is genuinely best. |
 
 Validity is enforced at configuration load, loudly. Hadamard at N=20 is a hard error — never a silent fallback, never a matrix that quietly isn't orthogonal.
 
