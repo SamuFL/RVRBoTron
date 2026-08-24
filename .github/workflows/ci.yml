@@ -12,11 +12,21 @@ concurrency:
 
 jobs:
   macos:
-    runs-on: macos-15
+    name: macOS ${{ matrix.architecture }} (${{ matrix.preset }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
       matrix:
-        preset: [default, double]
+        include:
+          - architecture: arm64
+            runner: macos-26
+            preset: default
+          - architecture: arm64
+            runner: macos-26
+            preset: double
+          - architecture: x86_64
+            runner: macos-26-intel
+            preset: default
 
     steps:
       - name: Checkout
@@ -35,6 +45,7 @@ jobs:
         run: ctest --preset ${{ matrix.preset }}
 
   windows:
+    name: Windows x86_64 (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 15
     strategy:

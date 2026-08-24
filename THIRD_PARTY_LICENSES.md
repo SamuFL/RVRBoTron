@@ -49,5 +49,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Vocal listening sample
+
+- Source: https://freesound.org/people/drotzruhn/sounds/439504/
+- Creator: drotzruhn
+- Adapted file: `samples/listening/VocalsHmmDry.wav`
+- License: Creative Commons CC0 1.0 Universal
+- License text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+The project owner edited the source for use as dry vocal listening material.
+CC0 permits copying, modification, distribution, and performance without
+permission. The source and creator are credited as a courtesy.
+
 Any future Signalsmith-derived code must retain its MIT license and copyright
 notice.
