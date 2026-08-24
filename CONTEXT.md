@@ -17,7 +17,7 @@ The boundary that expands mono or stereo input into N Channels.
 _Avoid_: Input adapter
 
 **Diffusion Step**:
-One energy-preserving delay, shuffle, polarity, and mixing operation that multiplies echo density.
+One energy-preserving delay, shuffle, polarity, and mixing operation that branches Echo paths.
 _Avoid_: Diffuser stage
 
 **Diffuser**:
@@ -48,13 +48,25 @@ _Avoid_: Output adapter
 A signal whose Channels carry the same echo times while differing in sign or amplitude.
 _Avoid_: Correlated
 
+**Alignment score**:
+The pairwise overlap of active arrival times between Channels, measured independently of amplitude sign.
+_Avoid_: Correlation
+
 **All-pass**:
 Energy-preserving behavior in which energy may move between Channels and through time but is neither created nor lost.
 _Avoid_: No coloration
 
 **Echo density**:
-The number of distinct echoes per second.
+The number of distinct arrivals per second in an impulse response.
 _Avoid_: Diffusion
+
+**Echo path**:
+One structural propagation route through the Diffuser; k Diffusion Steps over N Channels create N^k paths before timing collisions or cancellation.
+_Avoid_: Distinct arrival
+
+**Distinct arrival**:
+One output time containing energy from one or more Echo paths after timing collisions and cancellation.
+_Avoid_: Echo path
 
 **Coloration**:
 Timbral character imposed by regularity in the reverb's phase response.
@@ -65,7 +77,7 @@ The requested time for the reference band to decay by 60 dB.
 _Avoid_: Tail length
 
 **Correlation**:
-The measured similarity between Channels, from identical at 1.0 to independent at 0.0.
+The normalized zero-lag dot product between Channel signals: 1.0 identical, -1.0 polarity-inverted, and 0.0 linearly independent at zero lag.
 _Avoid_: Alignment
 
 **Requested configuration**:
@@ -76,6 +88,10 @@ _Avoid_: Resolved configuration
 The complete, versioned record of concrete values used to construct and reproduce a reverb.
 _Avoid_: Requested configuration
 
+**Reference configuration**:
+The documented experimental baseline resolved when requested stage settings are omitted, used to change one research axis at a time.
+_Avoid_: Product default, preset
+
 **Composition**:
 The configured set, order, and wiring of reverb stages together with controls that apply to the complete wet path.
 _Avoid_: Pipeline, graph
@@ -83,6 +99,14 @@ _Avoid_: Pipeline, graph
 **Render Result**:
 The immutable audio and configuration evidence produced by one render, together with append-only analyses derived from it.
 _Avoid_: Output folder
+
+**Stage capture**:
+Optional immutable multi-Channel audio evidence recorded at a named Composition boundary for measurement without changing the stereo output.
+_Avoid_: Output, debug dump
+
+**DSP benchmark**:
+An environment-qualified empirical measurement of processing time and DSP-owned memory around Reverb processing, excluding configuration, file I/O, and acoustic analysis.
+_Avoid_: Render Result analysis, deterministic metric
 
 **Repeat determinism**:
 Exact decoded-sample reproduction for the same renderer binary, sample precision, input, and configuration.

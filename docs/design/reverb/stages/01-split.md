@@ -20,7 +20,9 @@ An N×2 matrix (N×1 for mono input).
 
 **The energy trap.** Copying one signal into N channels gives N times the energy, but the channels are perfectly correlated — summed coherently later, that becomes N² times the power. Left unhandled, changing N changes output level and every N-sweep becomes uninterpretable.
 
-Convention: **scale by 1/√N.** Energy in equals energy out from the first stage, and sweeping N changes the sound without changing the level.
+For mono and stereo `duplicate`, distribute the selected mono signal at 1/√N. Stereo first selects `(L + R)/√2`; this intentionally discards the Side signal, so L = −R cancels. No rank-reducing stereo-to-mono map can preserve arbitrary stereo energy.
+
+For stereo-preserving strategies, N must be even. Each input feeds N/2 Channels at √(2/N), preserving the energy of L and R independently. The invariant is therefore precise: Split preserves the energy of the signal selected by its strategy and keeps level independent of N. It does not claim that strategies which discard source dimensions preserve them.
 
 **A measurement baseline.** At Split, inter-channel correlation is exactly 1.0 by construction — the state the diffuser exists to destroy. How fast it falls toward 0 through successive diffusion steps is a direct measure of diffusion quality, independent of listening. Worth building the correlation probe early.
 
@@ -40,10 +42,12 @@ Convention: **scale by 1/√N.** Energy in equals energy out from the first stag
 |---|---|---|
 | `channels` | ≥ 1 | N. The big sweep axis; constrains matrix choice downstream. |
 | `strategy` | `duplicate` | Summed to mono, copied to all channels. No position retention. |
-| | `stereo-halves` | L → first N/2, R → last N/2. Strongest position retention. |
-| | `stereo-interleave` | L → even, R → odd. Survives channel shuffling better. |
-| `normalisation` | `energy` | 1/√N. Default. |
-| | `unity` / `none` | Diagnostic. |
+| | `stereo-halves` | L → first N/2, R → last N/2. Even N only. Strongest position retention. |
+| | `stereo-interleave` | L → even, R → odd. Even N only. Survives channel shuffling better. |
+| `normalisation` | `energy` | Strategy-specific energy scaling. Default. |
+| | `none` | Diagnostic. |
+
+For mono input, every strategy resolves to the same mono duplication mapping. Keeping the requested strategy valid makes one experiment catalog reusable across mono and stereo material.
 
 ---
 
@@ -57,7 +61,7 @@ Convention: **scale by 1/√N.** Energy in equals energy out from the first stag
 
 Sweeping N to 20 doesn't work with Hadamard, and discovering that here settles three things:
 
-1. **Mixing matrices become a first-class abstraction with a validity rule.** Hadamard exists only for N = 1, 2, and multiples of 4, with the fast construction limited to powers of two. Householder works for any N. RandomOrthogonal comes almost free once the abstraction exists.
+1. **Mixing matrices become a first-class abstraction with a validity rule.** RVRBoTron's fast Hadamard implementation exists only for powers of two. Householder and RandomOrthogonal work for any N.
 2. **Validity is enforced at configuration load, loudly.** A silent fallback would produce audio that sounds plausible and is subtly wrong — the worst failure mode for a research tool.
 3. **N is runtime, not compile-time.** Fixed-capacity arrays with a runtime length keep processing allocation-free.
 
@@ -65,9 +69,9 @@ Sweeping N to 20 doesn't work with Hadamard, and discovering that here settles t
 
 ## Invariants
 
-- Energy out equals energy in under `normalisation: energy`, for any N and strategy.
+- Energy out equals the strategy-selected signal energy under `normalisation: energy`, for every valid N and strategy.
 - Inter-channel correlation at the output is 1.0 for `duplicate`.
-- Sweeping N changes the sound, not the level.
+- Sweeping N at a fixed strategy changes the sound, not the level.
 
 ---
 

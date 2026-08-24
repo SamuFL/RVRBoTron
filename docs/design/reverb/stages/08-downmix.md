@@ -82,6 +82,12 @@ Downmix
 
 A full chain therefore has **two downmix instances**, one for the tail and one for the early reflections, with different valid strategy sets. Better than one instance with a hidden branch.
 
+### Milestone 2 diagnostic Downmix
+
+Before the Feedback Loop makes Channels unaligned, the finite Diffuser needs a deliberately narrow listening output. The Milestone 2 Downmix permits only `select`: Channel 0 to left and Channel 1 to right, compensated by √(N/2). At N=1 it duplicates Channel 0 to stereo at 1/√2. This is expected-energy diagnostic output, not an all-pass claim.
+
+The complete Stage 8 strategies, width rotation, and user-selectable normalization remain deferred until spatial output is the active research subject. Exact N-Channel energy and Alignment evidence comes from Stage captures rather than from the diagnostic stereo output.
+
 ---
 
 ## Invariants
