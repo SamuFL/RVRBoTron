@@ -76,13 +76,14 @@ The immutable Render Result contains:
 | `request.json` | Exact bytes of the user-authored request; present for requested renders |
 | `resolved.json` | Complete Resolved Configuration used by the DSP |
 | `render.json` | Input provenance, renderer facts, selected precision, block size, and audio facts |
+| `captures/` | Optional manifested N-Channel Stage captures from `--capture-stages all` |
 | `analysis/` | Append-only, versioned analysis artifacts added after rendering |
 
 `render.json` records the input filename and SHA-256, renderer version,
 platform, architecture, sample precision, block size, configuration input
-mode, sample rate, channel count, and frame count. It intentionally contains
-no timestamp, host or user identity, full input path, or source-tree
-fingerprint.
+mode, sample rate, output channel count, input frame count, and output frame
+count. It intentionally contains no timestamp, host or user identity, full
+input path, or source-tree fingerprint.
 
 Rendering builds the evidence in a temporary sibling and publishes it
 atomically. Choose a fresh output path for every render because an existing
@@ -98,6 +99,124 @@ build/default/rvrbotron render \
   --resolved build/requested-result/resolved.json \
   --output build/resolved-result
 ```
+
+### Render the first Reference Diffusion Step
+
+Format version 1 also accepts the ordered
+`[split, diffuser, downmix]` Composition shape. The current tracer supports
+one Hadamard Diffusion Step and select Downmix. Diagnostic ablations support
+`normalisation: "none"`, `delayStrategy: "even"`, `shuffle: false`, and
+`polarity: "none"`:
+
+```json
+{
+  "formatVersion": 1,
+  "seed": 42,
+  "composition": {
+    "stages": [
+      {
+        "type": "split",
+        "channels": 8,
+        "strategy": "duplicate",
+        "normalisation": "energy"
+      },
+      {
+        "type": "diffuser",
+        "steps": 1,
+        "totalMs": 40,
+        "distribution": "even",
+        "step": {
+          "delayStrategy": "segmented-random",
+          "mix": "hadamard",
+          "shuffle": true,
+          "polarity": "seeded-random"
+        }
+      },
+      {
+        "type": "downmix",
+        "strategy": "select",
+        "normalisation": "energy"
+      }
+    ]
+  }
+}
+```
+
+Non-empty diffusion renders are stereo and wet-only. The renderer drains
+silence for the resolved finite Diffuser budget, so `render.json` distinguishes
+`inputFrames` from the longer `frames`.
+
+Capture the N-Channel Split and cumulative Diffusion Step without changing
+`output.wav`:
+
+```bash
+build/default/rvrbotron render \
+  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --config request.json \
+  --capture-stages all \
+  --output build/diffusion-result
+```
+
+The versioned `all-v1` capture profile writes canonical WAVs under
+`captures/`. `render.json` manifests each boundary with its stable path,
+SHA-256, sample rate, Channel count, and complete output-timeline frame count.
+
+### Experiment with a Diffuser Configuration
+
+Every field below is optional; the resolver substitutes the listed default
+for anything omitted. Unknown fields anywhere in the request are rejected.
+Render a curated listening sample (see
+[Validate a Listening Sample Locally](#validate-a-listening-sample-locally))
+through a modified `request.json` to hear the effect of each change:
+
+```bash
+build/default/rvrbotron render \
+  --input samples/listening/PianoDry.wav \
+  --config request.json \
+  --output build/listening-diffusion-result
+```
+
+#### Top level
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `formatVersion` | integer | `1` | Only `1` is supported. |
+| `seed` | unsigned 64-bit integer | `0` | Drives every seeded-random derivation (delays, shuffle, polarity). |
+| `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`. |
+
+#### `split` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `channels` | unsigned 32-bit integer (N) | `8` |
+| `strategy` | `"duplicate"` | `"duplicate"` (only option) |
+| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+#### `diffuser` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `steps` | unsigned 32-bit integer | `1` (only `1` is currently accepted) |
+| `totalMs` | finite number | `40` |
+| `distribution` | `"even"` \| `"doubling"` | `"even"` |
+| `step.delayStrategy` | `"segmented-random"` \| `"even"` | `"segmented-random"` |
+| `step.mix` | `"hadamard"` | `"hadamard"` (only option) |
+| `step.shuffle` | boolean | `true` |
+| `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` |
+
+#### `downmix` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `strategy` | `"select"` | `"select"` (only option) |
+| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+`delayStrategy: "even"`, `shuffle: false`, `polarity: "none"`, and
+`normalisation: "none"` are diagnostic ablations for isolating one DSP
+behavior at a time; they are not intended as listening presets.
+
+Keep this table in sync whenever a request field, its accepted values, or its
+default changes.
 
 ### Analyze the Render Result
 
@@ -120,6 +239,22 @@ The optional source comparison runs only when the source SHA-256 matches
 absolute error, and the first mismatch. Analysis artifacts are append-only:
 repeating identical analysis succeeds without rewriting, while different
 content for the same analyzer version is rejected.
+
+For a captured finite Diffuser, add the separate diffusion artifact:
+
+```bash
+python3 tools/analyze_diffusion.py \
+  build/diffusion-result \
+  --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+```
+
+`analysis/diffusion-v1.json` verifies source and Stage-capture provenance,
+requires `inputFrames + resolved diffuser.totalSamples` frames in the output
+and every capture, measures the actual captured Split and cumulative Diffusion
+Step energies (including each step's relative error from Split), and measures
+Hadamard orthogonality from the serialized resolved coefficients. Python does
+not reconstruct Split mapping or DSP sample precision. Publication is
+append-only and idempotent.
 
 ### Validate a Listening Sample Locally
 

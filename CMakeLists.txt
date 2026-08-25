@@ -30,7 +30,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 add_library(rvrbotron_dsp
+  src/dsp/DiffusionStep.cpp
+  src/dsp/Diffuser.cpp
+  src/dsp/Downmix.cpp
+  src/dsp/MixMatrix.cpp
   src/dsp/Reverb.cpp
+  src/dsp/Split.cpp
+  src/dsp/SplitStrategy.cpp
 )
 
 target_include_directories(rvrbotron_dsp
@@ -45,6 +51,7 @@ if(RVRBOTRON_SAMPLE_DOUBLE)
 endif()
 
 add_library(rvrbotron_config
+  src/config/PositionalRandom.cpp
   src/config/ResolveConfig.cpp
   src/config/ResolvedConfigJson.cpp
 )
@@ -58,6 +65,8 @@ target_link_libraries(
   rvrbotron_config
   PUBLIC
     rvrbotron_dsp
+  PRIVATE
+    nlohmann_json::nlohmann_json
 )
 target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
 

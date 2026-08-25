@@ -168,6 +168,7 @@ def main():
         "sampleRate": 48000,
         "channels": 1,
         "frames": 17,
+        "inputFrames": 17,
     }
     if metadata != expected_metadata:
         raise AssertionError(f"unexpected render metadata: {metadata}")
