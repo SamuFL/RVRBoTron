@@ -161,6 +161,63 @@ The versioned `all-v1` capture profile writes canonical WAVs under
 `captures/`. `render.json` manifests each boundary with its stable path,
 SHA-256, sample rate, Channel count, and complete output-timeline frame count.
 
+### Experiment with a Diffuser Configuration
+
+Every field below is optional; the resolver substitutes the listed default
+for anything omitted. Unknown fields anywhere in the request are rejected.
+Render a curated listening sample (see
+[Validate a Listening Sample Locally](#validate-a-listening-sample-locally))
+through a modified `request.json` to hear the effect of each change:
+
+```bash
+build/default/rvrbotron render \
+  --input samples/listening/PianoDry.wav \
+  --config request.json \
+  --output build/listening-diffusion-result
+```
+
+#### Top level
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `formatVersion` | integer | `1` | Only `1` is supported. |
+| `seed` | unsigned 64-bit integer | `0` | Drives every seeded-random derivation (delays, shuffle, polarity). |
+| `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`. |
+
+#### `split` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `channels` | unsigned 32-bit integer (N) | `8` |
+| `strategy` | `"duplicate"` | `"duplicate"` (only option) |
+| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+#### `diffuser` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `steps` | unsigned 32-bit integer | `1` (only `1` is currently accepted) |
+| `totalMs` | finite number | `40` |
+| `distribution` | `"even"` \| `"doubling"` | `"even"` |
+| `step.delayStrategy` | `"segmented-random"` \| `"even"` | `"segmented-random"` |
+| `step.mix` | `"hadamard"` | `"hadamard"` (only option) |
+| `step.shuffle` | boolean | `true` |
+| `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` |
+
+#### `downmix` stage
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `strategy` | `"select"` | `"select"` (only option) |
+| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+`delayStrategy: "even"`, `shuffle: false`, `polarity: "none"`, and
+`normalisation: "none"` are diagnostic ablations for isolating one DSP
+behavior at a time; they are not intended as listening presets.
+
+Keep this table in sync whenever a request field, its accepted values, or its
+default changes.
+
 ### Analyze the Render Result
 
 Analysis is a separate Python command and is never required for rendering:
