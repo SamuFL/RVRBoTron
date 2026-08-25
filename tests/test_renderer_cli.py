@@ -130,6 +130,7 @@ def main():
         "sampleRate": 48000,
         "channels": 1,
         "frames": 32,
+        "inputFrames": 32,
         "blockSize": 512,
     }
     if render != expected_render:
@@ -181,6 +182,8 @@ def main():
             raise AssertionError("Render Result did not preserve sample rate")
         if stereo_render["frames"] != 7:
             raise AssertionError("Render Result did not preserve odd frame count")
+        if stereo_render["inputFrames"] != 7:
+            raise AssertionError("Render Result did not record input frame count")
         if stereo_render["blockSize"] != block_size:
             raise AssertionError("Render Result did not record the block size")
 

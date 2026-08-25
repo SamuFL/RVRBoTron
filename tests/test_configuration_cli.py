@@ -35,6 +35,9 @@ def require_failure(completed, expected_error: str, output: Path):
 def main():
     renderer = Path(sys.argv[1])
     fixture = Path(sys.argv[2])
+    stereo_fixture = (
+        fixture.parent / "matrix" / "identity-stereo-48000-float32.wav"
+    )
     workspace = Path(sys.argv[3])
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
@@ -134,6 +137,483 @@ def main():
     if (empty_result / "request.json").read_text() != "{}\n":
         raise AssertionError("empty raw request was not preserved")
 
+    omitted_stages_request = workspace / "omitted-stages-request.json"
+    omitted_stages_result = workspace / "omitted-stages-result"
+    omitted_stages_request.write_text('{"composition": {}}\n')
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            omitted_stages_request,
+            "--output",
+            omitted_stages_result,
+        )
+    )
+    if (omitted_stages_result / "output.wav").read_bytes() != (
+        empty_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("omitted stages were not exact identity")
+    if json.loads((omitted_stages_result / "resolved.json").read_text()) != {
+        "formatVersion": 1,
+        "seed": 0,
+        "sampleRate": 48000,
+        "composition": {"stages": []},
+    }:
+        raise AssertionError("omitted stages did not resolve to empty identity")
+
+    reference_request = workspace / "reference-request.json"
+    reference_result = workspace / "reference-result"
+    reference_rerender = workspace / "reference-rerender"
+    reference_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 8,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 1,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "hadamard",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            reference_request,
+            "--output",
+            reference_result,
+        )
+    )
+    reference_resolved = json.loads(
+        (reference_result / "resolved.json").read_text()
+    )
+    stages = reference_resolved["composition"]["stages"]
+    if stages[0] != {
+        "type": "split",
+        "inputChannels": 1,
+        "channels": 8,
+        "strategy": "duplicate",
+        "normalisation": "energy",
+        "sourceGain": 1.0,
+        "channelGain": 0.35355339059327373,
+    }:
+        raise AssertionError(f"unexpected resolved Split: {stages[0]}")
+    if stages[1]["type"] != "diffuser" or stages[1]["totalSamples"] != 48:
+        raise AssertionError(f"unexpected resolved Diffuser: {stages[1]}")
+    if len(stages[1]["steps"]) != 1:
+        raise AssertionError("reference request did not resolve one Diffusion Step")
+    step = stages[1]["steps"][0]
+    if step["delaysSamples"] != [5, 8, 16, 22, 27, 32, 41, 44]:
+        raise AssertionError(f"unexpected segmented delays: {step}")
+    if len(set(step["delaysSamples"])) != 8:
+        raise AssertionError("segmented-random delays are not distinct")
+    if step["permutation"] != [2, 4, 0, 3, 7, 6, 1, 5]:
+        raise AssertionError(f"unexpected deterministic shuffle: {step}")
+    if step["polaritySigns"] != [1, 1, -1, 1, -1, -1, 1, 1]:
+        raise AssertionError(f"unexpected deterministic polarity: {step}")
+    hadamard_scale = 0.35355339059327373
+    expected_hadamard = [
+        [hadamard_scale, hadamard_scale, hadamard_scale, hadamard_scale,
+         hadamard_scale, hadamard_scale, hadamard_scale, hadamard_scale],
+        [hadamard_scale, -hadamard_scale, hadamard_scale, -hadamard_scale,
+         hadamard_scale, -hadamard_scale, hadamard_scale, -hadamard_scale],
+        [hadamard_scale, hadamard_scale, -hadamard_scale, -hadamard_scale,
+         hadamard_scale, hadamard_scale, -hadamard_scale, -hadamard_scale],
+        [hadamard_scale, -hadamard_scale, -hadamard_scale, hadamard_scale,
+         hadamard_scale, -hadamard_scale, -hadamard_scale, hadamard_scale],
+        [hadamard_scale, hadamard_scale, hadamard_scale, hadamard_scale,
+         -hadamard_scale, -hadamard_scale, -hadamard_scale, -hadamard_scale],
+        [hadamard_scale, -hadamard_scale, hadamard_scale, -hadamard_scale,
+         -hadamard_scale, hadamard_scale, -hadamard_scale, hadamard_scale],
+        [hadamard_scale, hadamard_scale, -hadamard_scale, -hadamard_scale,
+         -hadamard_scale, -hadamard_scale, hadamard_scale, hadamard_scale],
+        [hadamard_scale, -hadamard_scale, -hadamard_scale, hadamard_scale,
+         -hadamard_scale, hadamard_scale, hadamard_scale, -hadamard_scale],
+    ]
+    if step["matrix"] != expected_hadamard:
+        raise AssertionError(f"unexpected normalized Hadamard: {step['matrix']}")
+    if stages[2] != {
+        "type": "downmix",
+        "inputChannels": 8,
+        "outputChannels": 2,
+        "strategy": "select",
+        "normalisation": "energy",
+        "compensation": 2.0,
+    }:
+        raise AssertionError(f"unexpected resolved Downmix: {stages[2]}")
+
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            reference_result / "resolved.json",
+            "--output",
+            reference_rerender,
+        )
+    )
+    if (reference_rerender / "resolved.json").read_bytes() != (
+        reference_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved diffusion rerender changed configuration")
+    if (reference_rerender / "output.wav").read_bytes() != (
+        reference_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved diffusion rerender changed output")
+
+    stereo_result = workspace / "stereo-reference-result"
+    stereo_rerender = workspace / "stereo-reference-rerender"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            stereo_fixture,
+            "--config",
+            reference_request,
+            "--output",
+            stereo_result,
+        )
+    )
+    stereo_resolved = json.loads(
+        (stereo_result / "resolved.json").read_text()
+    )
+    stereo_split = stereo_resolved["composition"]["stages"][0]
+    if stereo_split["sourceGain"] != 0.7071067811865475:
+        raise AssertionError(
+            f"stereo source selection gain was not resolved: {stereo_split}"
+        )
+    if stereo_split["channelGain"] != 0.35355339059327373:
+        raise AssertionError(
+            f"stereo Channel gain was not resolved: {stereo_split}"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            stereo_fixture,
+            "--resolved",
+            stereo_result / "resolved.json",
+            "--output",
+            stereo_rerender,
+        )
+    )
+    if (stereo_rerender / "resolved.json").read_bytes() != (
+        stereo_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved stereo Split changed configuration")
+    if (stereo_rerender / "output.wav").read_bytes() != (
+        stereo_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved stereo Split changed output")
+
+    invalid_stereo_source = json.loads(json.dumps(stereo_resolved))
+    invalid_stereo_source["composition"]["stages"][0]["sourceGain"] = 1.0
+    invalid_stereo_source_path = workspace / "invalid-stereo-source.json"
+    invalid_stereo_source_result = workspace / "invalid-stereo-source-result"
+    invalid_stereo_source_path.write_text(json.dumps(invalid_stereo_source))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            stereo_fixture,
+            "--resolved",
+            invalid_stereo_source_path,
+            "--output",
+            invalid_stereo_source_result,
+        ),
+        "/composition/stages/0/sourceGain: "
+        "expected gain derived from Split input mapping",
+        invalid_stereo_source_result,
+    )
+
+    ablation_request = workspace / "ablation-request.json"
+    ablation_result = workspace / "ablation-result"
+    ablation_rerender = workspace / "ablation-rerender"
+    ablation_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 4,
+                            "strategy": "duplicate",
+                            "normalisation": "none",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 0.125,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "even",
+                                "mix": "hadamard",
+                                "shuffle": False,
+                                "polarity": "none",
+                            },
+                        },
+                        {
+                            "type": "downmix",
+                            "strategy": "select",
+                            "normalisation": "none",
+                        },
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            ablation_request,
+            "--output",
+            ablation_result,
+        )
+    )
+    ablation_resolved = json.loads(
+        (ablation_result / "resolved.json").read_text()
+    )
+    ablation_stages = ablation_resolved["composition"]["stages"]
+    if ablation_stages[0]["normalisation"] != "none":
+        raise AssertionError("Split ablation did not round-trip")
+    if ablation_stages[0]["sourceGain"] != 1.0:
+        raise AssertionError("mono source selection gain changed level")
+    if ablation_stages[0]["channelGain"] != 1.0:
+        raise AssertionError("Split none normalisation changed level")
+    ablation_step = ablation_stages[1]["steps"][0]
+    if ablation_step["delayStrategy"] != "even":
+        raise AssertionError("even delay strategy did not round-trip")
+    if ablation_step["delaysSamples"] != [0, 2, 4, 6]:
+        raise AssertionError(f"unexpected even delays: {ablation_step}")
+    if ablation_step["shuffle"] is not False:
+        raise AssertionError("shuffle false did not round-trip")
+    if ablation_step["permutation"] != [0, 1, 2, 3]:
+        raise AssertionError("shuffle false did not resolve identity")
+    if ablation_step["polarity"] != "none":
+        raise AssertionError("none polarity did not round-trip")
+    if ablation_step["polaritySigns"] != [1, 1, 1, 1]:
+        raise AssertionError("none polarity did not resolve all positive")
+    if ablation_stages[2]["normalisation"] != "none":
+        raise AssertionError("Downmix ablation did not round-trip")
+    if ablation_stages[2]["compensation"] != 1.0:
+        raise AssertionError("Downmix none normalisation compensated select")
+
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            ablation_result / "resolved.json",
+            "--output",
+            ablation_rerender,
+        )
+    )
+    if (ablation_rerender / "resolved.json").read_bytes() != (
+        ablation_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved ablations changed configuration")
+    if (ablation_rerender / "output.wav").read_bytes() != (
+        ablation_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved ablations changed output")
+
+    single_channel_request = workspace / "single-channel-ablation-request.json"
+    single_channel_result = workspace / "single-channel-ablation-result"
+    single_channel_document = json.loads(ablation_request.read_text())
+    single_channel_document["composition"]["stages"][0]["channels"] = 1
+    single_channel_document["composition"]["stages"][1]["totalMs"] = 1
+    single_channel_request.write_text(
+        json.dumps(single_channel_document, indent=2) + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            single_channel_request,
+            "--output",
+            single_channel_result,
+        )
+    )
+    single_channel_stages = json.loads(
+        (single_channel_result / "resolved.json").read_text()
+    )["composition"]["stages"]
+    if single_channel_stages[1]["steps"][0]["delaysSamples"] != [0]:
+        raise AssertionError("single-Channel even delay is not deterministic")
+    if single_channel_stages[2]["compensation"] != 1.0:
+        raise AssertionError("single-Channel Downmix none changed select level")
+
+    invalid_ablation_resolved = []
+    invalid_source_gain = json.loads(json.dumps(ablation_resolved))
+    invalid_source_gain["composition"]["stages"][0]["sourceGain"] = 0.5
+    invalid_ablation_resolved.append(
+        (
+            invalid_source_gain,
+            "/composition/stages/0/sourceGain: "
+            "expected gain derived from Split input mapping",
+        )
+    )
+    invalid_split_gain = json.loads(json.dumps(ablation_resolved))
+    invalid_split_gain["composition"]["stages"][0]["channelGain"] = 0.5
+    invalid_ablation_resolved.append(
+        (
+            invalid_split_gain,
+            "/composition/stages/0/channelGain: "
+            "expected gain derived from Split normalisation",
+        )
+    )
+    invalid_even_delays = json.loads(json.dumps(ablation_resolved))
+    invalid_even_step = invalid_even_delays["composition"]["stages"][1][
+        "steps"
+    ][0]
+    invalid_even_step["delaysSamples"][1] = 1
+    invalid_even_step["delaysMs"][1] = 1000.0 / 48000.0
+    invalid_even_step["bufferSizes"][1] = 1
+    invalid_ablation_resolved.append(
+        (
+            invalid_even_delays,
+            "/composition/stages/1/steps/0/delaysSamples: "
+            "even requires delays distributed over the available positions",
+        )
+    )
+    invalid_identity = json.loads(json.dumps(ablation_resolved))
+    invalid_identity["composition"]["stages"][1]["steps"][0]["permutation"] = [
+        1,
+        0,
+        2,
+        3,
+    ]
+    invalid_ablation_resolved.append(
+        (
+            invalid_identity,
+            "/composition/stages/1/steps/0/permutation: "
+            "shuffle false requires the identity permutation",
+        )
+    )
+    invalid_polarity = json.loads(json.dumps(ablation_resolved))
+    invalid_polarity["composition"]["stages"][1]["steps"][0][
+        "polaritySigns"
+    ][0] = -1
+    invalid_ablation_resolved.append(
+        (
+            invalid_polarity,
+            "/composition/stages/1/steps/0/polaritySigns: "
+            "polarity none requires all +1 signs",
+        )
+    )
+    invalid_hadamard = json.loads(json.dumps(ablation_resolved))
+    invalid_hadamard["composition"]["stages"][1]["steps"][0]["matrix"] = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    invalid_ablation_resolved.append(
+        (
+            invalid_hadamard,
+            "/composition/stages/1/steps/0/matrix: "
+            "expected the normalized canonical Sylvester-Hadamard matrix",
+        )
+    )
+    invalid_downmix_gain = json.loads(json.dumps(ablation_resolved))
+    invalid_downmix_gain["composition"]["stages"][2]["compensation"] = 2.0
+    invalid_ablation_resolved.append(
+        (
+            invalid_downmix_gain,
+            "/composition/stages/2/compensation: "
+            "expected gain derived from Downmix normalisation",
+        )
+    )
+    for index, (document, expected_error) in enumerate(
+        invalid_ablation_resolved
+    ):
+        path = workspace / f"invalid-ablation-resolved-{index}.json"
+        output = workspace / f"invalid-ablation-result-{index}"
+        path.write_text(json.dumps(document))
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--resolved",
+                path,
+                "--output",
+                output,
+            ),
+            expected_error,
+            output,
+        )
+
+    mismatched_shape_result = workspace / "mismatched-shape-result"
+    mismatched_shape = run_renderer(
+        renderer,
+        "--input",
+        stereo_fixture,
+        "--resolved",
+        reference_result / "resolved.json",
+        "--output",
+        mismatched_shape_result,
+    )
+    require_failure(
+        mismatched_shape,
+        "invalid_configuration at /composition/stages/0/inputChannels: "
+        "expected input Channel count 1, got 2",
+        mismatched_shape_result,
+    )
+
+    invalid_channels_request = json.loads(reference_request.read_text())
+    invalid_channels_request["composition"]["stages"][0]["channels"] = 0
+    invalid_steps_request = json.loads(reference_request.read_text())
+    invalid_steps_request["composition"]["stages"][1]["steps"] = 2
+    invalid_total_request = json.loads(reference_request.read_text())
+    invalid_total_request["composition"]["stages"][1]["totalMs"] = 0
+    sub_sample_request = json.loads(reference_request.read_text())
+    sub_sample_request["composition"]["stages"][1]["totalMs"] = 0.000001
+    oversized_total_request = json.loads(reference_request.read_text())
+    oversized_total_request["composition"]["stages"][1]["totalMs"] = 1e300
+    short_delay_request = json.loads(reference_request.read_text())
+    short_delay_request["composition"]["stages"][1]["totalMs"] = 0.1
+    non_power_of_two_request = json.loads(reference_request.read_text())
+    non_power_of_two_request["composition"]["stages"][0]["channels"] = 3
+    unsafe_format_request = json.loads(reference_request.read_text())
+    unsafe_format_request["formatVersion"] = 2
+    unsafe_format_request["composition"]["stages"][0]["channels"] = 1073741824
+    unsafe_format_request["composition"]["stages"][1]["totalMs"] = 30000000
     invalid_requests = [
         (
             '{"unexpected": true}',
@@ -148,12 +628,55 @@ def main():
             "invalid_configuration at /formatVersion: expected integer 1",
         ),
         (
+            json.dumps(unsafe_format_request),
+            "invalid_configuration at /formatVersion: expected integer 1",
+        ),
+        (
             '{"seed": -1}',
             "invalid_configuration at /seed: expected unsigned 64-bit integer",
         ),
         (
             '{"composition": {"stages": [{}]}}',
-            "invalid_configuration at /composition/stages: expected empty array",
+            "invalid_configuration at /composition/stages/0/type: required field is missing",
+        ),
+        (
+            '{"composition": {"stages": [{"type": "downmix"}, {"type": "split"}]}}',
+            "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
+        ),
+        (
+            json.dumps(invalid_channels_request),
+            "invalid_configuration at /composition/stages/0/channels: "
+            "expected value greater than zero",
+        ),
+        (
+            json.dumps(invalid_steps_request),
+            "invalid_configuration at /composition/stages/1/steps: "
+            "the first diffusion slice requires exactly one step",
+        ),
+        (
+            json.dumps(invalid_total_request),
+            "invalid_configuration at /composition/stages/1/totalMs: "
+            "expected value greater than zero",
+        ),
+        (
+            json.dumps(sub_sample_request),
+            "invalid_configuration at /composition/stages/1/totalMs: "
+            "resolved sample budget must be at least one sample",
+        ),
+        (
+            json.dumps(oversized_total_request),
+            "invalid_configuration at /composition/stages/1/totalMs: "
+            "resolved sample budget is too large",
+        ),
+        (
+            json.dumps(short_delay_request),
+            "invalid_configuration at /composition/stages/1/totalMs: "
+            "delay strategy requires at least one sample position per Channel",
+        ),
+        (
+            json.dumps(non_power_of_two_request),
+            "invalid_configuration at /composition/stages/1/step/mix: "
+            "hadamard requires a power-of-two Channel count",
         ),
         (
             '{"seed": ',

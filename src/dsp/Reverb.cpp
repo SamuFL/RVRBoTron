@@ -1,14 +1,129 @@
 #include "rvrbotron/dsp/Reverb.h"
 
+#include "rvrbotron/dsp/Diffuser.h"
+#include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/Split.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <variant>
+#include <vector>
+
 namespace rvrbotron::dsp {
 
-Reverb::Reverb(const ResolvedConfig&) noexcept {}
+struct Reverb::Implementation final : DiffuserCaptureSink {
+  bool identity = true;
+  std::size_t inputChannels = 0;
+  std::size_t outputChannels = 0;
+  std::size_t channels = 0;
+  std::uint64_t tailFrames = 0;
+  StageCaptureSink* captureSink = nullptr;
 
-void Reverb::process(Sample* const*,
-                     const std::size_t channelCount,
+  std::unique_ptr<Split> split;
+  std::unique_ptr<Diffuser> diffuser;
+  std::unique_ptr<Downmix> downmix;
+
+  std::vector<Sample> splitValues;
+  std::vector<Sample> diffusionValues;
+
+  void captureDiffusionStepFrame(
+      const std::uint32_t index,
+      const Sample* const values,
+      const std::size_t channelCount) noexcept override {
+    if (captureSink != nullptr) {
+      captureSink->captureFrame(
+          StageCaptureBoundary::diffusionStep,
+          index,
+          values,
+          channelCount);
+    }
+  }
+};
+
+Reverb::Reverb(const ResolvedConfig& config,
+               StageCaptureSink* const captureSink)
+    : implementation_(std::make_unique<Implementation>()) {
+  auto& state = *implementation_;
+  state.captureSink = captureSink;
+  if (config.composition.stages.empty()) {
+    return;
+  }
+
+  const auto& split =
+      std::get<ResolvedSplit>(config.composition.stages[0]);
+  const auto& diffuser =
+      std::get<ResolvedDiffuser>(config.composition.stages[1]);
+  const auto& downmix =
+      std::get<ResolvedDownmix>(config.composition.stages[2]);
+
+  state.identity = false;
+  state.inputChannels = split.inputChannels;
+  state.outputChannels = downmix.outputChannels;
+  state.channels = split.channels;
+  state.split = std::make_unique<Split>(split);
+  state.diffuser = std::make_unique<Diffuser>(diffuser);
+  state.tailFrames = state.diffuser->totalSamples();
+  state.downmix = std::make_unique<Downmix>(downmix);
+  state.splitValues.resize(state.channels);
+  state.diffusionValues.resize(state.channels);
+}
+
+Reverb::~Reverb() = default;
+Reverb::Reverb(Reverb&&) noexcept = default;
+Reverb& Reverb::operator=(Reverb&&) noexcept = default;
+
+void Reverb::process(const Sample* const* inputs,
+                     const std::size_t inputChannelCount,
+                     Sample* const* outputs,
+                     const std::size_t outputChannelCount,
                      const std::size_t frameCount) noexcept {
-  static_cast<void>(channelCount);
-  static_cast<void>(frameCount);
+  auto& state = *implementation_;
+  if (state.identity) {
+    const auto channels = std::min(inputChannelCount, outputChannelCount);
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+      std::copy_n(inputs[channel], frameCount, outputs[channel]);
+    }
+    return;
+  }
+
+  if (inputChannelCount != state.inputChannels ||
+      outputChannelCount != state.outputChannels) {
+    for (std::size_t channel = 0; channel < outputChannelCount; ++channel) {
+      std::fill_n(outputs[channel], frameCount, Sample{0});
+    }
+    return;
+  }
+
+  for (std::size_t frame = 0; frame < frameCount; ++frame) {
+    state.split->processFrame(inputs, frame, state.splitValues.data());
+    if (state.captureSink != nullptr) {
+      state.captureSink->captureFrame(
+          StageCaptureBoundary::split,
+          0,
+          state.splitValues.data(),
+          state.channels);
+    }
+
+    state.diffuser->processFrame(
+        state.splitValues.data(),
+        state.diffusionValues.data(),
+        state.captureSink != nullptr ? &state : nullptr);
+
+    state.downmix->processFrame(
+        state.diffusionValues.data(), outputs, frame);
+  }
+}
+
+std::size_t Reverb::inputChannelCount() const noexcept {
+  return implementation_->inputChannels;
+}
+
+std::size_t Reverb::outputChannelCount() const noexcept {
+  return implementation_->outputChannels;
+}
+
+std::uint64_t Reverb::finiteTailFrames() const noexcept {
+  return implementation_->tailFrames;
 }
 
 } // namespace rvrbotron::dsp

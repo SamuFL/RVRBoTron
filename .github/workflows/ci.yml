@@ -44,6 +44,15 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      - name: Collect diffusion tolerance evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: diffusion-${{ matrix.architecture }}-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/render.json
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/resolved.json
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/analysis/diffusion-v1.json
+
   windows:
     name: Windows x86_64 (${{ matrix.preset }})
     runs-on: windows-2022
@@ -67,3 +76,12 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+
+      - name: Collect diffusion tolerance evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: diffusion-windows-x86_64-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/render.json
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/resolved.json
+            build/${{ matrix.preset }}/tests/diffusion-analyzer-contract/render-result/analysis/diffusion-v1.json

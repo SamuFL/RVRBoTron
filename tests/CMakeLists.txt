@@ -2,10 +2,19 @@ add_executable(test_reverb
   test_reverb.cpp
 )
 
-target_link_libraries(test_reverb PRIVATE rvrbotron_dsp)
+target_link_libraries(test_reverb PRIVATE rvrbotron_config)
 target_compile_features(test_reverb PRIVATE cxx_std_17)
 
 add_test(NAME empty_composition_identity COMMAND test_reverb)
+
+add_executable(test_positional_random
+  test_positional_random.cpp
+)
+
+target_link_libraries(test_positional_random PRIVATE rvrbotron_config)
+target_compile_features(test_positional_random PRIVATE cxx_std_17)
+
+add_test(NAME positional_random_vectors COMMAND test_positional_random)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -34,6 +43,17 @@ add_test(
     $<TARGET_FILE:rvrbotron>
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/configuration-round-trip
+)
+
+add_test(
+  NAME reference_diffusion_render
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_reference_diffusion_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/reference-diffusion-render
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
 
 add_test(
@@ -70,5 +90,17 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-stereo-48000-float32.wav
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix/identity-mono-48000-pcm16.wav
     ${CMAKE_CURRENT_BINARY_DIR}/analyzer-contract
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)
+
+add_test(
+  NAME diffusion_analyzer_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_diffusion_analyzer_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_diffusion.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/diffusion-analyzer-contract
     ${RVRBOTRON_TEST_SAMPLE_BITS}
 )

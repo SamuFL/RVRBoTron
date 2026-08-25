@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <charconv>
 #include <csignal>
 #include <cstddef>
@@ -18,6 +19,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -56,6 +58,7 @@ struct RenderArguments {
   std::optional<std::filesystem::path> requestedConfig;
   std::optional<std::filesystem::path> resolvedConfig;
   std::size_t blockSize{kBlockSize};
+  bool captureAllStages{false};
 };
 
 enum class ErrorFormat {
@@ -114,7 +117,8 @@ RenderArguments parseArguments(const int argc, char** argv) {
         rvrbotron::ErrorCategory::invalidArguments,
         "usage: rvrbotron render --input <wav> [--config <request.json> | "
         "--resolved <resolved.json>] [--block-size <frames>] "
-        "[--error-format <text|json>] --output <result-dir>");
+        "[--capture-stages all] [--error-format <text|json>] "
+        "--output <result-dir>");
   }
 
   RenderArguments arguments;
@@ -130,6 +134,13 @@ RenderArguments parseArguments(const int argc, char** argv) {
       arguments.resolvedConfig = argv[index + 1];
     } else if (option == "--block-size") {
       arguments.blockSize = parseBlockSize(argv[index + 1]);
+    } else if (option == "--capture-stages") {
+      if (std::string_view(argv[index + 1]) != "all") {
+        throw rvrbotron::HarnessError(
+            rvrbotron::ErrorCategory::invalidArguments,
+            "--capture-stages requires all");
+      }
+      arguments.captureAllStages = true;
     } else if (option == "--error-format") {
       const std::string_view format = argv[index + 1];
       if (format != "text" && format != "json") {
@@ -201,6 +212,99 @@ void writeFile(const std::filesystem::path& path,
   }
 }
 
+class WavStageCaptureSink final
+    : public rvrbotron::dsp::StageCaptureSink {
+public:
+  WavStageCaptureSink(const std::filesystem::path& resultPath,
+                      const std::uint32_t channels,
+                      const std::uint32_t sampleRate)
+      : resultPath_(resultPath),
+        channels_(channels),
+        sampleRate_(sampleRate) {
+    const auto captureDirectory = resultPath_ / "captures";
+    std::error_code error;
+    std::filesystem::create_directories(captureDirectory, error);
+    if (error) {
+      throw rvrbotron::HarnessError(
+          rvrbotron::ErrorCategory::ioFailure,
+          "could not create Stage capture directory");
+    }
+    split_ = std::make_unique<rvrbotron::io::WavWriter>(
+        captureDirectory / "00-split.wav", channels_, sampleRate_);
+    diffusion_ = std::make_unique<rvrbotron::io::WavWriter>(
+        captureDirectory / "01-diffusion-step-0.wav",
+        channels_,
+        sampleRate_);
+  }
+
+  void captureFrame(
+      const rvrbotron::dsp::StageCaptureBoundary boundary,
+      const std::uint32_t index,
+      const rvrbotron::dsp::Sample* channels,
+      const std::size_t channelCount) noexcept override {
+    if (failed_ || index != 0 || channelCount != channels_) {
+      failed_ = true;
+      return;
+    }
+    try {
+      if (boundary == rvrbotron::dsp::StageCaptureBoundary::split) {
+        split_->writeFrames(channels, 1);
+        ++splitFrames_;
+      } else {
+        diffusion_->writeFrames(channels, 1);
+        ++diffusionFrames_;
+      }
+    } catch (...) {
+      failed_ = true;
+    }
+  }
+
+  std::vector<rvrbotron::cli::StageCaptureMetadata> finish() {
+    if (failed_) {
+      throw rvrbotron::HarnessError(
+          rvrbotron::ErrorCategory::ioFailure,
+          "could not write Stage capture");
+    }
+    split_->close();
+    diffusion_->close();
+    const auto splitPath =
+        std::filesystem::path("captures") / "00-split.wav";
+    const auto diffusionPath =
+        std::filesystem::path("captures") /
+        "01-diffusion-step-0.wav";
+    return {
+        {
+            splitPath.generic_string(),
+            "split",
+            0,
+            rvrbotron::cli::fileSha256(resultPath_ / splitPath),
+            sampleRate_,
+            channels_,
+            splitFrames_,
+        },
+        {
+            diffusionPath.generic_string(),
+            "diffusion-step",
+            0,
+            rvrbotron::cli::fileSha256(resultPath_ / diffusionPath),
+            sampleRate_,
+            channels_,
+            diffusionFrames_,
+        },
+    };
+  }
+
+private:
+  std::filesystem::path resultPath_;
+  std::uint32_t channels_;
+  std::uint32_t sampleRate_;
+  std::unique_ptr<rvrbotron::io::WavWriter> split_;
+  std::unique_ptr<rvrbotron::io::WavWriter> diffusion_;
+  std::uint64_t splitFrames_{0};
+  std::uint64_t diffusionFrames_{0};
+  bool failed_{false};
+};
+
 void render(const RenderArguments& arguments) {
   rvrbotron::cli::RenderResultTransaction result(arguments.output);
   const auto& resultPath = result.workingPath();
@@ -213,9 +317,9 @@ void render(const RenderArguments& arguments) {
         rvrbotron::ErrorCategory::unsupportedAudio,
         "the identity renderer requires mono or stereo input");
   }
-  const auto channelCount = static_cast<std::size_t>(info.channels);
+  const auto inputChannelCount = static_cast<std::size_t>(info.channels);
   if (arguments.blockSize >
-      std::numeric_limits<std::size_t>::max() / channelCount) {
+      std::numeric_limits<std::size_t>::max() / inputChannelCount) {
     throw rvrbotron::HarnessError(
         rvrbotron::ErrorCategory::invalidArguments,
         "--block-size is too large");
@@ -231,7 +335,8 @@ void render(const RenderArguments& arguments) {
     rawRequest = readFile(*arguments.requestedConfig);
     const auto requested =
         rvrbotron::cli::parseRequestedConfig(*rawRequest);
-    config = rvrbotron::config::resolveConfig(requested, info.sampleRate);
+    config = rvrbotron::config::resolveConfig(
+        requested, info.sampleRate, info.channels);
   } else if (arguments.resolvedConfig.has_value()) {
     configurationInput =
         rvrbotron::cli::ConfigurationInput::resolved;
@@ -245,58 +350,137 @@ void render(const RenderArguments& arguments) {
               std::to_string(config.sampleRate),
           "/sampleRate");
     }
+    if (!config.composition.stages.empty()) {
+      const auto& split =
+          std::get<rvrbotron::dsp::ResolvedSplit>(
+              config.composition.stages.front());
+      if (split.inputChannels != info.channels) {
+        throw rvrbotron::HarnessError(
+            rvrbotron::ErrorCategory::invalidConfiguration,
+            "expected input Channel count " +
+                std::to_string(split.inputChannels) + ", got " +
+                std::to_string(info.channels),
+            "/composition/stages/0/inputChannels");
+      }
+    }
   } else {
-    config =
-        rvrbotron::config::resolveConfig({}, info.sampleRate);
+    config = rvrbotron::config::resolveConfig(
+        {}, info.sampleRate, info.channels);
   }
 
-  rvrbotron::dsp::Reverb reverb(config);
-
-  std::vector<rvrbotron::dsp::Sample> interleavedSamples(
-      arguments.blockSize * channelCount);
-  std::vector<rvrbotron::dsp::Sample> channelSamples(
-      arguments.blockSize * channelCount);
-  std::vector<rvrbotron::dsp::Sample*> channels(channelCount);
-  for (std::size_t channel = 0; channel < channelCount; ++channel) {
-    channels[channel] =
-        channelSamples.data() + channel * arguments.blockSize;
+  const auto outputChannelCount = config.composition.stages.empty()
+                                      ? inputChannelCount
+                                      : std::size_t{2};
+  if (arguments.blockSize >
+      std::numeric_limits<std::size_t>::max() / outputChannelCount) {
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--block-size is too large");
   }
+  std::unique_ptr<WavStageCaptureSink> captureSink;
+  if (arguments.captureAllStages &&
+      !config.composition.stages.empty()) {
+    const auto& split =
+        std::get<rvrbotron::dsp::ResolvedSplit>(
+            config.composition.stages.front());
+    captureSink = std::make_unique<WavStageCaptureSink>(
+        resultPath, split.channels, info.sampleRate);
+  }
+  rvrbotron::dsp::Reverb reverb(config, captureSink.get());
+
+  std::vector<rvrbotron::dsp::Sample> inputInterleaved(
+      arguments.blockSize * inputChannelCount);
+  std::vector<rvrbotron::dsp::Sample> inputSamples(
+      arguments.blockSize * inputChannelCount);
+  std::vector<const rvrbotron::dsp::Sample*> inputs(inputChannelCount);
+  for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+    inputs[channel] =
+        inputSamples.data() + channel * arguments.blockSize;
+  }
+  std::vector<rvrbotron::dsp::Sample> outputSamples(
+      arguments.blockSize * outputChannelCount);
+  std::vector<rvrbotron::dsp::Sample*> outputs(outputChannelCount);
+  for (std::size_t channel = 0; channel < outputChannelCount; ++channel) {
+    outputs[channel] =
+        outputSamples.data() + channel * arguments.blockSize;
+  }
+  std::vector<rvrbotron::dsp::Sample> outputInterleaved(
+      arguments.blockSize * outputChannelCount);
+  std::uint64_t inputFrames = 0;
   std::uint64_t renderedFrames = 0;
 
   {
     rvrbotron::io::WavWriter writer(
-        resultPath / "output.wav", info.channels, info.sampleRate);
+        resultPath / "output.wav",
+        static_cast<std::uint32_t>(outputChannelCount),
+        info.sampleRate);
 
     while (true) {
       throwIfInterrupted();
       const auto framesRead =
-          reader.readFrames(interleavedSamples.data(), arguments.blockSize);
+          reader.readFrames(inputInterleaved.data(), arguments.blockSize);
       throwIfInterrupted();
       if (framesRead == 0) {
         break;
       }
 
       for (std::size_t frame = 0; frame < framesRead; ++frame) {
-        for (std::size_t channel = 0; channel < channelCount; ++channel) {
-          channels[channel][frame] =
-              interleavedSamples[frame * channelCount + channel];
+        for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+          inputSamples[channel * arguments.blockSize + frame] =
+              inputInterleaved[frame * inputChannelCount + channel];
         }
       }
 
-      reverb.process(channels.data(), channelCount, framesRead);
+      reverb.process(
+          inputs.data(),
+          inputChannelCount,
+          outputs.data(),
+          outputChannelCount,
+          framesRead);
 
       for (std::size_t frame = 0; frame < framesRead; ++frame) {
-        for (std::size_t channel = 0; channel < channelCount; ++channel) {
-          interleavedSamples[frame * channelCount + channel] =
-              channels[channel][frame];
+        for (std::size_t channel = 0; channel < outputChannelCount; ++channel) {
+          outputInterleaved[frame * outputChannelCount + channel] =
+              outputSamples[channel * arguments.blockSize + frame];
         }
       }
-      writer.writeFrames(interleavedSamples.data(), framesRead);
+      writer.writeFrames(outputInterleaved.data(), framesRead);
+      inputFrames += framesRead;
       renderedFrames += framesRead;
+    }
+
+    std::uint64_t remainingTail = reverb.finiteTailFrames();
+    std::fill(
+        inputSamples.begin(),
+        inputSamples.end(),
+        rvrbotron::dsp::Sample{0});
+    while (remainingTail != 0) {
+      throwIfInterrupted();
+      const auto frames = static_cast<std::size_t>(
+          std::min<std::uint64_t>(remainingTail, arguments.blockSize));
+      reverb.process(
+          inputs.data(),
+          inputChannelCount,
+          outputs.data(),
+          outputChannelCount,
+          frames);
+      for (std::size_t frame = 0; frame < frames; ++frame) {
+        for (std::size_t channel = 0; channel < outputChannelCount; ++channel) {
+          outputInterleaved[frame * outputChannelCount + channel] =
+              outputSamples[channel * arguments.blockSize + frame];
+        }
+      }
+      writer.writeFrames(outputInterleaved.data(), frames);
+      renderedFrames += frames;
+      remainingTail -= frames;
     }
     writer.close();
   }
 
+  std::vector<rvrbotron::cli::StageCaptureMetadata> stageCaptures;
+  if (captureSink != nullptr) {
+    stageCaptures = captureSink->finish();
+  }
   rvrbotron::config::writeResolvedConfig(
       resultPath / "resolved.json", config);
   if (rawRequest.has_value()) {
@@ -310,8 +494,14 @@ void render(const RenderArguments& arguments) {
           rvrbotron::cli::fileSha256(arguments.input),
           configurationInput,
           info,
+          static_cast<std::uint32_t>(outputChannelCount),
+          inputFrames,
           renderedFrames,
           arguments.blockSize,
+          arguments.captureAllStages
+              ? std::optional<std::string>{"all-v1"}
+              : std::nullopt,
+          std::move(stageCaptures),
       });
 
   throwIfInterrupted();

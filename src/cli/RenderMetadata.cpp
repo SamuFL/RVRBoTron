@@ -50,7 +50,7 @@ std::string_view architectureName() noexcept {
 
 void writeRenderMetadata(const std::filesystem::path& path,
                          const RenderMetadata& metadata) {
-  const nlohmann::json document{
+  nlohmann::json document{
       {"formatVersion", 1},
       {"rendererVersion", RVRBOTRON_VERSION},
       {"platform", platformName()},
@@ -63,9 +63,26 @@ void writeRenderMetadata(const std::filesystem::path& path,
       {"inputFilename", metadata.inputFilename},
       {"inputSha256", metadata.inputSha256},
       {"sampleRate", metadata.audio.sampleRate},
-      {"channels", metadata.audio.channels},
+      {"channels", metadata.outputChannels},
       {"frames", metadata.renderedFrames},
+      {"inputFrames", metadata.inputFrames},
   };
+  if (metadata.stageCaptureProfile.has_value()) {
+    document["stageCaptureProfile"] = *metadata.stageCaptureProfile;
+    document["stageCaptures"] = nlohmann::json::array();
+    for (const auto& capture : metadata.stageCaptures) {
+      document["stageCaptures"].push_back(
+          {
+              {"path", capture.path},
+              {"boundary", capture.boundary},
+              {"index", capture.index},
+              {"sha256", capture.sha256},
+              {"sampleRate", capture.sampleRate},
+              {"channels", capture.channels},
+              {"frames", capture.frames},
+          });
+    }
+  }
 
   std::ofstream output(path);
   if (!output) {
