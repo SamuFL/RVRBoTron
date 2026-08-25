@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -471,6 +472,162 @@ int main() {
   if (!close(splitChannels[0], 0.5 * splitScale) ||
       !close(splitChannels[1], 0.5 * splitScale)) {
     std::cerr << "unnormalized stereo duplicate Split is incorrect\n";
+    return 1;
+  }
+
+  constexpr double halvesScale = 0.70710678118654752440; // sqrt(2/4)
+  std::array<rvrbotron::dsp::Sample, 4> fourChannels{};
+  rvrbotron::dsp::Split stereoHalves(
+      {
+          2,
+          4,
+          rvrbotron::dsp::SplitStrategyType::stereoHalves,
+          rvrbotron::dsp::EnergyNormalisation::energy,
+          1.0,
+          halvesScale,
+      });
+  beginAllocationCount();
+  stereoHalves.processFrame(stereoInputs, 0, fourChannels.data());
+  const auto halvesAllocations = endAllocationCount();
+  if (halvesAllocations != 0) {
+    std::cerr << "stereo-halves SplitStrategy allocated while processing\n";
+    return 1;
+  }
+  if (!close(fourChannels[0], 0.75 * halvesScale) ||
+      !close(fourChannels[1], 0.75 * halvesScale) ||
+      !close(fourChannels[2], -0.25 * halvesScale) ||
+      !close(fourChannels[3], -0.25 * halvesScale)) {
+    std::cerr << "stereo-halves Split mapping is incorrect\n";
+    return 1;
+  }
+
+  rvrbotron::dsp::Split stereoInterleave(
+      {
+          2,
+          4,
+          rvrbotron::dsp::SplitStrategyType::stereoInterleave,
+          rvrbotron::dsp::EnergyNormalisation::energy,
+          1.0,
+          halvesScale,
+      });
+  beginAllocationCount();
+  stereoInterleave.processFrame(stereoInputs, 0, fourChannels.data());
+  const auto interleaveAllocations = endAllocationCount();
+  if (interleaveAllocations != 0) {
+    std::cerr
+        << "stereo-interleave SplitStrategy allocated while processing\n";
+    return 1;
+  }
+  if (!close(fourChannels[0], 0.75 * halvesScale) ||
+      !close(fourChannels[1], -0.25 * halvesScale) ||
+      !close(fourChannels[2], 0.75 * halvesScale) ||
+      !close(fourChannels[3], -0.25 * halvesScale)) {
+    std::cerr << "stereo-interleave Split mapping is incorrect\n";
+    return 1;
+  }
+
+  const std::array<rvrbotron::dsp::Sample, 1> monoInput{0.5F};
+  const rvrbotron::dsp::Sample* monoInputs[]{monoInput.data()};
+  std::array<rvrbotron::dsp::Sample, 4> monoFallbackChannels{};
+  constexpr double monoFallbackScale = 0.5; // 1/sqrt(4)
+  rvrbotron::dsp::Split monoFallback(
+      {
+          1,
+          4,
+          rvrbotron::dsp::SplitStrategyType::stereoHalves,
+          rvrbotron::dsp::EnergyNormalisation::energy,
+          1.0,
+          monoFallbackScale,
+      });
+  monoFallback.processFrame(monoInputs, 0, monoFallbackChannels.data());
+  if (!close(monoFallbackChannels[0], 0.25) ||
+      !close(monoFallbackChannels[1], 0.25) ||
+      !close(monoFallbackChannels[2], 0.25) ||
+      !close(monoFallbackChannels[3], 0.25)) {
+    std::cerr
+        << "mono input did not fall back to the duplicate mapping for "
+           "stereo-halves\n";
+    return 1;
+  }
+
+  bool oddChannelsThrew = false;
+  try {
+    rvrbotron::dsp::Split oddHalves(
+        {
+            2,
+            3,
+            rvrbotron::dsp::SplitStrategyType::stereoHalves,
+            rvrbotron::dsp::EnergyNormalisation::energy,
+            1.0,
+            1.0,
+        });
+  } catch (const std::invalid_argument&) {
+    oddChannelsThrew = true;
+  }
+  if (!oddChannelsThrew) {
+    std::cerr
+        << "stereo-halves Split accepted an odd Channel count with stereo "
+           "input\n";
+    return 1;
+  }
+
+  bool oddInterleaveThrew = false;
+  try {
+    rvrbotron::dsp::Split oddInterleave(
+        {
+            2,
+            5,
+            rvrbotron::dsp::SplitStrategyType::stereoInterleave,
+            rvrbotron::dsp::EnergyNormalisation::energy,
+            1.0,
+            1.0,
+        });
+  } catch (const std::invalid_argument&) {
+    oddInterleaveThrew = true;
+  }
+  if (!oddInterleaveThrew) {
+    std::cerr
+        << "stereo-interleave Split accepted an odd Channel count with "
+           "stereo input\n";
+    return 1;
+  }
+
+  // N=1 is odd, so it is rejected the same way as any other odd Channel
+  // count when the source is stereo.
+  bool oneChannelHalvesThrew = false;
+  try {
+    rvrbotron::dsp::Split oneChannelHalves(
+        {
+            2,
+            1,
+            rvrbotron::dsp::SplitStrategyType::stereoHalves,
+            rvrbotron::dsp::EnergyNormalisation::energy,
+            1.0,
+            1.0,
+        });
+  } catch (const std::invalid_argument&) {
+    oneChannelHalvesThrew = true;
+  }
+  if (!oneChannelHalvesThrew) {
+    std::cerr << "stereo-halves Split accepted N=1 with stereo input\n";
+    return 1;
+  }
+
+  // Diagnostic "none" normalisation leaves the resolved Channel gain at 1.0
+  // regardless of N, unlike energy normalisation's sqrt(2/N) scale.
+  rvrbotron::dsp::Split stereoHalvesNone(
+      {
+          2,
+          4,
+          rvrbotron::dsp::SplitStrategyType::stereoHalves,
+          rvrbotron::dsp::EnergyNormalisation::none,
+          1.0,
+          1.0,
+      });
+  stereoHalvesNone.processFrame(stereoInputs, 0, fourChannels.data());
+  if (!close(fourChannels[0], 0.75) || !close(fourChannels[1], 0.75) ||
+      !close(fourChannels[2], -0.25) || !close(fourChannels[3], -0.25)) {
+    std::cerr << "unnormalized stereo-halves Split is incorrect\n";
     return 1;
   }
 

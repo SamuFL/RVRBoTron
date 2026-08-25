@@ -160,6 +160,12 @@ std::vector<double> makeHadamard(const std::uint32_t channels,
   return matrix;
 }
 
+bool isStereoPreservingSplit(
+    const dsp::SplitStrategyType strategy) noexcept {
+  return strategy == dsp::SplitStrategyType::stereoHalves ||
+         strategy == dsp::SplitStrategyType::stereoInterleave;
+}
+
 dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
                                 const std::uint32_t inputChannels) {
   const auto channels = requested.channels.value_or(8);
@@ -167,17 +173,26 @@ dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
       requested.strategy.value_or(dsp::SplitStrategyType::duplicate);
   const auto normalisation = requested.normalisation.value_or(
       dsp::EnergyNormalisation::energy);
+  // Stereo-preserving strategies only diverge from duplicate's mono-summed
+  // mapping when the source itself is stereo; mono input always resolves to
+  // the same mono duplication mapping regardless of the requested strategy.
+  const auto stereoPreserving =
+      inputChannels == 2 && isStereoPreservingSplit(strategy);
   const auto sourceGain =
       inputChannels == 1
           ? 1.0
-          : inputChannels == 2
-                ? 1.0 / std::sqrt(2.0)
-                : 0.0;
+          : stereoPreserving
+                ? 1.0
+                : inputChannels == 2
+                      ? 1.0 / std::sqrt(2.0)
+                      : 0.0;
   const auto channelGain =
       normalisation == dsp::EnergyNormalisation::energy
           ? channels == 0
                 ? 0.0
-                : 1.0 / std::sqrt(static_cast<double>(channels))
+                : stereoPreserving
+                      ? std::sqrt(2.0 / static_cast<double>(channels))
+                      : 1.0 / std::sqrt(static_cast<double>(channels))
           : 1.0;
   return {
       inputChannels,
@@ -458,10 +473,20 @@ void validateResolvedConfig(
   if (channels == 0) {
     fail("/composition/stages/0/channels", "expected value greater than zero");
   }
-  if (split.strategy != dsp::SplitStrategyType::duplicate) {
+  if (split.strategy != dsp::SplitStrategyType::duplicate &&
+      split.strategy != dsp::SplitStrategyType::stereoHalves &&
+      split.strategy != dsp::SplitStrategyType::stereoInterleave) {
     fail(
         "/composition/stages/0/strategy",
-        "the first diffusion slice requires duplicate");
+        "expected duplicate, stereo-halves, or stereo-interleave");
+  }
+  const auto stereoPreserving =
+      split.inputChannels == 2 && isStereoPreservingSplit(split.strategy);
+  if (stereoPreserving && (channels % 2U) != 0U) {
+    fail(
+        "/composition/stages/0/channels",
+        "stereo-halves and stereo-interleave require an even Channel count "
+        "for stereo input");
   }
   if (!(split.sourceGain > 0.0) || !std::isfinite(split.sourceGain)) {
     fail(
@@ -469,7 +494,11 @@ void validateResolvedConfig(
         "expected finite positive gain");
   }
   const auto expectedSourceGain =
-      split.inputChannels == 1 ? 1.0 : 1.0 / std::sqrt(2.0);
+      split.inputChannels == 1
+          ? 1.0
+          : stereoPreserving
+                ? 1.0
+                : 1.0 / std::sqrt(2.0);
   if (split.sourceGain != expectedSourceGain) {
     fail(
         "/composition/stages/0/sourceGain",
@@ -484,7 +513,9 @@ void validateResolvedConfig(
   switch (split.normalisation) {
   case dsp::EnergyNormalisation::energy:
     expectedSplitGain =
-        1.0 / std::sqrt(static_cast<double>(channels));
+        stereoPreserving
+            ? std::sqrt(2.0 / static_cast<double>(channels))
+            : 1.0 / std::sqrt(static_cast<double>(channels));
     break;
   case dsp::EnergyNormalisation::none:
     expectedSplitGain = 1.0;

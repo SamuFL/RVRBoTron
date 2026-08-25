@@ -135,10 +135,17 @@ std::uint64_t parseSeed(const Json& value) {
 dsp::SplitStrategyType parseSplitStrategy(
     const Json& value,
     const std::string_view path) {
-  if (parseString(value, path) != "duplicate") {
-    fail(path, "expected duplicate");
+  const auto name = parseString(value, path);
+  if (name == "duplicate") {
+    return dsp::SplitStrategyType::duplicate;
   }
-  return dsp::SplitStrategyType::duplicate;
+  if (name == "stereo-halves") {
+    return dsp::SplitStrategyType::stereoHalves;
+  }
+  if (name == "stereo-interleave") {
+    return dsp::SplitStrategyType::stereoInterleave;
+  }
+  fail(path, "expected duplicate, stereo-halves, or stereo-interleave");
 }
 
 dsp::EnergyNormalisation parseNormalisation(

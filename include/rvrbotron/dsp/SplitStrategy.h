@@ -36,6 +36,43 @@ private:
   Sample channelGain_;
 };
 
+// Feeds the first half of the Channels from the left input and the second
+// half from the right input, at even energy-normalized gain. Requires
+// stereo input and an even Channel count.
+class StereoHalvesSplitStrategy final : public SplitStrategy {
+public:
+  explicit StereoHalvesSplitStrategy(const ResolvedSplit& config);
+
+  void processFrame(const Sample* const* inputs,
+                    std::size_t frame,
+                    Sample* channels) const noexcept override;
+  [[nodiscard]] std::size_t inputChannelCount() const noexcept override;
+  [[nodiscard]] std::size_t channelCount() const noexcept override;
+
+private:
+  std::size_t channels_;
+  std::size_t half_;
+  Sample channelGain_;
+};
+
+// Feeds even-indexed Channels from the left input and odd-indexed Channels
+// from the right input, at even energy-normalized gain. Requires stereo
+// input and an even Channel count.
+class StereoInterleaveSplitStrategy final : public SplitStrategy {
+public:
+  explicit StereoInterleaveSplitStrategy(const ResolvedSplit& config);
+
+  void processFrame(const Sample* const* inputs,
+                    std::size_t frame,
+                    Sample* channels) const noexcept override;
+  [[nodiscard]] std::size_t inputChannelCount() const noexcept override;
+  [[nodiscard]] std::size_t channelCount() const noexcept override;
+
+private:
+  std::size_t channels_;
+  Sample channelGain_;
+};
+
 std::unique_ptr<SplitStrategy> makeSplitStrategy(
     const ResolvedSplit& config);
 

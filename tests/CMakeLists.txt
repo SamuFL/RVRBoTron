@@ -57,6 +57,19 @@ add_test(
 )
 
 add_test(
+  NAME split_strategy_render
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_split_strategy_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_SOURCE_DIR}/tools/analyze_diffusion.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-right-pcm16-48000.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/split-strategy-render
+)
+
+add_test(
   NAME wav_compatibility
   COMMAND
     ${Python3_EXECUTABLE}

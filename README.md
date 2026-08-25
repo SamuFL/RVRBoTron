@@ -189,8 +189,17 @@ build/default/rvrbotron render \
 | Field | Values | Default |
 | --- | --- | --- |
 | `channels` | unsigned 32-bit integer (N) | `8` |
-| `strategy` | `"duplicate"` | `"duplicate"` (only option) |
+| `strategy` | `"duplicate"` \| `"stereo-halves"` \| `"stereo-interleave"` | `"duplicate"` |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+`"duplicate"` sums stereo input to `(L + R)/√2` and distributes it to every
+Channel; it discards stereo position. `"stereo-halves"` and
+`"stereo-interleave"` preserve L/R independently and require an even
+Channel count when the source is stereo; `"stereo-halves"` feeds the first
+half of the Channels from the left input and the second half from the
+right, and `"stereo-interleave"` alternates left/right by Channel index.
+For mono input, every strategy resolves to the same mono duplication
+mapping.
 
 #### `diffuser` stage
 

@@ -8,6 +8,8 @@ namespace rvrbotron::dsp {
 
 enum class SplitStrategyType {
   duplicate,
+  stereoHalves,
+  stereoInterleave,
 };
 
 enum class EnergyNormalisation {
