@@ -59,6 +59,8 @@ struct RenderArguments {
   std::optional<std::filesystem::path> resolvedConfig;
   std::size_t blockSize{kBlockSize};
   bool captureAllStages{false};
+  std::uint64_t memoryBudgetBytes{
+      rvrbotron::config::kDefaultDiffuserMemoryBudgetBytes};
 };
 
 enum class ErrorFormat {
@@ -111,14 +113,28 @@ std::size_t parseBlockSize(const std::string_view value) {
   return blockSize;
 }
 
+std::uint64_t parseMemoryBudgetMib(const std::string_view value) {
+  std::uint64_t mib = 0;
+  const auto result =
+      std::from_chars(value.data(), value.data() + value.size(), mib);
+  if (result.ec != std::errc{} ||
+      result.ptr != value.data() + value.size() || mib == 0 ||
+      mib > std::numeric_limits<std::uint64_t>::max() / (1024ULL * 1024ULL)) {
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--memory-budget-mib requires a positive integer");
+  }
+  return mib * 1024ULL * 1024ULL;
+}
+
 RenderArguments parseArguments(const int argc, char** argv) {
   if (argc < 2 || std::string(argv[1]) != "render" || argc % 2 != 0) {
     throw rvrbotron::HarnessError(
         rvrbotron::ErrorCategory::invalidArguments,
         "usage: rvrbotron render --input <wav> [--config <request.json> | "
         "--resolved <resolved.json>] [--block-size <frames>] "
-        "[--capture-stages all] [--error-format <text|json>] "
-        "--output <result-dir>");
+        "[--capture-stages all] [--memory-budget-mib <mebibytes>] "
+        "[--error-format <text|json>] --output <result-dir>");
   }
 
   RenderArguments arguments;
@@ -134,6 +150,8 @@ RenderArguments parseArguments(const int argc, char** argv) {
       arguments.resolvedConfig = argv[index + 1];
     } else if (option == "--block-size") {
       arguments.blockSize = parseBlockSize(argv[index + 1]);
+    } else if (option == "--memory-budget-mib") {
+      arguments.memoryBudgetBytes = parseMemoryBudgetMib(argv[index + 1]);
     } else if (option == "--capture-stages") {
       if (std::string_view(argv[index + 1]) != "all") {
         throw rvrbotron::HarnessError(
@@ -217,7 +235,8 @@ class WavStageCaptureSink final
 public:
   WavStageCaptureSink(const std::filesystem::path& resultPath,
                       const std::uint32_t channels,
-                      const std::uint32_t sampleRate)
+                      const std::uint32_t sampleRate,
+                      const std::uint32_t diffusionStepCount)
       : resultPath_(resultPath),
         channels_(channels),
         sampleRate_(sampleRate) {
@@ -231,10 +250,15 @@ public:
     }
     split_ = std::make_unique<rvrbotron::io::WavWriter>(
         captureDirectory / "00-split.wav", channels_, sampleRate_);
-    diffusion_ = std::make_unique<rvrbotron::io::WavWriter>(
-        captureDirectory / "01-diffusion-step-0.wav",
-        channels_,
-        sampleRate_);
+    diffusionSteps_.reserve(diffusionStepCount);
+    diffusionStepFrames_.assign(diffusionStepCount, 0);
+    for (std::uint32_t step = 0; step < diffusionStepCount; ++step) {
+      diffusionSteps_.push_back(
+          std::make_unique<rvrbotron::io::WavWriter>(
+              captureDirectory / diffusionStepFileName(step),
+              channels_,
+              sampleRate_));
+    }
   }
 
   void captureFrame(
@@ -242,17 +266,25 @@ public:
       const std::uint32_t index,
       const rvrbotron::dsp::Sample* channels,
       const std::size_t channelCount) noexcept override {
-    if (failed_ || index != 0 || channelCount != channels_) {
+    if (failed_ || channelCount != channels_) {
       failed_ = true;
       return;
     }
     try {
       if (boundary == rvrbotron::dsp::StageCaptureBoundary::split) {
+        if (index != 0) {
+          failed_ = true;
+          return;
+        }
         split_->writeFrames(channels, 1);
         ++splitFrames_;
       } else {
-        diffusion_->writeFrames(channels, 1);
-        ++diffusionFrames_;
+        if (index >= diffusionSteps_.size()) {
+          failed_ = true;
+          return;
+        }
+        diffusionSteps_[index]->writeFrames(channels, 1);
+        ++diffusionStepFrames_[index];
       }
     } catch (...) {
       failed_ = true;
@@ -266,13 +298,9 @@ public:
           "could not write Stage capture");
     }
     split_->close();
-    diffusion_->close();
     const auto splitPath =
         std::filesystem::path("captures") / "00-split.wav";
-    const auto diffusionPath =
-        std::filesystem::path("captures") /
-        "01-diffusion-step-0.wav";
-    return {
+    std::vector<rvrbotron::cli::StageCaptureMetadata> metadata{
         {
             splitPath.generic_string(),
             "split",
@@ -282,26 +310,38 @@ public:
             channels_,
             splitFrames_,
         },
-        {
-            diffusionPath.generic_string(),
-            "diffusion-step",
-            0,
-            rvrbotron::cli::fileSha256(resultPath_ / diffusionPath),
-            sampleRate_,
-            channels_,
-            diffusionFrames_,
-        },
     };
+    metadata.reserve(1 + diffusionSteps_.size());
+    for (std::size_t step = 0; step < diffusionSteps_.size(); ++step) {
+      diffusionSteps_[step]->close();
+      const auto diffusionPath = std::filesystem::path("captures") /
+          diffusionStepFileName(static_cast<std::uint32_t>(step));
+      metadata.push_back(
+          {
+              diffusionPath.generic_string(),
+              "diffusion-step",
+              static_cast<std::uint32_t>(step),
+              rvrbotron::cli::fileSha256(resultPath_ / diffusionPath),
+              sampleRate_,
+              channels_,
+              diffusionStepFrames_[step],
+          });
+    }
+    return metadata;
   }
 
 private:
+  static std::string diffusionStepFileName(const std::uint32_t step) {
+    return "01-diffusion-step-" + std::to_string(step) + ".wav";
+  }
+
   std::filesystem::path resultPath_;
   std::uint32_t channels_;
   std::uint32_t sampleRate_;
   std::unique_ptr<rvrbotron::io::WavWriter> split_;
-  std::unique_ptr<rvrbotron::io::WavWriter> diffusion_;
+  std::vector<std::unique_ptr<rvrbotron::io::WavWriter>> diffusionSteps_;
   std::uint64_t splitFrames_{0};
-  std::uint64_t diffusionFrames_{0};
+  std::vector<std::uint64_t> diffusionStepFrames_;
   bool failed_{false};
 };
 
@@ -336,12 +376,15 @@ void render(const RenderArguments& arguments) {
     const auto requested =
         rvrbotron::cli::parseRequestedConfig(*rawRequest);
     config = rvrbotron::config::resolveConfig(
-        requested, info.sampleRate, info.channels);
+        requested,
+        info.sampleRate,
+        info.channels,
+        arguments.memoryBudgetBytes);
   } else if (arguments.resolvedConfig.has_value()) {
     configurationInput =
         rvrbotron::cli::ConfigurationInput::resolved;
     config = rvrbotron::cli::parseResolvedConfig(
-        readFile(*arguments.resolvedConfig));
+        readFile(*arguments.resolvedConfig), arguments.memoryBudgetBytes);
     if (config.sampleRate != info.sampleRate) {
       throw rvrbotron::HarnessError(
           rvrbotron::ErrorCategory::invalidConfiguration,
@@ -365,7 +408,7 @@ void render(const RenderArguments& arguments) {
     }
   } else {
     config = rvrbotron::config::resolveConfig(
-        {}, info.sampleRate, info.channels);
+        {}, info.sampleRate, info.channels, arguments.memoryBudgetBytes);
   }
 
   const auto outputChannelCount = config.composition.stages.empty()
@@ -383,8 +426,14 @@ void render(const RenderArguments& arguments) {
     const auto& split =
         std::get<rvrbotron::dsp::ResolvedSplit>(
             config.composition.stages.front());
+    const auto& diffuser =
+        std::get<rvrbotron::dsp::ResolvedDiffuser>(
+            config.composition.stages[1]);
     captureSink = std::make_unique<WavStageCaptureSink>(
-        resultPath, split.channels, info.sampleRate);
+        resultPath,
+        split.channels,
+        info.sampleRate,
+        static_cast<std::uint32_t>(diffuser.steps.size()));
   }
   rvrbotron::dsp::Reverb reverb(config, captureSink.get());
 

@@ -288,6 +288,189 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved diffusion rerender changed output")
 
+    multi_step_request = json.loads(reference_request.read_text())
+    multi_step_request["composition"]["stages"][1]["steps"] = 2
+    multi_step_result = workspace / "multi-step-result"
+    multi_step_rerender = workspace / "multi-step-rerender"
+    multi_step_config = workspace / "multi-step-request.json"
+    multi_step_config.write_text(json.dumps(multi_step_request))
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            multi_step_config,
+            "--output",
+            multi_step_result,
+        )
+    )
+    multi_step_resolved = json.loads(
+        (multi_step_result / "resolved.json").read_text()
+    )
+    multi_step_stages = multi_step_resolved["composition"]["stages"]
+    multi_step_steps = multi_step_stages[1]["steps"]
+    if len(multi_step_steps) != 2:
+        raise AssertionError(
+            f"expected two resolved Diffusion Steps, got {multi_step_steps}"
+        )
+    if [entry["index"] for entry in multi_step_steps] != [0, 1]:
+        raise AssertionError(
+            f"unexpected resolved step ordering: {multi_step_steps}"
+        )
+    if sum(entry["lengthSamples"] for entry in multi_step_steps) != (
+        multi_step_stages[1]["totalSamples"]
+    ):
+        raise AssertionError(
+            "resolved step sample budgets did not sum to the resolved total"
+        )
+    # Positional seed stability: step index 0's permutation and polarity are
+    # pure functions of (seed, step index, Channel) and must be unaffected
+    # by how many Diffusion Steps the Diffuser now has.
+    if multi_step_steps[0]["permutation"] != step["permutation"]:
+        raise AssertionError(
+            "step 0 permutation changed when the step count changed"
+        )
+    if multi_step_steps[0]["polaritySigns"] != step["polaritySigns"]:
+        raise AssertionError(
+            "step 0 polarity changed when the step count changed"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            multi_step_result / "resolved.json",
+            "--output",
+            multi_step_rerender,
+        )
+    )
+    if (multi_step_rerender / "resolved.json").read_bytes() != (
+        multi_step_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("multi-step rerender changed configuration")
+
+    lengths_ms_request = json.loads(reference_request.read_text())
+    del lengths_ms_request["composition"]["stages"][1]["steps"]
+    del lengths_ms_request["composition"]["stages"][1]["totalMs"]
+    del lengths_ms_request["composition"]["stages"][1]["distribution"]
+    lengths_ms_request["composition"]["stages"][1]["lengthsMs"] = [0.5, 1.0, 1.5]
+    lengths_ms_request["composition"]["stages"][1]["stepOverrides"] = [
+        {"index": 1, "polarity": "none"}
+    ]
+    lengths_ms_config = workspace / "lengths-ms-request.json"
+    lengths_ms_config.write_text(json.dumps(lengths_ms_request))
+    lengths_ms_result = workspace / "lengths-ms-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            lengths_ms_config,
+            "--output",
+            lengths_ms_result,
+        )
+    )
+    lengths_ms_resolved = json.loads(
+        (lengths_ms_result / "resolved.json").read_text()
+    )
+    lengths_ms_stages = lengths_ms_resolved["composition"]["stages"]
+    lengths_ms_steps = lengths_ms_stages[1]["steps"]
+    if len(lengths_ms_steps) != 3:
+        raise AssertionError(
+            f"expected three resolved Diffusion Steps, got {lengths_ms_steps}"
+        )
+    resolved_lengths = [entry["lengthSamples"] for entry in lengths_ms_steps]
+    # 0.5ms : 1.0ms : 1.5ms at 48kHz apportions to 24 : 48 : 72 samples exactly.
+    if resolved_lengths != [24, 48, 72]:
+        raise AssertionError(
+            f"unexpected lengthsMs apportionment: {resolved_lengths}"
+        )
+    if sum(resolved_lengths) != lengths_ms_stages[1]["totalSamples"]:
+        raise AssertionError(
+            "lengthsMs step sample budgets did not sum to the resolved total"
+        )
+    # stepOverrides only touches index 1's polarity: steps 0 and 2 keep the
+    # shared seeded-random polarity, step 1 must resolve to all-positive.
+    if lengths_ms_steps[1]["polaritySigns"] != [1] * 8:
+        raise AssertionError(
+            f"stepOverrides polarity override did not apply: {lengths_ms_steps[1]}"
+        )
+    if lengths_ms_steps[0]["polaritySigns"] == lengths_ms_steps[1]["polaritySigns"]:
+        raise AssertionError(
+            "expected step 0 and overridden step 1 polarity to differ"
+        )
+    if lengths_ms_steps[2]["polaritySigns"] == lengths_ms_steps[1]["polaritySigns"]:
+        raise AssertionError(
+            "expected step 2 and overridden step 1 polarity to differ"
+        )
+
+    memory_budget_request = json.loads(reference_request.read_text())
+    memory_budget_request["composition"]["stages"][0]["channels"] = 64
+    memory_budget_request["composition"]["stages"][1]["totalMs"] = 500000
+    memory_budget_config = workspace / "memory-budget-request.json"
+    memory_budget_config.write_text(json.dumps(memory_budget_request))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            memory_budget_config,
+            "--memory-budget-mib",
+            "1",
+            "--output",
+            workspace / "memory-budget-result",
+        ),
+        "resolved Diffuser DSP memory footprint exceeds the configured memory budget",
+        workspace / "memory-budget-result",
+    )
+
+    # Omitting steps/totalMs/distribution entirely must resolve to the
+    # Reference four-step doubling chain (4 steps, 300ms total).
+    default_diffuser_request = json.loads(reference_request.read_text())
+    del default_diffuser_request["composition"]["stages"][1]["steps"]
+    del default_diffuser_request["composition"]["stages"][1]["totalMs"]
+    del default_diffuser_request["composition"]["stages"][1]["distribution"]
+    default_diffuser_config = workspace / "default-diffuser-request.json"
+    default_diffuser_config.write_text(json.dumps(default_diffuser_request))
+    default_diffuser_result = workspace / "default-diffuser-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            default_diffuser_config,
+            "--output",
+            default_diffuser_result,
+        )
+    )
+    default_diffuser_resolved = json.loads(
+        (default_diffuser_result / "resolved.json").read_text()
+    )
+    default_diffuser_stages = default_diffuser_resolved["composition"]["stages"]
+    default_diffuser_steps = default_diffuser_stages[1]["steps"]
+    if len(default_diffuser_steps) != 4:
+        raise AssertionError(
+            f"expected the Reference four-step chain by default, got "
+            f"{default_diffuser_steps}"
+        )
+    # totalMs 300 at 48kHz is 14400 samples; doubling weights step i by 2**i.
+    default_lengths = [entry["lengthSamples"] for entry in default_diffuser_steps]
+    if default_lengths != [960, 1920, 3840, 7680]:
+        raise AssertionError(
+            f"unexpected default Reference doubling apportionment: "
+            f"{default_lengths}"
+        )
+    if sum(default_lengths) != default_diffuser_stages[1]["totalSamples"]:
+        raise AssertionError(
+            "Reference default step sample budgets did not sum to the "
+            "resolved total"
+        )
+
     stereo_result = workspace / "stereo-reference-result"
     stereo_rerender = workspace / "stereo-reference-rerender"
     require_success(
@@ -598,8 +781,6 @@ def main():
 
     invalid_channels_request = json.loads(reference_request.read_text())
     invalid_channels_request["composition"]["stages"][0]["channels"] = 0
-    invalid_steps_request = json.loads(reference_request.read_text())
-    invalid_steps_request["composition"]["stages"][1]["steps"] = 2
     invalid_total_request = json.loads(reference_request.read_text())
     invalid_total_request["composition"]["stages"][1]["totalMs"] = 0
     sub_sample_request = json.loads(reference_request.read_text())
@@ -610,6 +791,20 @@ def main():
     short_delay_request["composition"]["stages"][1]["totalMs"] = 0.1
     non_power_of_two_request = json.loads(reference_request.read_text())
     non_power_of_two_request["composition"]["stages"][0]["channels"] = 3
+    lengths_ms_with_steps_request = json.loads(reference_request.read_text())
+    lengths_ms_with_steps_request["composition"]["stages"][1]["lengthsMs"] = [1.0]
+    step_override_out_of_range_request = json.loads(reference_request.read_text())
+    step_override_out_of_range_request["composition"]["stages"][1][
+        "stepOverrides"
+    ] = [{"index": 1, "polarity": "none"}]
+    step_override_duplicate_request = json.loads(reference_request.read_text())
+    step_override_duplicate_request["composition"]["stages"][1]["steps"] = 2
+    step_override_duplicate_request["composition"]["stages"][1][
+        "stepOverrides"
+    ] = [
+        {"index": 0, "polarity": "none"},
+        {"index": 0, "shuffle": False},
+    ]
     unsafe_format_request = json.loads(reference_request.read_text())
     unsafe_format_request["formatVersion"] = 2
     unsafe_format_request["composition"]["stages"][0]["channels"] = 1073741824
@@ -649,11 +844,6 @@ def main():
             "expected value greater than zero",
         ),
         (
-            json.dumps(invalid_steps_request),
-            "invalid_configuration at /composition/stages/1/steps: "
-            "the first diffusion slice requires exactly one step",
-        ),
-        (
             json.dumps(invalid_total_request),
             "invalid_configuration at /composition/stages/1/totalMs: "
             "expected value greater than zero",
@@ -670,13 +860,28 @@ def main():
         ),
         (
             json.dumps(short_delay_request),
-            "invalid_configuration at /composition/stages/1/totalMs: "
+            "invalid_configuration at /composition/stages/1/steps/0/lengthSamples: "
             "delay strategy requires at least one sample position per Channel",
         ),
         (
             json.dumps(non_power_of_two_request),
-            "invalid_configuration at /composition/stages/1/step/mix: "
+            "invalid_configuration at /composition/stages/1/steps/0/mix: "
             "hadamard requires a power-of-two Channel count",
+        ),
+        (
+            json.dumps(lengths_ms_with_steps_request),
+            "invalid_configuration at /composition/stages/1/lengthsMs: "
+            "expected exactly one of lengthsMs or steps/totalMs/distribution",
+        ),
+        (
+            json.dumps(step_override_out_of_range_request),
+            "invalid_configuration at /composition/stages/1/stepOverrides/0/index: "
+            "expected index less than the resolved step count",
+        ),
+        (
+            json.dumps(step_override_duplicate_request),
+            "invalid_configuration at /composition/stages/1/stepOverrides/1/index: "
+            "expected distinct step indices",
         ),
         (
             '{"seed": ',

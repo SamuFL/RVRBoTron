@@ -103,10 +103,10 @@ build/default/rvrbotron render \
 ### Render the first Reference Diffusion Step
 
 Format version 1 also accepts the ordered
-`[split, diffuser, downmix]` Composition shape. The current tracer supports
-one Hadamard Diffusion Step and select Downmix. Diagnostic ablations support
-`normalisation: "none"`, `delayStrategy: "even"`, `shuffle: false`, and
-`polarity: "none"`:
+`[split, diffuser, downmix]` Composition shape. The Diffuser resolves to an
+ordered chain of Hadamard Diffusion Steps (`4` by default) feeding a select
+Downmix. Diagnostic ablations support `normalisation: "none"`,
+`delayStrategy: "even"`, `shuffle: false`, and `polarity: "none"`:
 
 ```json
 {
@@ -203,15 +203,31 @@ mapping.
 
 #### `diffuser` stage
 
-| Field | Values | Default |
-| --- | --- | --- |
-| `steps` | unsigned 32-bit integer | `1` (only `1` is currently accepted) |
-| `totalMs` | finite number | `40` |
-| `distribution` | `"even"` \| `"doubling"` | `"even"` |
-| `step.delayStrategy` | `"segmented-random"` \| `"even"` | `"segmented-random"` |
-| `step.mix` | `"hadamard"` | `"hadamard"` (only option) |
-| `step.shuffle` | boolean | `true` |
-| `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` |
+| Field | Values | Default | Notes |
+| --- | --- | --- | --- |
+| `steps` | unsigned 32-bit integer (N) | `4` | Number of ordered Diffusion Steps sharing `totalMs`/`distribution`. Mutually exclusive with `lengthsMs`. |
+| `totalMs` | finite number | `300` | Combined length of every Diffusion Step, apportioned per `distribution`. Mutually exclusive with `lengthsMs`. |
+| `distribution` | `"even"` \| `"doubling"` | `"doubling"` | `"even"` gives every step an equal share of `totalMs`; `"doubling"` weights step *i* by `2^i` (each step roughly twice the previous). Mutually exclusive with `lengthsMs`. |
+| `lengthsMs` | array of finite numbers (one per step, N ≥ 1) | unset | Explicit per-step lengths in milliseconds, in step order. Use instead of `steps`/`totalMs`/`distribution` for full control over each step's share. |
+| `step.delayStrategy` | `"segmented-random"` \| `"even"` | `"segmented-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `step.mix` | `"hadamard"` | `"hadamard"` (only option) | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `step.shuffle` | boolean | `true` | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `stepOverrides` | array of `{index, delayStrategy?, mix?, shuffle?, polarity?}` | unset | Sparse per-step overrides keyed by zero-based step index. Only listed fields are overridden; omitted fields fall back to the shared `step` defaults above. Each index must be unique and within `[0, stepCount)`. |
+
+Every Diffusion Step's `delaysSamples`, `permutation`, and `polaritySigns`
+are derived from `(seed, step index, Channel)`, so a given step index's
+`permutation`/`polaritySigns` are stable across changes to `steps`/`totalMs`/
+`lengthsMs` — only `delaysSamples` shifts when a step's own resolved length
+changes. Per-step sample lengths are apportioned from `totalMs`/`lengthsMs`
+using largest-remainder rounding, so they always sum exactly to the
+resolved total.
+
+The resolved Diffuser is rejected before allocation if its estimated DSP
+memory footprint (delay lines plus per-step mix matrices) exceeds the
+configured budget — 512 MiB by default, overridable with
+`--memory-budget-mib <mebibytes>` on `render`. `--capture-stages all` writes
+one canonical WAV per resolved step, named `01-diffusion-step-{i}.wav`.
 
 #### `downmix` stage
 

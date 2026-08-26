@@ -48,10 +48,14 @@ struct SampleBudget {
 };
 
 struct DiffuserDerivation {
-  std::uint32_t stepCount = 1;
-  double totalMs = 40.0;
+  std::uint32_t stepCount = kDefaultDiffuserStepCount;
+  double totalMs = kDefaultDiffuserTotalMs;
   SampleBudget sampleBudget;
   bool deriveChannelValues = true;
+  // Per-step sample lengths apportioned from the total sample budget by
+  // largest remainder; empty when the plan could not be computed (for
+  // example an unsupported distribution or non-finite weights).
+  std::vector<std::uint64_t> expectedStepLengths;
 };
 
 struct ResolutionEvidence {
@@ -59,8 +63,7 @@ struct ResolutionEvidence {
 };
 
 SampleBudget deriveSampleBudget(const double totalMs,
-                                const std::uint32_t sampleRate,
-                                const std::uint32_t channels) noexcept {
+                                const std::uint32_t sampleRate) noexcept {
   if (!(totalMs > 0.0)) {
     return {SampleBudgetStatus::nonPositive, 0};
   }
@@ -80,10 +83,154 @@ SampleBudget deriveSampleBudget(const double totalMs,
   if (samples == 0) {
     return {SampleBudgetStatus::belowOneSample, 0};
   }
-  if (samples + 1 < channels) {
-    return {SampleBudgetStatus::tooFewPositions, samples};
-  }
   return {SampleBudgetStatus::valid, samples};
+}
+
+// Segmented-random and even delay strategies each require one distinct
+// integer sample position per Channel within a step's own sample budget.
+bool hasEnoughPositionsForChannels(
+    const std::uint64_t lengthSamples,
+    const std::uint32_t channels) noexcept {
+  return lengthSamples + 1 >= channels;
+}
+
+std::optional<std::uint64_t> checkedMul(
+    const std::uint64_t a, const std::uint64_t b) noexcept {
+  if (a != 0 && b > std::numeric_limits<std::uint64_t>::max() / a) {
+    return std::nullopt;
+  }
+  return a * b;
+}
+
+std::optional<std::uint64_t> checkedAdd(
+    const std::uint64_t a, const std::uint64_t b) noexcept {
+  if (a > std::numeric_limits<std::uint64_t>::max() - b) {
+    return std::nullopt;
+  }
+  return a + b;
+}
+
+// Conservative (worst-case double-precision Sample) estimate of the
+// DSP-owned bytes a resolved Diffuser will occupy: one delay line per
+// Channel sized to the shared sample budget, plus a full NxN matrix and
+// small per-Channel metadata for every step.
+std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
+    const std::uint32_t channels,
+    const std::uint64_t totalSamples,
+    const std::uint32_t stepCount) noexcept {
+  constexpr std::uint64_t kSampleBytes = 8;
+  constexpr std::uint64_t kMetadataBytesPerChannel = 24;
+  auto delayBytes = checkedMul(channels, totalSamples);
+  delayBytes =
+      delayBytes ? checkedMul(*delayBytes, kSampleBytes) : std::nullopt;
+  const auto matrixElements = checkedMul(channels, channels);
+  auto matrixBytesPerStep =
+      matrixElements ? checkedMul(*matrixElements, kSampleBytes)
+                     : std::nullopt;
+  auto matrixBytes = matrixBytesPerStep
+                         ? checkedMul(*matrixBytesPerStep, stepCount)
+                         : std::nullopt;
+  auto metadataBytesPerStep = checkedMul(channels, kMetadataBytesPerChannel);
+  auto metadataBytes = metadataBytesPerStep
+                           ? checkedMul(*metadataBytesPerStep, stepCount)
+                           : std::nullopt;
+  if (!delayBytes.has_value() || !matrixBytes.has_value() ||
+      !metadataBytes.has_value()) {
+    return std::nullopt;
+  }
+  auto total = checkedAdd(*delayBytes, *matrixBytes);
+  total = total.has_value() ? checkedAdd(*total, *metadataBytes)
+                             : std::nullopt;
+  return total;
+}
+
+void checkDiffuserMemoryBudget(
+    const std::uint32_t channels,
+    const std::uint64_t totalSamples,
+    const std::uint32_t stepCount,
+    const std::uint64_t budgetBytes,
+    const std::string_view path) {
+  const auto estimate =
+      estimateDiffuserMemoryBytes(channels, totalSamples, stepCount);
+  if (!estimate.has_value() || *estimate > budgetBytes) {
+    fail(
+        path,
+        "resolved Diffuser DSP memory footprint exceeds the configured "
+        "memory budget");
+  }
+}
+
+// Apportions `totalSamples` across `weights.size()` steps by largest
+// remainder: each step first receives the floor of its ideal (weighted)
+// share, then the leftover samples are distributed one at a time to the
+// steps with the largest fractional remainder, using ascending step index
+// to break ties. The result always sums exactly to `totalSamples`.
+std::vector<std::uint64_t> apportionStepSamples(
+    const std::uint64_t totalSamples,
+    const std::vector<long double>& weights) {
+  const auto stepCount = weights.size();
+  if (stepCount == 0) {
+    return {};
+  }
+  std::vector<std::uint64_t> base(stepCount, 0);
+  std::vector<long double> fractional(stepCount, 0.0L);
+  const auto weightSum =
+      std::accumulate(weights.begin(), weights.end(), 0.0L);
+  std::uint64_t baseSum = 0;
+  for (std::size_t index = 0; index < stepCount; ++index) {
+    const auto ideal =
+        static_cast<long double>(totalSamples) * weights[index] / weightSum;
+    base[index] = static_cast<std::uint64_t>(ideal);
+    fractional[index] = ideal - static_cast<long double>(base[index]);
+    baseSum += base[index];
+  }
+  const auto remaining = totalSamples - baseSum;
+  std::vector<std::size_t> order(stepCount);
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(
+      order.begin(), order.end(),
+      [&fractional](const std::size_t a, const std::size_t b) {
+        if (fractional[a] != fractional[b]) {
+          return fractional[a] > fractional[b];
+        }
+        return a < b;
+      });
+  for (std::uint64_t index = 0; index < remaining; ++index) {
+    base[order[index]] += 1;
+  }
+  return base;
+}
+
+// Computes the relative per-step weight used for largest-remainder
+// apportionment: explicit `lengthsMs` values when present, otherwise an
+// even split or a doubling (2^index) split of the shared total. Returns
+// nullopt if a weight overflowed to a non-finite value (for example an
+// unreasonably large doubling step count).
+std::optional<std::vector<long double>> diffuserStepWeights(
+    const DiffuserConfig& requested,
+    const std::uint32_t stepCount) {
+  if (requested.lengthsMs.has_value()) {
+    std::vector<long double> weights;
+    weights.reserve(requested.lengthsMs->size());
+    for (const auto lengthMs : *requested.lengthsMs) {
+      weights.push_back(static_cast<long double>(lengthMs));
+    }
+    return weights;
+  }
+  const auto distribution =
+      requested.distribution.value_or(DiffusionDistribution::doubling);
+  std::vector<long double> weights(stepCount, 1.0L);
+  if (distribution == DiffusionDistribution::doubling) {
+    long double value = 1.0L;
+    for (std::uint32_t index = 0; index < stepCount; ++index) {
+      if (!std::isfinite(value)) {
+        return std::nullopt;
+      }
+      weights[index] = value;
+      value *= 2.0L;
+    }
+  }
+  return weights;
 }
 
 std::optional<std::size_t> hadamardElementCount(
@@ -210,109 +357,143 @@ dsp::ResolvedDiffuser resolveDiffuser(
     const std::uint32_t sampleRate,
     const std::uint64_t seed,
     const DiffuserDerivation& derivation) {
-  const auto stepSettings =
-      requested.step.value_or(DiffusionStepConfig{});
-  const auto delayStrategy = stepSettings.delayStrategy.value_or(
-      dsp::DelayStrategy::segmentedRandom);
-  const auto mix =
-      stepSettings.mix.value_or(dsp::MixMatrixType::hadamard);
-  const auto shuffle = stepSettings.shuffle.value_or(true);
-  const auto polarity = stepSettings.polarity.value_or(
-      dsp::PolarityStrategy::seededRandom);
+  const auto stepDefaults = requested.step.value_or(DiffusionStepConfig{});
 
   dsp::ResolvedDiffuser diffuser;
   diffuser.totalSamples = derivation.sampleBudget.samples;
-  if (derivation.stepCount != 1) {
+  if (derivation.expectedStepLengths.size() != derivation.stepCount) {
     return diffuser;
   }
-
-  dsp::ResolvedDiffusionStep step;
-  step.index = 0;
-  step.lengthSamples = derivation.sampleBudget.samples;
-  step.lengthMs =
-      sampleRate == 0
-          ? 0.0
-          : static_cast<double>(step.lengthSamples) * 1000.0 /
-                sampleRate;
-  step.delayStrategy = delayStrategy;
-  step.shuffle = shuffle;
-  step.polarity = polarity;
-  step.mix = mix;
 
   const auto matrixElements = hadamardElementCount(channels);
-  const auto supportedDelayStrategy =
-      delayStrategy == dsp::DelayStrategy::segmentedRandom ||
-      delayStrategy == dsp::DelayStrategy::even;
-  const auto supportedPolarity =
-      polarity == dsp::PolarityStrategy::seededRandom ||
-      polarity == dsp::PolarityStrategy::none;
-  const auto canDeriveChannelValues =
-      derivation.deriveChannelValues &&
-      derivation.sampleBudget.status == SampleBudgetStatus::valid &&
-      isPowerOfTwo(channels) &&
-      mix == dsp::MixMatrixType::hadamard &&
-      supportedDelayStrategy &&
-      supportedPolarity &&
-      matrixElements.has_value();
-  if (!canDeriveChannelValues) {
+  // The only supported matrix type is currently Hadamard, which is
+  // deterministic for a given Channel count, so every step shares the same
+  // matrix instance (computed once) even though it is fully serialized
+  // per step.
+  std::optional<std::vector<double>> sharedMatrix;
+
+  diffuser.steps.reserve(derivation.stepCount);
+  for (std::uint32_t index = 0; index < derivation.stepCount; ++index) {
+    const DiffusionStepConfig* stepOverride = nullptr;
+    if (requested.stepOverrides.has_value()) {
+      for (const auto& candidate : *requested.stepOverrides) {
+        if (candidate.index == index) {
+          stepOverride = &candidate.step;
+          break;
+        }
+      }
+    }
+    const auto delayStrategy =
+        (stepOverride != nullptr && stepOverride->delayStrategy.has_value())
+            ? *stepOverride->delayStrategy
+            : stepDefaults.delayStrategy.value_or(
+                  dsp::DelayStrategy::segmentedRandom);
+    const auto mix =
+        (stepOverride != nullptr && stepOverride->mix.has_value())
+            ? *stepOverride->mix
+            : stepDefaults.mix.value_or(dsp::MixMatrixType::hadamard);
+    const auto shuffle =
+        (stepOverride != nullptr && stepOverride->shuffle.has_value())
+            ? *stepOverride->shuffle
+            : stepDefaults.shuffle.value_or(true);
+    const auto polarity =
+        (stepOverride != nullptr && stepOverride->polarity.has_value())
+            ? *stepOverride->polarity
+            : stepDefaults.polarity.value_or(
+                  dsp::PolarityStrategy::seededRandom);
+
+    dsp::ResolvedDiffusionStep step;
+    step.index = index;
+    step.lengthSamples = derivation.expectedStepLengths[index];
+    step.lengthMs =
+        sampleRate == 0
+            ? 0.0
+            : static_cast<double>(step.lengthSamples) * 1000.0 /
+                  sampleRate;
+    step.delayStrategy = delayStrategy;
+    step.shuffle = shuffle;
+    step.polarity = polarity;
+    step.mix = mix;
+
+    const auto supportedDelayStrategy =
+        delayStrategy == dsp::DelayStrategy::segmentedRandom ||
+        delayStrategy == dsp::DelayStrategy::even;
+    const auto supportedPolarity =
+        polarity == dsp::PolarityStrategy::seededRandom ||
+        polarity == dsp::PolarityStrategy::none;
+    const auto canDeriveChannelValues =
+        derivation.deriveChannelValues &&
+        derivation.sampleBudget.status == SampleBudgetStatus::valid &&
+        isPowerOfTwo(channels) &&
+        mix == dsp::MixMatrixType::hadamard &&
+        supportedDelayStrategy &&
+        supportedPolarity &&
+        matrixElements.has_value() &&
+        hasEnoughPositionsForChannels(step.lengthSamples, channels);
+    if (!canDeriveChannelValues) {
+      diffuser.steps.push_back(std::move(step));
+      continue;
+    }
+
+    step.delaysSamples.reserve(channels);
+    step.delaysMs.reserve(channels);
+    step.bufferSizes.reserve(channels);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      std::uint64_t delay = 0;
+      if (delayStrategy == dsp::DelayStrategy::segmentedRandom) {
+        const auto positions = step.lengthSamples + 1;
+        const auto start =
+            partitionBoundary(positions, channels, channel);
+        const auto end =
+            partitionBoundary(positions, channels, channel + 1U);
+        delay =
+            start + boundedRandom(
+                        seed,
+                        kDiffusionDelayUsage,
+                        step.index,
+                        channel,
+                        end - start);
+      } else {
+        delay = evenDelay(step.lengthSamples, channels, channel);
+      }
+      step.delaysSamples.push_back(delay);
+      step.delaysMs.push_back(
+          static_cast<double>(delay) * 1000.0 / sampleRate);
+      step.bufferSizes.push_back(delay);
+    }
+
+    step.permutation.resize(channels);
+    std::iota(step.permutation.begin(), step.permutation.end(), 0U);
+    if (shuffle) {
+      for (std::uint32_t position = channels - 1U; position > 0;
+           --position) {
+        const auto selected = static_cast<std::uint32_t>(boundedRandom(
+            seed,
+            kDiffusionShuffleUsage,
+            step.index,
+            position,
+            static_cast<std::uint64_t>(position) + 1));
+        std::swap(step.permutation[position], step.permutation[selected]);
+      }
+    }
+
+    step.polaritySigns.reserve(channels);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      if (polarity == dsp::PolarityStrategy::none) {
+        step.polaritySigns.push_back(1);
+      } else {
+        const auto value = positionalSplitMix64V1(
+            seed, kDiffusionPolarityUsage, step.index, channel);
+        step.polaritySigns.push_back((value & 1U) == 0 ? 1 : -1);
+      }
+    }
+    if (!sharedMatrix.has_value()) {
+      sharedMatrix = makeHadamard(channels, *matrixElements);
+    }
+    step.matrix = *sharedMatrix;
+
     diffuser.steps.push_back(std::move(step));
-    return diffuser;
   }
-
-  step.delaysSamples.reserve(channels);
-  step.delaysMs.reserve(channels);
-  step.bufferSizes.reserve(channels);
-  for (std::uint32_t channel = 0; channel < channels; ++channel) {
-    std::uint64_t delay = 0;
-    if (delayStrategy == dsp::DelayStrategy::segmentedRandom) {
-      const auto positions = step.lengthSamples + 1;
-      const auto start =
-          partitionBoundary(positions, channels, channel);
-      const auto end =
-          partitionBoundary(positions, channels, channel + 1U);
-      delay =
-          start + boundedRandom(
-                      seed,
-                      kDiffusionDelayUsage,
-                      step.index,
-                      channel,
-                      end - start);
-    } else {
-      delay = evenDelay(step.lengthSamples, channels, channel);
-    }
-    step.delaysSamples.push_back(delay);
-    step.delaysMs.push_back(
-        static_cast<double>(delay) * 1000.0 / sampleRate);
-    step.bufferSizes.push_back(delay);
-  }
-
-  step.permutation.resize(channels);
-  std::iota(step.permutation.begin(), step.permutation.end(), 0U);
-  if (shuffle) {
-    for (std::uint32_t index = channels - 1U; index > 0; --index) {
-      const auto selected = static_cast<std::uint32_t>(boundedRandom(
-          seed,
-          kDiffusionShuffleUsage,
-          step.index,
-          index,
-          static_cast<std::uint64_t>(index) + 1));
-      std::swap(step.permutation[index], step.permutation[selected]);
-    }
-  }
-
-  step.polaritySigns.reserve(channels);
-  for (std::uint32_t channel = 0; channel < channels; ++channel) {
-    if (polarity == dsp::PolarityStrategy::none) {
-      step.polaritySigns.push_back(1);
-    } else {
-      const auto value = positionalSplitMix64V1(
-          seed, kDiffusionPolarityUsage, step.index, channel);
-      step.polaritySigns.push_back((value & 1U) == 0 ? 1 : -1);
-    }
-  }
-  step.matrix = makeHadamard(channels, *matrixElements);
-
-  diffuser.steps.push_back(std::move(step));
   return diffuser;
 }
 
@@ -359,13 +540,15 @@ void validateShape(const dsp::ResolvedComposition& composition) {
 
 void validateResolvedConfig(
     const dsp::ResolvedConfig& resolved,
-    const ResolutionEvidence* resolutionEvidence);
+    const ResolutionEvidence* resolutionEvidence,
+    std::uint64_t memoryBudgetBytes);
 
 } // namespace
 
 dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                                   const std::uint32_t sampleRate,
-                                  const std::uint32_t inputChannels) {
+                                  const std::uint32_t inputChannels,
+                                  const std::uint64_t memoryBudgetBytes) {
   dsp::ResolvedConfig resolved{
       requested.formatVersion.value_or(1),
       requested.seed.value_or(0),
@@ -405,11 +588,40 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
             } else if constexpr (
                 std::is_same_v<Stage, DiffuserConfig>) {
               DiffuserDerivation derivation;
-              derivation.stepCount = stageConfig.steps.value_or(1);
-              derivation.totalMs = stageConfig.totalMs.value_or(40.0);
-              derivation.sampleBudget = deriveSampleBudget(
-                  derivation.totalMs, sampleRate, channels);
+              if (stageConfig.lengthsMs.has_value()) {
+                derivation.stepCount = static_cast<std::uint32_t>(
+                    stageConfig.lengthsMs->size());
+                derivation.totalMs = std::accumulate(
+                    stageConfig.lengthsMs->begin(),
+                    stageConfig.lengthsMs->end(),
+                    0.0);
+              } else {
+                derivation.stepCount =
+                    stageConfig.steps.value_or(kDefaultDiffuserStepCount);
+                derivation.totalMs = stageConfig.totalMs.value_or(
+                    kDefaultDiffuserTotalMs);
+              }
+              derivation.sampleBudget =
+                  deriveSampleBudget(derivation.totalMs, sampleRate);
               derivation.deriveChannelValues = deriveChannelValues;
+              if (derivation.deriveChannelValues &&
+                  derivation.stepCount > 0 &&
+                  derivation.sampleBudget.status ==
+                      SampleBudgetStatus::valid) {
+                const auto weights = diffuserStepWeights(
+                    stageConfig, derivation.stepCount);
+                if (weights.has_value() &&
+                    weights->size() == derivation.stepCount) {
+                  checkDiffuserMemoryBudget(
+                      channels,
+                      derivation.sampleBudget.samples,
+                      derivation.stepCount,
+                      memoryBudgetBytes,
+                      "/composition/stages/1");
+                  derivation.expectedStepLengths = apportionStepSamples(
+                      derivation.sampleBudget.samples, *weights);
+                }
+              }
               resolutionEvidence.diffuser = derivation;
               resolved.composition.stages.emplace_back(
                   resolveDiffuser(
@@ -427,19 +639,21 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
     }
   }
 
-  validateResolvedConfig(resolved, &resolutionEvidence);
+  validateResolvedConfig(resolved, &resolutionEvidence, memoryBudgetBytes);
   return resolved;
 }
 
-void validateResolvedConfig(const dsp::ResolvedConfig& resolved) {
-  validateResolvedConfig(resolved, nullptr);
+void validateResolvedConfig(const dsp::ResolvedConfig& resolved,
+                            const std::uint64_t memoryBudgetBytes) {
+  validateResolvedConfig(resolved, nullptr, memoryBudgetBytes);
 }
 
 namespace {
 
 void validateResolvedConfig(
     const dsp::ResolvedConfig& resolved,
-    const ResolutionEvidence* const resolutionEvidence) {
+    const ResolutionEvidence* const resolutionEvidence,
+    const std::uint64_t memoryBudgetBytes) {
   if (resolved.formatVersion != 1) {
     fail("/formatVersion", "expected integer 1");
   }
@@ -461,10 +675,6 @@ void validateResolvedConfig(
   const auto validatingRequest =
       resolutionEvidence != nullptr &&
       resolutionEvidence->diffuser.has_value();
-  const auto mixPath =
-      validatingRequest
-          ? "/composition/stages/1/step/mix"
-          : "/composition/stages/1/steps/0/mix";
   if (split.inputChannels == 0 || split.inputChannels > 2) {
     fail(
         "/composition/stages/0/inputChannels",
@@ -531,21 +741,8 @@ void validateResolvedConfig(
         "expected gain derived from Split normalisation");
   }
   if (validatingRequest &&
-      resolutionEvidence->diffuser->stepCount != 1) {
-    fail(
-        "/composition/stages/1/steps",
-        "the first diffusion slice requires exactly one step");
-  }
-  if (diffuser.steps.size() != 1) {
-    fail(
-        "/composition/stages/1/steps",
-        "the first diffusion slice requires exactly one step");
-  }
-  const auto& step = diffuser.steps.front();
-  if (step.index != 0) {
-    fail("/composition/stages/1/steps/0/index", "expected zero");
-  }
-  if (validatingRequest) {
+      resolutionEvidence->diffuser->expectedStepLengths.size() !=
+          resolutionEvidence->diffuser->stepCount) {
     switch (resolutionEvidence->diffuser->sampleBudget.status) {
     case SampleBudgetStatus::valid:
       break;
@@ -566,178 +763,219 @@ void validateResolvedConfig(
           "/composition/stages/1/totalMs",
           "delay strategy requires at least one sample position per Channel");
     }
-  }
-  if (step.lengthSamples != diffuser.totalSamples ||
-      step.lengthSamples == 0) {
     fail(
-        "/composition/stages/1/steps/0/lengthSamples",
-        "expected the complete nonzero Diffuser sample budget");
+        "/composition/stages/1/steps",
+        "expected a valid step count and distribution");
   }
-  if (step.lengthSamples == std::numeric_limits<std::uint64_t>::max() ||
-      step.lengthSamples + 1 < channels) {
-    fail(
-        "/composition/stages/1/steps/0/lengthSamples",
-        "delay strategy requires at least one sample position per Channel");
+  if (diffuser.steps.empty()) {
+    fail("/composition/stages/1/steps", "expected at least one step");
   }
-  const auto expectedLengthMs =
-      static_cast<double>(step.lengthSamples) * 1000.0 /
-      resolved.sampleRate;
-  if (step.lengthMs != expectedLengthMs) {
+  if (diffuser.totalSamples == 0) {
     fail(
-        "/composition/stages/1/steps/0/lengthMs",
-        "expected milliseconds derived from the integer sample budget");
+        "/composition/stages/1/totalSamples",
+        "expected value greater than zero");
   }
-  if (step.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
-      step.delayStrategy != dsp::DelayStrategy::even) {
+  checkDiffuserMemoryBudget(
+      channels,
+      diffuser.totalSamples,
+      static_cast<std::uint32_t>(diffuser.steps.size()),
+      memoryBudgetBytes,
+      "/composition/stages/1");
+  if (validatingRequest &&
+      diffuser.steps.size() != resolutionEvidence->diffuser->stepCount) {
     fail(
-        "/composition/stages/1/steps/0/delayStrategy",
-        "expected segmented-random or even");
-  }
-  if (step.polarity != dsp::PolarityStrategy::seededRandom &&
-      step.polarity != dsp::PolarityStrategy::none) {
-    fail(
-        "/composition/stages/1/steps/0/polarity",
-        "expected seeded-random or none");
-  }
-  if (step.mix != dsp::MixMatrixType::hadamard) {
-    fail(
-        mixPath,
-        "the first diffusion slice requires hadamard");
-  }
-  if (!isPowerOfTwo(channels)) {
-    fail(
-        mixPath,
-        "hadamard requires a power-of-two Channel count");
+        "/composition/stages/1/steps",
+        "expected one resolved step per requested step");
   }
   const auto matrixElements = hadamardElementCount(channels);
-  if (!matrixElements.has_value()) {
-    fail(mixPath, "Hadamard matrix is too large");
-  }
-  const auto requireChannelValues =
-      [channels](const std::size_t size,
-                 const std::string_view path) {
-        if (size != channels) {
-          fail(path, "expected one value per Channel");
-        }
-      };
-  requireChannelValues(
-      step.delaysSamples.size(),
-      "/composition/stages/1/steps/0/delaysSamples");
-  requireChannelValues(
-      step.delaysMs.size(),
-      "/composition/stages/1/steps/0/delaysMs");
-  requireChannelValues(
-      step.bufferSizes.size(),
-      "/composition/stages/1/steps/0/bufferSizes");
-  requireChannelValues(
-      step.permutation.size(),
-      "/composition/stages/1/steps/0/permutation");
-  requireChannelValues(
-      step.polaritySigns.size(),
-      "/composition/stages/1/steps/0/polaritySigns");
-
-  auto sortedDelays = step.delaysSamples;
-  std::sort(sortedDelays.begin(), sortedDelays.end());
-  if (std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
-      sortedDelays.end()) {
-    fail(
-        "/composition/stages/1/steps/0/delaysSamples",
-        "expected distinct delays within the step sample budget");
-  }
-  if (step.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
-    const auto positions = step.lengthSamples + 1;
-    for (std::uint32_t channel = 0; channel < channels; ++channel) {
-      const auto start =
-          partitionBoundary(positions, channels, channel);
-      const auto end =
-          partitionBoundary(positions, channels, channel + 1U);
-      if (sortedDelays[channel] < start ||
-          sortedDelays[channel] >= end) {
-        fail(
-            "/composition/stages/1/steps/0/delaysSamples",
-            "segmented-random requires one delay in every segment");
-      }
+  const auto powerOfTwoChannels = isPowerOfTwo(channels);
+  std::uint64_t stepLengthSum = 0;
+  for (std::size_t stepPosition = 0; stepPosition < diffuser.steps.size();
+       ++stepPosition) {
+    const auto& step = diffuser.steps[stepPosition];
+    const auto stepPath =
+        "/composition/stages/1/steps/" + std::to_string(stepPosition);
+    if (step.index != stepPosition) {
+      fail(stepPath + "/index", "expected the resolved step position");
     }
-  }
-  std::vector<bool> seenPermutation(channels, false);
-  for (std::uint32_t channel = 0; channel < channels; ++channel) {
-    const auto delay = step.delaysSamples[channel];
-    if (delay > step.lengthSamples) {
+    if (step.lengthSamples == 0) {
       fail(
-          "/composition/stages/1/steps/0/delaysSamples",
+          stepPath + "/lengthSamples",
+          "expected the complete nonzero step sample budget");
+    }
+    if (step.lengthSamples == std::numeric_limits<std::uint64_t>::max()) {
+      fail(
+          stepPath + "/lengthSamples",
+          "delay strategy requires at least one sample position per "
+          "Channel");
+    }
+    if (validatingRequest &&
+        stepPosition <
+            resolutionEvidence->diffuser->expectedStepLengths.size() &&
+        step.lengthSamples !=
+            resolutionEvidence->diffuser
+                ->expectedStepLengths[stepPosition]) {
+      fail(
+          stepPath + "/lengthSamples",
+          "expected the largest-remainder apportioned step sample budget");
+    }
+    stepLengthSum += step.lengthSamples;
+    const auto expectedLengthMs =
+        static_cast<double>(step.lengthSamples) * 1000.0 /
+        resolved.sampleRate;
+    if (step.lengthMs != expectedLengthMs) {
+      fail(
+          stepPath + "/lengthMs",
+          "expected milliseconds derived from the integer sample budget");
+    }
+    if (step.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
+        step.delayStrategy != dsp::DelayStrategy::even) {
+      fail(
+          stepPath + "/delayStrategy",
+          "expected segmented-random or even");
+    }
+    if (step.polarity != dsp::PolarityStrategy::seededRandom &&
+        step.polarity != dsp::PolarityStrategy::none) {
+      fail(
+          stepPath + "/polarity",
+          "expected seeded-random or none");
+    }
+    if (step.mix != dsp::MixMatrixType::hadamard) {
+      fail(stepPath + "/mix", "every step requires hadamard");
+    }
+    if (!powerOfTwoChannels) {
+      fail(
+          stepPath + "/mix",
+          "hadamard requires a power-of-two Channel count");
+    }
+    if (!matrixElements.has_value()) {
+      fail(stepPath + "/mix", "Hadamard matrix is too large");
+    }
+    if (step.lengthSamples + 1 < channels) {
+      fail(
+          stepPath + "/lengthSamples",
+          "delay strategy requires at least one sample position per "
+          "Channel");
+    }
+    const auto requireChannelValues =
+        [channels, &stepPath](const std::size_t size,
+                              const std::string_view field) {
+          if (size != channels) {
+            fail(stepPath + std::string(field), "expected one value per Channel");
+          }
+        };
+    requireChannelValues(step.delaysSamples.size(), "/delaysSamples");
+    requireChannelValues(step.delaysMs.size(), "/delaysMs");
+    requireChannelValues(step.bufferSizes.size(), "/bufferSizes");
+    requireChannelValues(step.permutation.size(), "/permutation");
+    requireChannelValues(step.polaritySigns.size(), "/polaritySigns");
+
+    auto sortedDelays = step.delaysSamples;
+    std::sort(sortedDelays.begin(), sortedDelays.end());
+    if (std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
+        sortedDelays.end()) {
+      fail(
+          stepPath + "/delaysSamples",
           "expected distinct delays within the step sample budget");
     }
-    const auto expectedDelayMs =
-        static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
-    if (step.delaysMs[channel] != expectedDelayMs) {
-      fail(
-          "/composition/stages/1/steps/0/delaysMs",
-          "expected milliseconds derived from integer delays");
-    }
-    if (step.bufferSizes[channel] != delay) {
-      fail(
-          "/composition/stages/1/steps/0/bufferSizes",
-          "expected each buffer size to equal its integer delay");
-    }
-    const auto source = step.permutation[channel];
-    if (source >= channels || seenPermutation[source]) {
-      fail(
-          "/composition/stages/1/steps/0/permutation",
-          "expected a permutation of Channel indices");
-    }
-    if (!step.shuffle && source != channel) {
-      fail(
-          "/composition/stages/1/steps/0/permutation",
-          "shuffle false requires the identity permutation");
-    }
-    seenPermutation[source] = true;
-    if (step.polaritySigns[channel] != -1 &&
-        step.polaritySigns[channel] != 1) {
-      fail(
-          "/composition/stages/1/steps/0/polaritySigns",
-          "expected -1 or 1");
-    }
-    if (step.polarity == dsp::PolarityStrategy::none &&
-        step.polaritySigns[channel] != 1) {
-      fail(
-          "/composition/stages/1/steps/0/polaritySigns",
-          "polarity none requires all +1 signs");
-    }
-    if (step.delayStrategy == dsp::DelayStrategy::even &&
-        delay != evenDelay(step.lengthSamples, channels, channel)) {
-      fail(
-          "/composition/stages/1/steps/0/delaysSamples",
-          "even requires delays distributed over the available positions");
-    }
-  }
-  if (step.matrix.size() != *matrixElements) {
-    fail(
-        "/composition/stages/1/steps/0/matrix",
-        "expected an N by N matrix");
-  }
-  const auto expectedScale =
-      1.0 / std::sqrt(static_cast<double>(channels));
-  const auto resolvedScale = step.matrix.front();
-  const auto scaleTolerance =
-      4.0 * std::numeric_limits<double>::epsilon() * expectedScale;
-  if (!std::isfinite(resolvedScale) || resolvedScale <= 0.0 ||
-      std::abs(resolvedScale - expectedScale) > scaleTolerance) {
-    fail(
-        "/composition/stages/1/steps/0/matrix",
-        "expected the normalized canonical Sylvester-Hadamard matrix");
-  }
-  for (std::uint32_t row = 0; row < channels; ++row) {
-    for (std::uint32_t column = 0; column < channels; ++column) {
-      const auto expected =
-          hasOddParity(row & column) ? -resolvedScale : resolvedScale;
-      if (step.matrix[
-              static_cast<std::size_t>(row) * channels + column] !=
-          expected) {
-        fail(
-            "/composition/stages/1/steps/0/matrix",
-            "expected the normalized canonical Sylvester-Hadamard matrix");
+    if (step.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
+      const auto positions = step.lengthSamples + 1;
+      for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        const auto start =
+            partitionBoundary(positions, channels, channel);
+        const auto end =
+            partitionBoundary(positions, channels, channel + 1U);
+        if (sortedDelays[channel] < start ||
+            sortedDelays[channel] >= end) {
+          fail(
+              stepPath + "/delaysSamples",
+              "segmented-random requires one delay in every segment");
+        }
       }
     }
+    std::vector<bool> seenPermutation(channels, false);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto delay = step.delaysSamples[channel];
+      if (delay > step.lengthSamples) {
+        fail(
+            stepPath + "/delaysSamples",
+            "expected distinct delays within the step sample budget");
+      }
+      const auto expectedDelayMs =
+          static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
+      if (step.delaysMs[channel] != expectedDelayMs) {
+        fail(
+            stepPath + "/delaysMs",
+            "expected milliseconds derived from integer delays");
+      }
+      if (step.bufferSizes[channel] != delay) {
+        fail(
+            stepPath + "/bufferSizes",
+            "expected each buffer size to equal its integer delay");
+      }
+      const auto source = step.permutation[channel];
+      if (source >= channels || seenPermutation[source]) {
+        fail(
+            stepPath + "/permutation",
+            "expected a permutation of Channel indices");
+      }
+      if (!step.shuffle && source != channel) {
+        fail(
+            stepPath + "/permutation",
+            "shuffle false requires the identity permutation");
+      }
+      seenPermutation[source] = true;
+      if (step.polaritySigns[channel] != -1 &&
+          step.polaritySigns[channel] != 1) {
+        fail(stepPath + "/polaritySigns", "expected -1 or 1");
+      }
+      if (step.polarity == dsp::PolarityStrategy::none &&
+          step.polaritySigns[channel] != 1) {
+        fail(
+            stepPath + "/polaritySigns",
+            "polarity none requires all +1 signs");
+      }
+      if (step.delayStrategy == dsp::DelayStrategy::even &&
+          delay != evenDelay(step.lengthSamples, channels, channel)) {
+        fail(
+            stepPath + "/delaysSamples",
+            "even requires delays distributed over the available "
+            "positions");
+      }
+    }
+    if (step.matrix.size() != *matrixElements) {
+      fail(stepPath + "/matrix", "expected an N by N matrix");
+    }
+    const auto expectedScale =
+        1.0 / std::sqrt(static_cast<double>(channels));
+    const auto resolvedScale = step.matrix.front();
+    const auto scaleTolerance =
+        4.0 * std::numeric_limits<double>::epsilon() * expectedScale;
+    if (!std::isfinite(resolvedScale) || resolvedScale <= 0.0 ||
+        std::abs(resolvedScale - expectedScale) > scaleTolerance) {
+      fail(
+          stepPath + "/matrix",
+          "expected the normalized canonical Sylvester-Hadamard matrix");
+    }
+    for (std::uint32_t row = 0; row < channels; ++row) {
+      for (std::uint32_t column = 0; column < channels; ++column) {
+        const auto expected =
+            hasOddParity(row & column) ? -resolvedScale : resolvedScale;
+        if (step.matrix[
+                static_cast<std::size_t>(row) * channels + column] !=
+            expected) {
+          fail(
+              stepPath + "/matrix",
+              "expected the normalized canonical Sylvester-Hadamard "
+              "matrix");
+        }
+      }
+    }
+  }
+  if (stepLengthSum != diffuser.totalSamples) {
+    fail(
+        "/composition/stages/1/steps",
+        "expected step sample budgets to sum to the resolved total");
   }
   if (downmix.inputChannels != channels ||
       downmix.outputChannels != 2) {

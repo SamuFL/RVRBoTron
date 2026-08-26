@@ -108,6 +108,19 @@ double parseNumber(const Json& value, const std::string_view path) {
   return number;
 }
 
+std::vector<double> parseNumberArray(
+    const Json& value,
+    const std::string_view path) {
+  requireArray(value, path);
+  std::vector<double> result;
+  result.reserve(value.size());
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    result.push_back(parseNumber(
+        value.at(index), std::string(path) + "/" + std::to_string(index)));
+  }
+  return result;
+}
+
 std::uint32_t parseUnsigned32(const Json& value,
                               const std::string_view path) {
   if (!value.is_number_unsigned()) {
@@ -239,12 +252,9 @@ config::SplitConfig parseRequestedSplit(
   return split;
 }
 
-config::DiffusionStepConfig parseRequestedStep(
+config::DiffusionStepConfig parseStepFields(
     const Json& value,
     const std::string_view path) {
-  requireObject(value, path);
-  rejectUnknownFields(
-      value, path, {"delayStrategy", "mix", "shuffle", "polarity"});
   config::DiffusionStepConfig step;
   if (value.contains("delayStrategy")) {
     step.delayStrategy = parseDelayStrategy(
@@ -264,11 +274,42 @@ config::DiffusionStepConfig parseRequestedStep(
   return step;
 }
 
+config::DiffusionStepConfig parseRequestedStep(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value, path, {"delayStrategy", "mix", "shuffle", "polarity"});
+  return parseStepFields(value, path);
+}
+
+config::DiffusionStepOverride parseRequestedStepOverride(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value, path, {"index", "delayStrategy", "mix", "shuffle", "polarity"});
+  requireField(value, "index", path);
+  config::DiffusionStepOverride stepOverride;
+  stepOverride.index =
+      parseUnsigned32(value.at("index"), std::string(path) + "/index");
+  stepOverride.step = parseStepFields(value, path);
+  return stepOverride;
+}
+
 config::DiffuserConfig parseRequestedDiffuser(
     const Json& value,
     const std::string_view path) {
   rejectUnknownFields(
-      value, path, {"type", "steps", "totalMs", "distribution", "step"});
+      value,
+      path,
+      {"type",
+       "steps",
+       "totalMs",
+       "distribution",
+       "lengthsMs",
+       "step",
+       "stepOverrides"});
   config::DiffuserConfig diffuser;
   if (value.contains("steps")) {
     diffuser.steps =
@@ -282,9 +323,59 @@ config::DiffuserConfig parseRequestedDiffuser(
     diffuser.distribution = parseDistribution(
         value.at("distribution"), std::string(path) + "/distribution");
   }
+  if (value.contains("lengthsMs")) {
+    if (diffuser.steps.has_value() || diffuser.totalMs.has_value() ||
+        diffuser.distribution.has_value()) {
+      fail(
+          std::string(path) + "/lengthsMs",
+          "expected exactly one of lengthsMs or steps/totalMs/distribution");
+    }
+    diffuser.lengthsMs = parseNumberArray(
+        value.at("lengthsMs"), std::string(path) + "/lengthsMs");
+    if (diffuser.lengthsMs->empty()) {
+      fail(
+          std::string(path) + "/lengthsMs",
+          "expected at least one step length");
+    }
+    for (std::size_t index = 0; index < diffuser.lengthsMs->size(); ++index) {
+      if (!((*diffuser.lengthsMs)[index] > 0.0)) {
+        fail(
+            std::string(path) + "/lengthsMs/" + std::to_string(index),
+            "expected value greater than zero");
+      }
+    }
+  }
   if (value.contains("step")) {
     diffuser.step =
         parseRequestedStep(value.at("step"), std::string(path) + "/step");
+  }
+  if (value.contains("stepOverrides")) {
+    const auto& overrides = value.at("stepOverrides");
+    const auto overridesPath = std::string(path) + "/stepOverrides";
+    requireArray(overrides, overridesPath);
+    const auto stepCount =
+        diffuser.lengthsMs.has_value()
+            ? static_cast<std::uint32_t>(diffuser.lengthsMs->size())
+            : diffuser.steps.value_or(config::kDefaultDiffuserStepCount);
+    std::vector<config::DiffusionStepOverride> parsedOverrides;
+    parsedOverrides.reserve(overrides.size());
+    std::vector<bool> seenIndex(stepCount, false);
+    for (std::size_t index = 0; index < overrides.size(); ++index) {
+      const auto entryPath = overridesPath + "/" + std::to_string(index);
+      auto stepOverride =
+          parseRequestedStepOverride(overrides.at(index), entryPath);
+      if (stepOverride.index >= stepCount) {
+        fail(
+            entryPath + "/index",
+            "expected index less than the resolved step count");
+      }
+      if (seenIndex[stepOverride.index]) {
+        fail(entryPath + "/index", "expected distinct step indices");
+      }
+      seenIndex[stepOverride.index] = true;
+      parsedOverrides.push_back(std::move(stepOverride));
+    }
+    diffuser.stepOverrides = std::move(parsedOverrides);
   }
   return diffuser;
 }
@@ -358,19 +449,6 @@ std::vector<std::uint32_t> parseUnsigned32Array(
   result.reserve(value.size());
   for (std::size_t index = 0; index < value.size(); ++index) {
     result.push_back(parseUnsigned32(
-        value.at(index), std::string(path) + "/" + std::to_string(index)));
-  }
-  return result;
-}
-
-std::vector<double> parseNumberArray(
-    const Json& value,
-    const std::string_view path) {
-  requireArray(value, path);
-  std::vector<double> result;
-  result.reserve(value.size());
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    result.push_back(parseNumber(
         value.at(index), std::string(path) + "/" + std::to_string(index)));
   }
   return result;
@@ -608,7 +686,9 @@ config::ReverbConfig parseRequestedConfig(const std::string_view contents) {
   return requested;
 }
 
-dsp::ResolvedConfig parseResolvedConfig(const std::string_view contents) {
+dsp::ResolvedConfig parseResolvedConfig(
+    const std::string_view contents,
+    const std::uint64_t memoryBudgetBytes) {
   const auto json = parseJson(contents);
   requireObject(json, "/");
   rejectUnknownFields(
@@ -627,7 +707,7 @@ dsp::ResolvedConfig parseResolvedConfig(const std::string_view contents) {
       parseUnsigned32(json.at("sampleRate"), "/sampleRate"),
       parseResolvedComposition(json.at("composition")),
   };
-  config::validateResolvedConfig(resolved);
+  config::validateResolvedConfig(resolved, memoryBudgetBytes);
   return resolved;
 }
 
