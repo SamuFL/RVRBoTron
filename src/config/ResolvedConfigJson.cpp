@@ -50,12 +50,26 @@ const char* polarityName(const dsp::PolarityStrategy polarity) {
       "unsupported Diffusion Step polarity");
 }
 
+const char* splitStrategyName(const dsp::SplitStrategyType strategy) {
+  switch (strategy) {
+  case dsp::SplitStrategyType::duplicate:
+    return "duplicate";
+  case dsp::SplitStrategyType::stereoHalves:
+    return "stereo-halves";
+  case dsp::SplitStrategyType::stereoInterleave:
+    return "stereo-interleave";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Split strategy");
+}
+
 Json splitJson(const dsp::ResolvedSplit& split) {
   return {
       {"type", "split"},
       {"inputChannels", split.inputChannels},
       {"channels", split.channels},
-      {"strategy", "duplicate"},
+      {"strategy", splitStrategyName(split.strategy)},
       {"normalisation", normalisationName(split.normalisation)},
       {"sourceGain", split.sourceGain},
       {"channelGain", split.channelGain},
