@@ -37,8 +37,8 @@ private:
 };
 
 // Feeds the first half of the Channels from the left input and the second
-// half from the right input, at even energy-normalized gain. Requires
-// stereo input and an even Channel count.
+// half from the right input, at the resolved Channel gain (energy or none).
+// Requires stereo input and an even Channel count.
 class StereoHalvesSplitStrategy final : public SplitStrategy {
 public:
   explicit StereoHalvesSplitStrategy(const ResolvedSplit& config);
