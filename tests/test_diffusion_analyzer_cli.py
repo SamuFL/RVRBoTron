@@ -175,6 +175,59 @@ def main():
             f"unexpected Hadamard orthogonality evidence: {orthogonality}"
         )
 
+    # duplicate Split feeds every Channel the same mono signal, so every
+    # pairwise Correlation is exactly 1.0 there.
+    correlation = analysis["correlation"]
+    if [entry["boundary"] for entry in correlation] != ["split", "diffusion-step"]:
+        raise AssertionError(f"unexpected Correlation boundaries: {correlation}")
+    if correlation[0]["meanAbsoluteOffDiagonal"] != 1.0:
+        raise AssertionError(
+            f"duplicate Split Correlation was not fully correlated: {correlation}"
+        )
+    step_correlation = correlation[1]["matrix"]
+    if len(step_correlation) != 8 or any(len(row) != 8 for row in step_correlation):
+        raise AssertionError(f"unexpected Correlation matrix shape: {correlation}")
+    if any(step_correlation[i][i] != 1.0 for i in range(8)):
+        raise AssertionError(f"Correlation diagonal was not self-correlated: {correlation}")
+
+    # Dense Hadamard mixing shares arrival support across every Channel, so
+    # Alignment score is exactly 1.0 (docs/design/reverb/stages/02-diffusion-step.md).
+    alignment = analysis["alignment"]
+    if alignment["stepIndex"] != 0 or alignment["mean"] != 1.0 or alignment["minimum"] != 1.0:
+        raise AssertionError(f"unexpected Alignment evidence: {alignment}")
+    if len(alignment["pairwise"]) != 28:  # C(8,2)
+        raise AssertionError(f"unexpected Alignment pairwise count: {alignment}")
+
+    # 1 Diffusion Step over 8 Channels: 8 structural Echo paths. This
+    # Reference configuration is independently known (test_reference_
+    # diffusion_cli.py) to produce exactly 8 wet arrival frames, so every
+    # Channel is active at exactly 8 Distinct arrivals with no collisions.
+    density = analysis["density"]
+    if density["echoPaths"] != 8:
+        raise AssertionError(f"unexpected Echo path count: {density}")
+    if density["distinctArrivalCounts"] != [8] * 8:
+        raise AssertionError(f"unexpected Distinct arrival counts: {density}")
+    if density["totalDistinctArrivals"] != 8 or density["bins"] != [8]:
+        raise AssertionError(f"unexpected Distinct arrival density: {density}")
+
+    # An all-pass Diffuser's combined N-Channel spectrum is flat by
+    # construction; the diagnostic stereo output need not be.
+    coloration = analysis["coloration"]
+    combined = coloration["combined"]
+    if combined["fftLength"] != 128:
+        raise AssertionError(f"unexpected Coloration FFT length: {combined}")
+    if combined["peakToPeakDb"] > 1e-9 or combined["rmsDb"] > 1e-9:
+        raise AssertionError(
+            f"all-pass Diffuser's combined spectrum was not flat: {combined}"
+        )
+    if abs(combined["spectralFlatness"] - 1.0) > 1e-9:
+        raise AssertionError(f"unexpected combined spectral flatness: {combined}")
+    stereo = coloration["stereo"]
+    if stereo["fftLength"] != combined["fftLength"]:
+        raise AssertionError(f"stereo Coloration FFT length diverged: {coloration}")
+    if not stereo["twelfthOctaveCurve"]:
+        raise AssertionError("stereo Coloration curve was empty")
+
     original = artifact.read_bytes()
     modified = artifact.stat().st_mtime_ns
     time.sleep(0.01)
@@ -278,6 +331,240 @@ def main():
         )
     if (truncated_result / "analysis").exists():
         raise AssertionError("truncated response created analysis")
+
+    # A fully hand-derivable N=2 fixture (even delays [0,1], no shuffle, no
+    # polarity flip, so only the Hadamard mix introduces structure) whose
+    # Correlation, Alignment, density, and Coloration evidence is verified
+    # against an independently worked NumPy oracle rather than trusting
+    # this analyzer's own output.
+    small_request = workspace / "small-request.json"
+    small_result = workspace / "small-result"
+    small_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 0,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 2,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 0.02,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "even",
+                                "mix": "hadamard",
+                                "shuffle": False,
+                                "polarity": "none",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            }
+        )
+    )
+    small_rendered = subprocess.run(
+        [
+            str(renderer),
+            "render",
+            "--input",
+            str(fixture),
+            "--config",
+            str(small_request),
+            "--capture-stages",
+            "all",
+            "--output",
+            str(small_result),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if small_rendered.returncode != 0:
+        raise AssertionError(small_rendered.stderr)
+    small_analyzed = subprocess.run(
+        [sys.executable, str(analyzer), str(small_result), "--source", str(fixture)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if small_analyzed.returncode != 0:
+        raise AssertionError(small_analyzed.stderr)
+    small_analysis = json.loads(
+        (small_result / "analysis" / "diffusion-v1.json").read_text()
+    )
+
+    small_correlation = small_analysis["correlation"]
+    if small_correlation[0]["matrix"] != [[1.0, 1.0], [1.0, 1.0]]:
+        raise AssertionError(
+            f"unexpected duplicate Split Correlation: {small_correlation}"
+        )
+    step_matrix = small_correlation[1]["matrix"]
+    if (
+        step_matrix[0][0] != 1.0
+        or step_matrix[1][1] != 1.0
+        or abs(step_matrix[0][1]) > 1e-15
+        or abs(step_matrix[1][0]) > 1e-15
+    ):
+        raise AssertionError(
+            f"unexpected Diffusion Step Correlation: {small_correlation}"
+        )
+
+    small_alignment = small_analysis["alignment"]
+    if small_alignment["pairwise"] != [
+        {"channelA": 0, "channelB": 1, "jaccard": 1.0}
+    ] or small_alignment["mean"] != 1.0 or small_alignment["minimum"] != 1.0:
+        raise AssertionError(f"unexpected small-fixture Alignment: {small_alignment}")
+
+    small_density = small_analysis["density"]
+    if small_density != {
+        "stepIndex": 0,
+        "activityFloorDb": -120.0,
+        "echoPaths": 2,
+        "distinctArrivalCounts": [2, 2],
+        "totalDistinctArrivals": 2,
+        "binMs": 10.0,
+        "bins": [2],
+    }:
+        raise AssertionError(f"unexpected small-fixture density: {small_density}")
+
+    small_coloration = small_analysis["coloration"]
+    small_combined = small_coloration["combined"]
+    small_stereo = small_coloration["stereo"]
+    if small_combined["fftLength"] != 64 or small_stereo["fftLength"] != 64:
+        raise AssertionError(f"unexpected small-fixture FFT length: {small_coloration}")
+    if len(small_combined["twelfthOctaveCurve"]) != 27:
+        raise AssertionError(
+            f"unexpected small-fixture 1/12-octave band count: {small_combined}"
+        )
+    # select Downmix at N=2 with unity compensation passes the Diffusion
+    # Step capture straight through to output.wav, so the diagnostic
+    # stereo spectrum matches the combined N-Channel spectrum exactly here.
+    for metric in ("peakToPeakDb", "rmsDb", "spectralFlatness"):
+        if abs(small_combined[metric] - small_stereo[metric]) > 1e-9:
+            raise AssertionError(
+                f"stereo and combined Coloration diverged at N=2: {small_coloration}"
+            )
+        if metric == "spectralFlatness":
+            if abs(small_combined[metric] - 1.0) > 1e-9:
+                raise AssertionError(
+                    f"all-pass Diffuser Coloration was not flat: {small_combined}"
+                )
+        elif small_combined[metric] > 1e-9:
+            raise AssertionError(
+                f"all-pass Diffuser Coloration was not flat: {small_combined}"
+            )
+
+    # Optional pairwise comparison: the same Resolved Configuration
+    # rendered at two block sizes must decode to exactly equal evidence.
+    compare_a = workspace / "compare-a"
+    compare_b = workspace / "compare-b"
+    for output, block_size in ((compare_a, 7), (compare_b, 1)):
+        rendered = subprocess.run(
+            [
+                str(renderer),
+                "render",
+                "--input",
+                str(fixture),
+                "--config",
+                str(small_request),
+                "--block-size",
+                str(block_size),
+                "--capture-stages",
+                "all",
+                "--output",
+                str(output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if rendered.returncode != 0:
+            raise AssertionError(rendered.stderr)
+
+    compared = subprocess.run(
+        [sys.executable, str(analyzer), str(compare_a), "--compare", str(compare_b)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if compared.returncode != 0:
+        raise AssertionError(
+            f"block-size-independent Render Results compared unequal: "
+            f"{compared.stdout} {compared.stderr}"
+        )
+    comparison = json.loads(compared.stdout)
+    if not comparison["equal"] or comparison["blockSizes"] != [7, 1]:
+        raise AssertionError(f"unexpected pairwise comparison: {comparison}")
+    if sorted(entry["path"] for entry in comparison["comparisons"]) != [
+        "captures/00-split.wav",
+        "captures/01-diffusion-step-0.wav",
+        "output.wav",
+    ]:
+        raise AssertionError(f"unexpected pairwise comparison paths: {comparison}")
+
+    corrupted_b = workspace / "compare-b-corrupted"
+    shutil.copytree(compare_b, corrupted_b)
+    corrupted_output = corrupted_b / "output.wav"
+    corrupted_bytes = bytearray(corrupted_output.read_bytes())
+    corrupted_bytes[-1] ^= 0xFF
+    corrupted_output.write_bytes(bytes(corrupted_bytes))
+    mismatched = subprocess.run(
+        [sys.executable, str(analyzer), str(compare_a), "--compare", str(corrupted_b)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if mismatched.returncode == 0:
+        raise AssertionError("pairwise comparison accepted a corrupted Render Result")
+    mismatch_report = json.loads(mismatched.stdout)
+    if mismatch_report["equal"]:
+        raise AssertionError(f"pairwise comparison missed the corruption: {mismatch_report}")
+    output_comparison = next(
+        entry for entry in mismatch_report["comparisons"] if entry["path"] == "output.wav"
+    )
+    if output_comparison["equal"] or output_comparison["firstMismatch"] is None:
+        raise AssertionError(
+            f"pairwise comparison did not report the corrupted sample: {mismatch_report}"
+        )
+
+    same_block_size = subprocess.run(
+        [sys.executable, str(analyzer), str(compare_a), "--compare", str(compare_a)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if same_block_size.returncode == 0:
+        raise AssertionError(
+            "pairwise comparison accepted two Render Results at the same "
+            "block size"
+        )
+    if "different block sizes" not in same_block_size.stderr:
+        raise AssertionError(
+            f"unexpected same-block-size failure: {same_block_size.stderr}"
+        )
+
+    mismatched_provenance = subprocess.run(
+        [sys.executable, str(analyzer), str(compare_a), "--compare", str(render_result)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if mismatched_provenance.returncode == 0:
+        raise AssertionError(
+            "pairwise comparison accepted Render Results with different configurations"
+        )
+    if "Resolved Configuration" not in mismatched_provenance.stderr:
+        raise AssertionError(
+            f"unexpected provenance-mismatch failure: {mismatched_provenance.stderr}"
+        )
 
 
 if __name__ == "__main__":
