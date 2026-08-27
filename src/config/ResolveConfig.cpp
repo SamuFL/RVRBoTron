@@ -183,7 +183,11 @@ void checkDiffuserMemoryBudget(
 std::optional<std::uint64_t> estimateFeedbackLoopMemoryBytes(
     const std::uint32_t channels,
     const std::uint64_t maxDelaySamples) noexcept {
+#if defined(RVRBOTRON_SAMPLE_DOUBLE)
   constexpr std::uint64_t kSampleBytes = 8;
+#else
+  constexpr std::uint64_t kSampleBytes = 4;
+#endif
   constexpr std::uint64_t kMetadataBytesPerChannel = 16;
   auto delayBytes = checkedMul(channels, maxDelaySamples);
   delayBytes =
