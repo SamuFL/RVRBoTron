@@ -128,6 +128,37 @@ Json diffuserJson(const dsp::ResolvedDiffuser& diffuser) {
   };
 }
 
+Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
+  Json matrix = Json::array();
+  const auto channels = loop.channels;
+  for (std::uint32_t row = 0; row < channels; ++row) {
+    Json values = Json::array();
+    for (std::uint32_t column = 0; column < channels; ++column) {
+      values.push_back(
+          loop.matrix[static_cast<std::size_t>(row) * channels + column]);
+    }
+    matrix.push_back(std::move(values));
+  }
+  return {
+      {"type", "feedback-loop"},
+      {"channels", loop.channels},
+      {"delayMinSamples", loop.delayMinSamples},
+      {"delayMaxSamples", loop.delayMaxSamples},
+      {"delayMinMs", loop.delayMinMs},
+      {"delayMaxMs", loop.delayMaxMs},
+      {"delayStrategy", delayStrategyName(loop.delayStrategy)},
+      {"delaysSamples", loop.delaysSamples},
+      {"delaysMs", loop.delaysMs},
+      {"bufferSizes", loop.bufferSizes},
+      {"rt60Sec", loop.rt60Sec},
+      {"gains", loop.gains},
+      {"mix", mixMatrixTypeName(loop.mix)},
+      {"matrix", std::move(matrix)},
+      {"decayMargin", loop.decayMargin},
+      {"tailBudgetSamples", loop.tailBudgetSamples},
+  };
+}
+
 Json downmixJson(const dsp::ResolvedDownmix& downmix) {
   return {
       {"type", "downmix"},
@@ -150,6 +181,9 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
           } else if constexpr (
               std::is_same_v<Stage, dsp::ResolvedDiffuser>) {
             return diffuserJson(value);
+          } else if constexpr (
+              std::is_same_v<Stage, dsp::ResolvedFeedbackLoop>) {
+            return feedbackLoopJson(value);
           } else {
             return downmixJson(value);
           }

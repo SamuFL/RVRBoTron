@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+
+import json
+import math
+import shutil
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+
+def read_float_wav(path: Path):
+    data = path.read_bytes()
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise AssertionError(f"{path} is not a RIFF/WAVE file")
+    offset = 12
+    channels = sample_rate = bits = None
+    samples = None
+    while offset + 8 <= len(data):
+        chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+        chunk = data[offset + 8 : offset + 8 + chunk_size]
+        if data[offset : offset + 4] == b"fmt ":
+            _, channels, sample_rate = struct.unpack_from("<HHI", chunk)
+            bits = struct.unpack_from("<H", chunk, 14)[0]
+        elif data[offset : offset + 4] == b"data":
+            sample_format = "f" if bits == 32 else "d"
+            samples = struct.unpack(
+                "<" + sample_format * (len(chunk) // (bits // 8)), chunk
+            )
+        offset += 8 + chunk_size + chunk_size % 2
+    if samples is None:
+        raise AssertionError(f"{path} has no audio data")
+    return channels, sample_rate, bits, samples
+
+
+def run(renderer: Path, *arguments):
+    return subprocess.run(
+        [str(renderer), "render", *map(str, arguments)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def run_ok(renderer: Path, *arguments):
+    completed = run(renderer, *arguments)
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr)
+    return completed
+
+
+def main():
+    renderer = Path(sys.argv[1])
+    fixture = Path(sys.argv[2])
+    workspace = Path(sys.argv[3])
+    sample_bits = int(sys.argv[4])
+    shutil.rmtree(workspace, ignore_errors=True)
+    workspace.mkdir(parents=True)
+
+    # N=2, delayStrategy "even" (deterministic, no positional-random draws)
+    # so channel delays are hand-derivable: evenDelay(lastPosition=48, N=2,
+    # channel) is 0 for channel 0 and lastPosition for channel 1, so the two
+    # resolved delays land exactly on delayMinMs and delayMaxMs.
+    request = {
+        "formatVersion": 1,
+        "seed": 7,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 2,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {
+                    "type": "feedback-loop",
+                    "delayMinMs": 1.0,
+                    "delayMaxMs": 2.0,
+                    "delayStrategy": "even",
+                    "rt60Sec": 1.0,
+                    "mix": "householder",
+                },
+                {"type": "downmix", "strategy": "select"},
+            ]
+        },
+    }
+    request_path = workspace / "request.json"
+    request_path.write_text(json.dumps(request, indent=2) + "\n")
+
+    result = workspace / "result"
+    run_ok(renderer, "--input", fixture, "--config", request_path, "--output", result)
+
+    channels, sample_rate, bits, samples = read_float_wav(result / "output.wav")
+    if (channels, sample_rate, bits) != (2, 48000, sample_bits):
+        raise AssertionError("Feedback Loop render did not emit canonical stereo")
+
+    metadata = json.loads((result / "render.json").read_text())
+    expected_tail_budget = math.ceil(1.0 * 1.5 * 48000)
+    if metadata["tailBudgetFrames"] != expected_tail_budget:
+        raise AssertionError(
+            f"unexpected tailBudgetFrames: {metadata['tailBudgetFrames']} != "
+            f"{expected_tail_budget}"
+        )
+    if metadata["inputFrames"] != 32:
+        raise AssertionError(f"unexpected inputFrames: {metadata}")
+    if metadata["frames"] != metadata["inputFrames"] + metadata["tailBudgetFrames"]:
+        raise AssertionError(
+            f"renderer did not drain exactly the Tail budget: {metadata}"
+        )
+    if len(samples) != metadata["frames"] * 2:
+        raise AssertionError("output.wav frame count does not match render.json")
+
+    resolved = json.loads((result / "resolved.json").read_text())
+    loop = next(
+        stage
+        for stage in resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    if loop["channels"] != 2:
+        raise AssertionError(f"unexpected resolved Channel count: {loop}")
+    if loop["delayStrategy"] != "even":
+        raise AssertionError(f"unexpected resolved delayStrategy: {loop}")
+    if (loop["delayMinSamples"], loop["delayMaxSamples"]) != (48, 96):
+        raise AssertionError(
+            f"unexpected resolved delay range in samples: {loop}"
+        )
+    if loop["delaysSamples"] != [48, 96]:
+        raise AssertionError(
+            f"even delayStrategy did not land on delayMinMs/delayMaxMs: {loop}"
+        )
+    if loop["delaysMs"] != [1.0, 2.0]:
+        raise AssertionError(f"unexpected resolved delaysMs: {loop}")
+    if loop["bufferSizes"] != [48, 96]:
+        raise AssertionError(f"unexpected resolved bufferSizes: {loop}")
+    if loop["rt60Sec"] != 1.0 or loop["decayMargin"] != 1.5:
+        raise AssertionError(f"unexpected resolved rt60Sec/decayMargin: {loop}")
+    if loop["tailBudgetSamples"] != expected_tail_budget:
+        raise AssertionError(f"unexpected resolved tailBudgetSamples: {loop}")
+
+    expected_gains = [10 ** (-3 * (48 / 48000) / 1.0), 10 ** (-3 * (96 / 48000) / 1.0)]
+    for actual, expected in zip(loop["gains"], expected_gains):
+        if abs(actual - expected) > 1e-9:
+            raise AssertionError(
+                f"resolved gain did not match the RT60 solve: {loop['gains']} != "
+                f"{expected_gains}"
+            )
+
+    # N=2 Householder mixing is a pure swap-and-negate: diagonal
+    # 1 + (-2/N) = 0, off-diagonal -2/N = -1.
+    if loop["mix"] != "householder" or loop["matrix"] != [[0.0, -1.0], [-1.0, 0.0]]:
+        raise AssertionError(f"unexpected resolved Householder matrix: {loop}")
+
+    # An exact resolved rerender reproduces output.wav bit-identically.
+    rerendered = workspace / "rerendered"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        result / "resolved.json",
+        "--output",
+        rerendered,
+    )
+    if (rerendered / "output.wav").read_bytes() != (result / "output.wav").read_bytes():
+        raise AssertionError("resolved rerender changed Feedback Loop output")
+    if (rerendered / "resolved.json").read_bytes() != (
+        result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved rerender changed resolved.json")
+
+    # An unreasonable delay range is rejected against the DSP memory budget
+    # rather than silently allocating hundreds of megabytes of delay lines.
+    oversized_request = json.loads(json.dumps(request))
+    oversized_request["composition"]["stages"][1]["delayMaxMs"] = 700000.0
+    oversized_path = workspace / "oversized-request.json"
+    oversized_path.write_text(json.dumps(oversized_request))
+    oversized_result = workspace / "oversized-result"
+    oversized = run(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        oversized_path,
+        "--output",
+        oversized_result,
+    )
+    if oversized.returncode == 0:
+        raise AssertionError("renderer accepted an unreasonable delay range")
+    if "memory budget" not in oversized.stderr:
+        raise AssertionError(
+            f"oversized delay range was not rejected as a memory-budget "
+            f"failure: {oversized.stderr}"
+        )
+    if oversized_result.exists():
+        raise AssertionError("rejected configuration created a Render Result")
+
+
+if __name__ == "__main__":
+    main()

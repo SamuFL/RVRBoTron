@@ -33,6 +33,7 @@ add_library(rvrbotron_dsp
   src/dsp/DiffusionStep.cpp
   src/dsp/Diffuser.cpp
   src/dsp/Downmix.cpp
+  src/dsp/FeedbackLoop.cpp
   src/dsp/MixMatrix.cpp
   src/dsp/Reverb.cpp
   src/dsp/Split.cpp

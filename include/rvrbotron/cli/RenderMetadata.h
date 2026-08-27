@@ -35,6 +35,11 @@ struct RenderMetadata {
   std::uint32_t outputChannels;
   std::uint64_t inputFrames;
   std::uint64_t renderedFrames;
+  // The resolved Tail budget authorised for draining past input EOF (see
+  // CONTEXT.md); 0 for a Composition with no Diffuser or Feedback Loop.
+  // The renderer currently always drains the complete budget, so
+  // renderedFrames - inputFrames equals this exactly.
+  std::uint64_t tailBudgetFrames;
   std::size_t blockSize;
   std::optional<std::string> stageCaptureProfile;
   std::vector<StageCaptureMetadata> stageCaptures;

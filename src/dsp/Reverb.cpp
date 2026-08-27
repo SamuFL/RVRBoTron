@@ -2,6 +2,7 @@
 
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 #include "rvrbotron/dsp/Split.h"
 
@@ -22,10 +23,13 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
 
   std::unique_ptr<Split> split;
   std::unique_ptr<Diffuser> diffuser;
+  std::unique_ptr<FeedbackLoop> feedbackLoop;
   std::unique_ptr<Downmix> downmix;
 
   std::vector<Sample> splitValues;
-  std::vector<Sample> diffusionValues;
+  // Whatever the middle stage (Diffuser or Feedback Loop) writes: the
+  // aligned diffused signal, or the unaligned circulating tail.
+  std::vector<Sample> midStageValues;
 
   void captureDiffusionStepFrame(
       const std::uint32_t index,
@@ -52,8 +56,6 @@ Reverb::Reverb(const ResolvedConfig& config,
 
   const auto& split =
       std::get<ResolvedSplit>(config.composition.stages[0]);
-  const auto& diffuser =
-      std::get<ResolvedDiffuser>(config.composition.stages[1]);
   const auto& downmix =
       std::get<ResolvedDownmix>(config.composition.stages[2]);
 
@@ -62,11 +64,21 @@ Reverb::Reverb(const ResolvedConfig& config,
   state.outputChannels = downmix.outputChannels;
   state.channels = split.channels;
   state.split = std::make_unique<Split>(split);
-  state.diffuser = std::make_unique<Diffuser>(diffuser);
-  state.tailFrames = state.diffuser->totalSamples();
+
+  if (const auto* diffuser =
+          std::get_if<ResolvedDiffuser>(&config.composition.stages[1])) {
+    state.diffuser = std::make_unique<Diffuser>(*diffuser);
+    state.tailFrames = state.diffuser->totalSamples();
+  } else {
+    const auto& feedbackLoop =
+        std::get<ResolvedFeedbackLoop>(config.composition.stages[1]);
+    state.feedbackLoop = std::make_unique<FeedbackLoop>(feedbackLoop);
+    state.tailFrames = state.feedbackLoop->tailBudgetSamples();
+  }
+
   state.downmix = std::make_unique<Downmix>(downmix);
   state.splitValues.resize(state.channels);
-  state.diffusionValues.resize(state.channels);
+  state.midStageValues.resize(state.channels);
 }
 
 Reverb::~Reverb() = default;
@@ -105,13 +117,18 @@ void Reverb::process(const Sample* const* inputs,
           state.channels);
     }
 
-    state.diffuser->processFrame(
-        state.splitValues.data(),
-        state.diffusionValues.data(),
-        state.captureSink != nullptr ? &state : nullptr);
+    if (state.diffuser != nullptr) {
+      state.diffuser->processFrame(
+          state.splitValues.data(),
+          state.midStageValues.data(),
+          state.captureSink != nullptr ? &state : nullptr);
+    } else {
+      state.feedbackLoop->processFrame(
+          state.splitValues.data(), state.midStageValues.data());
+    }
 
     state.downmix->processFrame(
-        state.diffusionValues.data(), outputs, frame);
+        state.midStageValues.data(), outputs, frame);
   }
 }
 
@@ -123,19 +140,22 @@ std::size_t Reverb::outputChannelCount() const noexcept {
   return implementation_->outputChannels;
 }
 
-std::uint64_t Reverb::finiteTailFrames() const noexcept {
+std::uint64_t Reverb::tailBudgetFrames() const noexcept {
   return implementation_->tailFrames;
 }
 
 std::size_t Reverb::ownedBytes() const noexcept {
   const auto& state = *implementation_;
   std::size_t total = sizeof(state) + ownedVectorBytes(state.splitValues) +
-                      ownedVectorBytes(state.diffusionValues);
+                      ownedVectorBytes(state.midStageValues);
   if (state.split != nullptr) {
     total += state.split->ownedBytes();
   }
   if (state.diffuser != nullptr) {
     total += state.diffuser->ownedBytes();
+  }
+  if (state.feedbackLoop != nullptr) {
+    total += state.feedbackLoop->ownedBytes();
   }
   if (state.downmix != nullptr) {
     total += state.downmix->ownedBytes();

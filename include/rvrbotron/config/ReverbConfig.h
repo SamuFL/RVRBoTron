@@ -57,7 +57,28 @@ struct DownmixConfig {
   std::optional<dsp::EnergyNormalisation> normalisation;
 };
 
-using StageConfig = std::variant<SplitConfig, DiffuserConfig, DownmixConfig>;
+// Reference-configuration defaults for an omitted Feedback Loop stage (see
+// docs/design/reverb/stages/04-feedback-loop.md): 100-200 ms delays,
+// 2.4 s RT60, Householder mixing.
+constexpr double kDefaultFeedbackLoopDelayMinMs = 100.0;
+constexpr double kDefaultFeedbackLoopDelayMaxMs = 200.0;
+constexpr double kDefaultFeedbackLoopRt60Sec = 2.4;
+// Tail budget headroom above RT60: 1.5x places the drain's end near -90 dB,
+// comfortable margin for a T30 Schroeder fit. Settled during Milestone 3
+// design (see docs/adr and issue #51); sweepable per render.
+constexpr double kDefaultFeedbackLoopDecayMargin = 1.5;
+
+struct FeedbackLoopConfig {
+  std::optional<double> delayMinMs;
+  std::optional<double> delayMaxMs;
+  std::optional<dsp::DelayStrategy> delayStrategy;
+  std::optional<double> rt60Sec;
+  std::optional<double> decayMargin;
+  std::optional<dsp::MixMatrixType> mix;
+};
+
+using StageConfig = std::
+    variant<SplitConfig, DiffuserConfig, FeedbackLoopConfig, DownmixConfig>;
 
 struct CompositionConfig {
   bool stagesSpecified = false;
