@@ -23,3 +23,16 @@ Rejection sampling increments `drawIndex` and accepts a word at or above
 `(-bound) mod bound` before reducing modulo `bound`. Unit doubles use the high
 53 bits scaled by 2⁻⁵³. These values and the fixed test vectors are part of
 format version 1; standard-library random distributions are not used.
+
+RandomOrthogonal's dense `[-1, 1]` fill is shared across Diffusion Steps
+rather than derived per step (see the "matrix of a given type is shared
+across steps" decision), so its positional derivation uses `itemIndex = row`
+and `valueIndex = column` in place of a step index and Channel, with a fixed
+`drawIndex = 0`, under usage tag `0x4d49584f5254484f` ("MIXORTHO"): one unit
+double per matrix cell, mapped to `[-1, 1)` as `-1 + 2u`. Householder QR then
+orthogonalizes that fill: at each elimination step, the reflection's target
+sign is chosen opposite the remaining pivot's sign — the standard
+numerically stable convention that avoids subtracting two nearly equal
+numbers — and a pivot or reflection norm at or below `1e-9` is treated as
+singular or near-singular and rejected outright rather than silently
+repaired.

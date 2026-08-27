@@ -40,6 +40,20 @@ const char* delayStrategyName(const dsp::DelayStrategy strategy) {
       "unsupported Diffusion Step delay strategy");
 }
 
+const char* mixMatrixTypeName(const dsp::MixMatrixType mix) {
+  switch (mix) {
+  case dsp::MixMatrixType::hadamard:
+    return "hadamard";
+  case dsp::MixMatrixType::householder:
+    return "householder";
+  case dsp::MixMatrixType::randomOrthogonal:
+    return "random-orthogonal";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Diffusion Step mix");
+}
+
 const char* polarityName(const dsp::PolarityStrategy polarity) {
   switch (polarity) {
   case dsp::PolarityStrategy::seededRandom:
@@ -103,7 +117,7 @@ Json diffuserJson(const dsp::ResolvedDiffuser& diffuser) {
             {"permutation", step.permutation},
             {"polarity", polarityName(step.polarity)},
             {"polaritySigns", step.polaritySigns},
-            {"mix", "hadamard"},
+            {"mix", mixMatrixTypeName(step.mix)},
             {"matrix", std::move(matrix)},
         });
   }

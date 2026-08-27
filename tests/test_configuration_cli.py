@@ -772,6 +772,333 @@ def main():
             "uniform-random ablation should permit a resolved delay collision"
         )
 
+    # Householder is valid for any N, including non-powers-of-two: N=3.
+    householder_request = workspace / "householder-request.json"
+    householder_result = workspace / "householder-result"
+    householder_rerender = workspace / "householder-rerender"
+    householder_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 3,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 1,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "householder",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            householder_request,
+            "--output",
+            householder_result,
+        )
+    )
+    householder_resolved = json.loads(
+        (householder_result / "resolved.json").read_text()
+    )
+    householder_step = householder_resolved["composition"]["stages"][1]["steps"][0]
+    if householder_step["mix"] != "householder":
+        raise AssertionError("householder mix did not round-trip")
+    # Mean of Channels, subtracted twice: diagonal 1 - 2/N, off-diagonal
+    # -2/N. N=3 is not a power of two, unlike every other mix fixture above.
+    householder_off_diagonal = -2.0 / 3.0
+    householder_diagonal = 1.0 + householder_off_diagonal
+    expected_householder_3 = [
+        [householder_diagonal, householder_off_diagonal,
+         householder_off_diagonal],
+        [householder_off_diagonal, householder_diagonal,
+         householder_off_diagonal],
+        [householder_off_diagonal, householder_off_diagonal,
+         householder_diagonal],
+    ]
+    if householder_step["matrix"] != expected_householder_3:
+        raise AssertionError(
+            f"unexpected normalized Householder matrix: "
+            f"{householder_step['matrix']}"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            householder_result / "resolved.json",
+            "--output",
+            householder_rerender,
+        )
+    )
+    if (householder_rerender / "resolved.json").read_bytes() != (
+        householder_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved Householder rerender changed configuration")
+    if (householder_rerender / "output.wav").read_bytes() != (
+        householder_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved Householder rerender changed output")
+
+    # RandomOrthogonal is seeded and dense, with no Haar-uniformity claim;
+    # this expected matrix is independently derived from the documented
+    # positional derivation (ADR 0002): fill [-1,1] with usage "MIXORTHO"
+    # (itemIndex = row, valueIndex = column), then Householder QR with the
+    # sign convention documented alongside `householderQrOrthogonalize`.
+    random_orthogonal_request = workspace / "random-orthogonal-request.json"
+    random_orthogonal_result = workspace / "random-orthogonal-result"
+    random_orthogonal_rerender = workspace / "random-orthogonal-rerender"
+    random_orthogonal_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 2,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 1,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "random-orthogonal",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            random_orthogonal_request,
+            "--output",
+            random_orthogonal_result,
+        )
+    )
+    random_orthogonal_resolved = json.loads(
+        (random_orthogonal_result / "resolved.json").read_text()
+    )
+    random_orthogonal_step = random_orthogonal_resolved["composition"]["stages"][1][
+        "steps"
+    ][0]
+    if random_orthogonal_step["mix"] != "random-orthogonal":
+        raise AssertionError("random-orthogonal mix did not round-trip")
+    # Tolerance-based: Householder QR's sqrt makes the exact double result
+    # path-dependent on operation order, so an independently worked port of
+    # the documented algorithm can differ from the production result by a
+    # handful of ULPs while both remain correct.
+    expected_random_orthogonal_2 = [
+        [-0.042407822634498826, -0.9991003836348983],
+        [0.9991003836348983, -0.042407822634498715],
+    ]
+    random_orthogonal_flat = [
+        value
+        for row in random_orthogonal_step["matrix"]
+        for value in row
+    ]
+    expected_random_orthogonal_flat = [
+        value for row in expected_random_orthogonal_2 for value in row
+    ]
+    if len(random_orthogonal_flat) != len(expected_random_orthogonal_flat) or any(
+        abs(actual - expected) > 1e-9
+        for actual, expected in zip(
+            random_orthogonal_flat, expected_random_orthogonal_flat
+        )
+    ):
+        raise AssertionError(
+            f"unexpected RandomOrthogonal matrix: "
+            f"{random_orthogonal_step['matrix']}"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            random_orthogonal_result / "resolved.json",
+            "--output",
+            random_orthogonal_rerender,
+        )
+    )
+    if (random_orthogonal_rerender / "resolved.json").read_bytes() != (
+        random_orthogonal_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved RandomOrthogonal rerender changed configuration"
+        )
+    if (random_orthogonal_rerender / "output.wav").read_bytes() != (
+        random_orthogonal_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved RandomOrthogonal rerender changed output")
+
+    # A matrix of a given type is shared across steps unless an indexed
+    # override selects another type: step 0 keeps the shared Hadamard
+    # default, steps 1 and 2 both override to Householder and must resolve
+    # to the identical shared Householder(8) matrix.
+    matrix_override_request = json.loads(reference_request.read_text())
+    matrix_override_request["composition"]["stages"][1]["steps"] = 3
+    matrix_override_request["composition"]["stages"][1]["totalMs"] = 3
+    matrix_override_request["composition"]["stages"][1]["stepOverrides"] = [
+        {"index": 1, "mix": "householder"},
+        {"index": 2, "mix": "householder"},
+    ]
+    matrix_override_config = workspace / "matrix-override-request.json"
+    matrix_override_config.write_text(json.dumps(matrix_override_request))
+    matrix_override_result = workspace / "matrix-override-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            matrix_override_config,
+            "--output",
+            matrix_override_result,
+        )
+    )
+    matrix_override_steps = json.loads(
+        (matrix_override_result / "resolved.json").read_text()
+    )["composition"]["stages"][1]["steps"]
+    if matrix_override_steps[0]["matrix"] != expected_hadamard:
+        raise AssertionError(
+            "step 0 did not keep the shared default Hadamard(8) matrix"
+        )
+    householder_off_diagonal_8 = -2.0 / 8.0
+    householder_diagonal_8 = 1.0 - 0.25
+    if (
+        matrix_override_steps[1]["matrix"][0][0] != householder_diagonal_8
+        or matrix_override_steps[1]["matrix"][0][1] != householder_off_diagonal_8
+    ):
+        raise AssertionError(
+            f"step 1 override did not resolve Householder(8): "
+            f"{matrix_override_steps[1]['matrix']}"
+        )
+    if matrix_override_steps[1]["matrix"] != matrix_override_steps[2]["matrix"]:
+        raise AssertionError(
+            "overridden steps 1 and 2 did not share the same Householder "
+            "matrix"
+        )
+    if matrix_override_steps[1]["matrix"] == matrix_override_steps[0]["matrix"]:
+        raise AssertionError(
+            "expected the Householder override to differ from the shared "
+            "Hadamard default"
+        )
+
+    # RandomOrthogonal validation trusts the resolved coefficients' M M^T=I
+    # property, not the seeded construction that produced them: a
+    # hand-authored ablation may substitute any valid orthogonal matrix.
+    substituted_random_orthogonal = json.loads(
+        json.dumps(random_orthogonal_resolved)
+    )
+    substituted_random_orthogonal["composition"]["stages"][1]["steps"][0][
+        "matrix"
+    ] = [[0.0, 1.0], [-1.0, 0.0]]
+    substituted_random_orthogonal_path = (
+        workspace / "substituted-random-orthogonal.json"
+    )
+    substituted_random_orthogonal_result = (
+        workspace / "substituted-random-orthogonal-result"
+    )
+    substituted_random_orthogonal_path.write_text(
+        json.dumps(substituted_random_orthogonal)
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            substituted_random_orthogonal_path,
+            "--output",
+            substituted_random_orthogonal_result,
+        )
+    )
+
+    invalid_householder = json.loads(json.dumps(householder_resolved))
+    invalid_householder["composition"]["stages"][1]["steps"][0]["matrix"][0][
+        1
+    ] += 0.1
+    invalid_householder_path = workspace / "invalid-householder.json"
+    invalid_householder_result = workspace / "invalid-householder-result"
+    invalid_householder_path.write_text(json.dumps(invalid_householder))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            invalid_householder_path,
+            "--output",
+            invalid_householder_result,
+        ),
+        "/composition/stages/1/steps/0/matrix: "
+        "expected the normalized canonical Householder matrix",
+        invalid_householder_result,
+    )
+
+    invalid_random_orthogonal = json.loads(json.dumps(random_orthogonal_resolved))
+    invalid_random_orthogonal["composition"]["stages"][1]["steps"][0]["matrix"] = [
+        [1.0, 1.0],
+        [0.0, 1.0],
+    ]
+    invalid_random_orthogonal_path = workspace / "invalid-random-orthogonal.json"
+    invalid_random_orthogonal_result = workspace / "invalid-random-orthogonal-result"
+    invalid_random_orthogonal_path.write_text(json.dumps(invalid_random_orthogonal))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            invalid_random_orthogonal_path,
+            "--output",
+            invalid_random_orthogonal_result,
+        ),
+        "/composition/stages/1/steps/0/matrix: "
+        "expected an orthogonal resolved matrix (M M^T = I)",
+        invalid_random_orthogonal_result,
+    )
+
     single_channel_request = workspace / "single-channel-ablation-request.json"
     single_channel_result = workspace / "single-channel-ablation-result"
     single_channel_document = json.loads(ablation_request.read_text())
@@ -953,6 +1280,8 @@ def main():
     ] = "even"
     non_power_of_two_request = json.loads(reference_request.read_text())
     non_power_of_two_request["composition"]["stages"][0]["channels"] = 3
+    unknown_mix_request = json.loads(reference_request.read_text())
+    unknown_mix_request["composition"]["stages"][1]["step"]["mix"] = "unknown"
     lengths_ms_with_steps_request = json.loads(reference_request.read_text())
     lengths_ms_with_steps_request["composition"]["stages"][1]["lengthsMs"] = [1.0]
     step_override_out_of_range_request = json.loads(reference_request.read_text())
@@ -1050,6 +1379,11 @@ def main():
             json.dumps(non_power_of_two_request),
             "invalid_configuration at /composition/stages/1/steps/0/mix: "
             "hadamard requires a power-of-two Channel count",
+        ),
+        (
+            json.dumps(unknown_mix_request),
+            "invalid_configuration at /composition/stages/1/step/mix: "
+            "expected hadamard, householder, or random-orthogonal",
         ),
         (
             json.dumps(lengths_ms_with_steps_request),
