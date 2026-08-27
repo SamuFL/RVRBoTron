@@ -366,6 +366,8 @@ def analyze(render_result, source_path):
     ]
     step_energy = []
     orthogonality = []
+    if not diffuser.get("steps"):
+        raise ValueError("resolved Diffuser contains no Diffusion Steps")
     last_step_index = max(step["index"] for step in diffuser["steps"])
     last_step_frames = None
     for step in diffuser["steps"]:
