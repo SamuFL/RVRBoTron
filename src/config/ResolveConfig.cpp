@@ -1406,7 +1406,7 @@ void validateResolvedConfig(
           delay > feedbackLoop.delayMaxSamples) {
         fail(
             "/composition/stages/1/delaysSamples",
-            "expected each delay within [delayMinMs, delayMaxMs]");
+            "expected each delay within [delayMinSamples, delayMaxSamples]";
       }
       const auto expectedDelayMs =
           static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
