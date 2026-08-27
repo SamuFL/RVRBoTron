@@ -204,6 +204,7 @@ def main():
         ok, groups = compare(entries, tolerances_document)
         print_report(groups)
         if arguments.json is not None:
+            arguments.json.parent.mkdir(parents=True, exist_ok=True)
             arguments.json.write_text(
                 json.dumps(
                     {"pass": ok, "groups": groups},
