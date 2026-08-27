@@ -267,7 +267,11 @@ default changes.
 
 ### Analyze the Render Result
 
-Analysis is a separate Python command and is never required for rendering:
+Render Result analysis is deterministic: it reads only the immutable Render
+Result and never touches the clock, the machine, or system load, so
+analyzing the same evidence on any machine reproduces the same published
+artifact. It is a separate Python command and is never required for
+rendering:
 
 ```bash
 python3 tools/analyze_render.py \
@@ -319,8 +323,48 @@ different `--block-size` values -- for exact decoded equality of `output.wav`
 and every Stage capture, with first-mismatch detail on failure. This mode
 prints its own JSON report and does not publish an artifact.
 
+### Compare Diffusion Equivalence Across Platforms
+
+Cross-platform equivalence (Repeat determinism holds only on one machine;
+see [ADR-0001](docs/adr/0001-cross-platform-reproducibility.md)) is proven
+by reducing an already-analyzed Render Result's `analysis/diffusion-v1.json`
+to a compact, WAV-free summary and comparing it against other platforms'
+summaries within committed tolerances:
+
+```bash
+python3 tools/extract_diffusion_equivalence.py \
+  build/diffusion-result \
+  --output build/diffusion-equivalence.json
+
+python3 tools/compare_diffusion_equivalence.py \
+  build/diffusion-equivalence.json other-platform/diffusion-equivalence.json \
+  --tolerances tools/diffusion_tolerances_v1.json
+```
+
+The extracted summary keeps energy relative error, orthogonality error,
+Correlation, Alignment score, Coloration, structural Echo paths, and
+measured Distinct-arrival evidence; it drops full Correlation matrices,
+per-pair Alignment listings, and per-band Coloration curves. The comparator
+groups summaries by sample precision, picks one baseline platform per group
+(macOS arm64 when present), and requires the structural N^k Echo-path count
+and Distinct-arrival density bin count -- deterministic functions of the
+Resolved Configuration, not measurements -- to match exactly, while every
+measured metric (including the measured Distinct-arrival counts
+themselves) stays within `tools/diffusion_tolerances_v1.json`'s committed
+per-precision absolute tolerance; a group with fewer than two platforms is
+reported as skipped, not failed. CI runs both platform-independent steps
+against the same compact Reference impulse tracer used by
+`diffusion_analyzer_contract`, uploads each platform/precision's compact
+summary as a build artifact, and runs a final job that downloads every
+summary and compares them by precision.
+
 ### Benchmark a Resolved Configuration
 
+Benchmark evidence is environment-qualified rather than deterministic: it
+depends on the specific machine, build configuration, and system load at
+measurement time, so it is never asserted equal across machines or CI runs
+-- CI benchmarks are smoke coverage only (the report has a sane shape and
+completes), with no performance gate or cross-machine speed assertion.
 Measure empirical CPU and memory cost around `Reverb::process`, excluding
 configuration and file I/O, using an optimized build (`--preset release` or
 `--preset release-double`):
