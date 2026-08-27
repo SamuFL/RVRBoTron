@@ -349,6 +349,49 @@ block size, Channel count, step count, and the mixing matrix used by every
 Diffusion Step. Benchmarking a Debug binary prints a prominent warning to
 stderr but is not refused.
 
+### Run the Canonical Diffusion Experiment Catalog
+
+`tools/diffusion_catalog_v1.json` is a versioned catalog: one complete
+Reference configuration (N=8 duplicate Split, 4-step 300 ms doubling Hadamard
+Diffuser) plus ~20 named one-axis overrides (Channel count, Split strategy,
+total length, step count, distribution, delay strategy, matrix, and
+shuffle/polarity ablations, expressed as JSON-Pointer add/remove/replace
+operations against the Reference), and 5 listening cases mapping curated
+material to a hypothesis, each paired with its quantitative counterpart's
+exact Requested Configuration. Run it with (use `--preset release` for
+meaningful benchmark evidence):
+
+```bash
+python3 tools/run_diffusion_catalog.py \
+  --catalog tools/diffusion_catalog_v1.json \
+  --renderer build/release/rvrbotron \
+  --analyzer tools/analyze_diffusion.py \
+  --mono-source tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --stereo-source tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
+  --listening-dir samples/listening \
+  --output manual_UATs/diffusion-catalog
+```
+
+Each quantitative case renders the deterministic impulse basis with
+`--capture-stages all`, publishes `analysis/diffusion-v1.json`, and
+benchmarks at 128 frames (1 s warm-up, 5 s measured); the Reference
+additionally benchmarks 32/64/128/256/512. Listening cases render the
+curated (Git-LFS) sample and are skipped, not failed, when the sample isn't
+present locally. Every case's output directory is an ordinary immutable
+Render Result: a case whose `render.json` already exists is never
+re-rendered, and rendering, analysis, and benchmarking are each resumed
+independently, so an interrupted or partially failing run picks up exactly
+where it left off when rerun with the same command, without replacing
+existing evidence. Benchmark reports
+aggregate into `<output>/benchmark-summary.json` and a terminal table ranked
+slowest-to-fastest with deltas from Reference; `<output>/catalog-report.json`
+records every case's completed/resumed/skipped/failed status. This full run
+is a local research artifact -- expect on the order of a hundred-plus MB of
+audio evidence and several minutes of wall time. CI instead runs a small
+tracer catalog (`tests/test_diffusion_catalog_cli.py`) that proves
+materialization, pairing, resumability, and aggregation without executing
+the full sweep.
+
 ### Validate a Listening Sample Locally
 
 Listening material is intentionally excluded from automated tests. After

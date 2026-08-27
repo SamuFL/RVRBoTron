@@ -137,3 +137,15 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/benchmark-contract
     ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
+
+add_test(
+  NAME diffusion_catalog_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_diffusion_catalog_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_SOURCE_DIR}/tools/analyze_diffusion.py
+    ${CMAKE_SOURCE_DIR}/tools/run_diffusion_catalog.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio
+    ${CMAKE_CURRENT_BINARY_DIR}/diffusion-catalog-contract
+)
