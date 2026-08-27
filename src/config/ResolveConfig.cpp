@@ -36,6 +36,15 @@ constexpr std::uint64_t kFeedbackLoopDelayUsage = 0x464c4f4f5044454cULL;
       std::string(path));
 }
 
+// A Diffuser and a Feedback Loop are each positionally independent: neither
+// hardcodes its own stage index, since the Feedback Loop lands at index 1
+// when it is the sole middle stage but index 2 when it follows a Diffuser
+// (see docs/design/reverb/stages/09-composition.md's valid Composition
+// shapes).
+std::string stagePath(const std::size_t stageIndex) {
+  return "/composition/stages/" + std::to_string(stageIndex);
+}
+
 bool isPowerOfTwo(const std::uint32_t value) noexcept {
   return value != 0 && (value & (value - 1U)) == 0;
 }
@@ -589,7 +598,8 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
     const std::uint32_t channels,
     const std::uint32_t sampleRate,
     const std::uint64_t seed,
-    const bool deriveChannelValues) {
+    const bool deriveChannelValues,
+    const std::size_t stageIndex) {
   dsp::ResolvedFeedbackLoop loop;
   loop.channels = channels;
   loop.delayStrategy =
@@ -700,7 +710,7 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
     auto randomOrthogonal = resolveRandomOrthogonalMatrix(channels, seed);
     if (!randomOrthogonal.has_value()) {
       fail(
-          "/composition/stages/1/mix",
+          stagePath(stageIndex) + "/mix",
           "RandomOrthogonal construction was singular or near-singular");
     }
     loop.matrix = std::move(*randomOrthogonal);
@@ -739,20 +749,30 @@ void validateShape(const dsp::ResolvedComposition& composition) {
   if (composition.stages.empty()) {
     return;
   }
-  const auto validSecondStage =
-      composition.stages.size() == 3 &&
+  const auto stageCount = composition.stages.size();
+  const auto threeStageShape =
+      stageCount == 3 &&
       (std::holds_alternative<dsp::ResolvedDiffuser>(
            composition.stages[1]) ||
        std::holds_alternative<dsp::ResolvedFeedbackLoop>(
            composition.stages[1]));
-  if (!validSecondStage ||
-      !std::holds_alternative<dsp::ResolvedSplit>(composition.stages[0]) ||
+  // The Feedback Loop sits in series after the Diffuser and never inside
+  // it, so the four-stage shape only ever admits this one middle order.
+  const auto fourStageShape =
+      stageCount == 4 &&
+      std::holds_alternative<dsp::ResolvedDiffuser>(
+          composition.stages[1]) &&
+      std::holds_alternative<dsp::ResolvedFeedbackLoop>(
+          composition.stages[2]);
+  if ((!threeStageShape && !fourStageShape) ||
+      !std::holds_alternative<dsp::ResolvedSplit>(composition.stages.front()) ||
       !std::holds_alternative<dsp::ResolvedDownmix>(
-          composition.stages[2])) {
+          composition.stages.back())) {
     fail(
         "/composition/stages",
-        "expected [split, diffuser, downmix] or "
-        "[split, feedback-loop, downmix]");
+        "expected [split, diffuser, downmix], "
+        "[split, feedback-loop, downmix], or "
+        "[split, diffuser, feedback-loop, downmix]");
   }
 }
 
@@ -779,16 +799,22 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
   ResolutionEvidence resolutionEvidence;
   if (requestedComposition != nullptr &&
       !requestedComposition->stages.empty()) {
+    const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
-        requestedComposition->stages.size() == 3 &&
         std::holds_alternative<SplitConfig>(
-            requestedComposition->stages[0]) &&
-        (std::holds_alternative<DiffuserConfig>(
-             requestedComposition->stages[1]) ||
-         std::holds_alternative<FeedbackLoopConfig>(
-             requestedComposition->stages[1])) &&
+            requestedComposition->stages.front()) &&
         std::holds_alternative<DownmixConfig>(
-            requestedComposition->stages[2]);
+            requestedComposition->stages.back()) &&
+        ((requestedStageCount == 3 &&
+          (std::holds_alternative<DiffuserConfig>(
+               requestedComposition->stages[1]) ||
+           std::holds_alternative<FeedbackLoopConfig>(
+               requestedComposition->stages[1]))) ||
+         (requestedStageCount == 4 &&
+          std::holds_alternative<DiffuserConfig>(
+              requestedComposition->stages[1]) &&
+          std::holds_alternative<FeedbackLoopConfig>(
+              requestedComposition->stages[2])));
     const auto deriveChannelValues =
         resolved.formatVersion == 1 &&
         sampleRate != 0 &&
@@ -796,7 +822,9 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         inputChannels <= 2 &&
         canonicalShape;
     std::uint32_t channels = 0;
-    for (const auto& stage : requestedComposition->stages) {
+    for (std::size_t stageIndex = 0; stageIndex < requestedStageCount;
+         ++stageIndex) {
+      const auto& stage = requestedComposition->stages[stageIndex];
       std::visit(
           [&](const auto& stageConfig) {
             using Stage = std::decay_t<decltype(stageConfig)>;
@@ -858,7 +886,8 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                       channels,
                       sampleRate,
                       resolved.seed,
-                      deriveChannelValues));
+                      deriveChannelValues,
+                      stageIndex));
             } else {
               resolved.composition.stages.emplace_back(
                   resolveDownmix(stageConfig, channels));
@@ -946,6 +975,438 @@ void validateResolvedMixMatrix(
   }
 }
 
+// Validates one resolved Diffuser stage. `stageIndex` is always 1: a
+// Diffuser is either the composition's sole middle stage or the first of
+// two, since a Feedback Loop (when present) always follows it.
+void validateDiffuserStage(
+    const dsp::ResolvedConfig& resolved,
+    const dsp::ResolvedDiffuser& diffuser,
+    const std::uint32_t channels,
+    const std::optional<std::size_t>& matrixElements,
+    const ResolutionEvidence* const resolutionEvidence,
+    const std::uint64_t memoryBudgetBytes,
+    const std::size_t stageIndex) {
+  const auto path = stagePath(stageIndex);
+  const auto validatingRequest =
+      resolutionEvidence != nullptr &&
+      resolutionEvidence->diffuser.has_value();
+  if (validatingRequest &&
+      resolutionEvidence->diffuser->expectedStepLengths.size() !=
+          resolutionEvidence->diffuser->stepCount) {
+    switch (resolutionEvidence->diffuser->sampleBudget.status) {
+    case SampleBudgetStatus::valid:
+      break;
+    case SampleBudgetStatus::nonPositive:
+      fail(path + "/totalMs", "expected value greater than zero");
+    case SampleBudgetStatus::tooLarge:
+      fail(path + "/totalMs", "resolved sample budget is too large");
+    case SampleBudgetStatus::belowOneSample:
+      fail(
+          path + "/totalMs",
+          "resolved sample budget must be at least one sample");
+    case SampleBudgetStatus::tooFewPositions:
+      fail(
+          path + "/totalMs",
+          "delay strategy requires at least one sample position per Channel");
+    }
+    fail(path + "/steps", "expected a valid step count and distribution");
+  }
+  if (diffuser.steps.empty()) {
+    fail(path + "/steps", "expected at least one step");
+  }
+  if (diffuser.totalSamples == 0) {
+    fail(path + "/totalSamples", "expected value greater than zero");
+  }
+  checkDiffuserMemoryBudget(
+      channels,
+      diffuser.totalSamples,
+      diffuser.steps.size(),
+      memoryBudgetBytes,
+      path);
+  if (validatingRequest &&
+      diffuser.steps.size() != resolutionEvidence->diffuser->stepCount) {
+    fail(path + "/steps", "expected one resolved step per requested step");
+  }
+  std::uint64_t stepLengthSum = 0;
+  for (std::size_t stepPosition = 0; stepPosition < diffuser.steps.size();
+       ++stepPosition) {
+    const auto& step = diffuser.steps[stepPosition];
+    const auto stepPath = path + "/steps/" + std::to_string(stepPosition);
+    if (step.index != stepPosition) {
+      fail(stepPath + "/index", "expected the resolved step position");
+    }
+    if (step.lengthSamples == 0) {
+      fail(
+          stepPath + "/lengthSamples",
+          "expected the complete nonzero step sample budget");
+    }
+    if (step.lengthSamples == std::numeric_limits<std::uint64_t>::max()) {
+      fail(
+          stepPath + "/lengthSamples",
+          "delay strategy requires at least one sample position per "
+          "Channel");
+    }
+    if (validatingRequest &&
+        stepPosition <
+            resolutionEvidence->diffuser->expectedStepLengths.size() &&
+        step.lengthSamples !=
+            resolutionEvidence->diffuser
+                ->expectedStepLengths[stepPosition]) {
+      fail(
+          stepPath + "/lengthSamples",
+          "expected the largest-remainder apportioned step sample budget");
+    }
+    stepLengthSum += step.lengthSamples;
+    const auto expectedLengthMs =
+        static_cast<double>(step.lengthSamples) * 1000.0 /
+        resolved.sampleRate;
+    if (step.lengthMs != expectedLengthMs) {
+      fail(
+          stepPath + "/lengthMs",
+          "expected milliseconds derived from the integer sample budget");
+    }
+    if (step.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
+        step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
+        step.delayStrategy != dsp::DelayStrategy::even) {
+      fail(
+          stepPath + "/delayStrategy",
+          "expected segmented-random, uniform-random, or even");
+    }
+    if (step.polarity != dsp::PolarityStrategy::seededRandom &&
+        step.polarity != dsp::PolarityStrategy::none) {
+      fail(
+          stepPath + "/polarity",
+          "expected seeded-random or none");
+    }
+    if (step.mix != dsp::MixMatrixType::hadamard &&
+        step.mix != dsp::MixMatrixType::householder &&
+        step.mix != dsp::MixMatrixType::randomOrthogonal) {
+      fail(
+          stepPath + "/mix",
+          "expected hadamard, householder, or random-orthogonal");
+    }
+    if (step.mix == dsp::MixMatrixType::hadamard && !isPowerOfTwo(channels)) {
+      fail(
+          stepPath + "/mix",
+          "hadamard requires a power-of-two Channel count");
+    }
+    if (!matrixElements.has_value()) {
+      fail(stepPath + "/mix", "mixing matrix is too large");
+    }
+    if (requiresDistinctChannelPositions(step.delayStrategy) &&
+        step.lengthSamples + 1 < channels) {
+      fail(
+          stepPath + "/lengthSamples",
+          "delay strategy requires at least one sample position per "
+          "Channel");
+    }
+    const auto requireChannelValues =
+        [channels, &stepPath](const std::size_t size,
+                              const std::string_view field) {
+          if (size != channels) {
+            fail(stepPath + std::string(field), "expected one value per Channel");
+          }
+        };
+    requireChannelValues(step.delaysSamples.size(), "/delaysSamples");
+    requireChannelValues(step.delaysMs.size(), "/delaysMs");
+    requireChannelValues(step.bufferSizes.size(), "/bufferSizes");
+    requireChannelValues(step.permutation.size(), "/permutation");
+    requireChannelValues(step.polaritySigns.size(), "/polaritySigns");
+
+    auto sortedDelays = step.delaysSamples;
+    std::sort(sortedDelays.begin(), sortedDelays.end());
+    // Uniform-random deliberately samples with replacement, so clumping and
+    // collisions are a permitted ablation rather than a validation failure.
+    if (step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
+        std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
+            sortedDelays.end()) {
+      fail(
+          stepPath + "/delaysSamples",
+          "expected distinct delays within the step sample budget");
+    }
+    if (step.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
+      const auto positions = step.lengthSamples + 1;
+      for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        const auto start =
+            partitionBoundary(positions, channels, channel);
+        const auto end =
+            partitionBoundary(positions, channels, channel + 1U);
+        if (sortedDelays[channel] < start ||
+            sortedDelays[channel] >= end) {
+          fail(
+              stepPath + "/delaysSamples",
+              "segmented-random requires one delay in every segment");
+        }
+      }
+    }
+    std::vector<bool> seenPermutation(channels, false);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto delay = step.delaysSamples[channel];
+      if (delay > step.lengthSamples) {
+        fail(
+            stepPath + "/delaysSamples",
+            "expected distinct delays within the step sample budget");
+      }
+      const auto expectedDelayMs =
+          static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
+      if (step.delaysMs[channel] != expectedDelayMs) {
+        fail(
+            stepPath + "/delaysMs",
+            "expected milliseconds derived from integer delays");
+      }
+      if (step.bufferSizes[channel] != delay) {
+        fail(
+            stepPath + "/bufferSizes",
+            "expected each buffer size to equal its integer delay");
+      }
+      const auto source = step.permutation[channel];
+      if (source >= channels || seenPermutation[source]) {
+        fail(
+            stepPath + "/permutation",
+            "expected a permutation of Channel indices");
+      }
+      if (!step.shuffle && source != channel) {
+        fail(
+            stepPath + "/permutation",
+            "shuffle false requires the identity permutation");
+      }
+      seenPermutation[source] = true;
+      if (step.polaritySigns[channel] != -1 &&
+          step.polaritySigns[channel] != 1) {
+        fail(stepPath + "/polaritySigns", "expected -1 or 1");
+      }
+      if (step.polarity == dsp::PolarityStrategy::none &&
+          step.polaritySigns[channel] != 1) {
+        fail(
+            stepPath + "/polaritySigns",
+            "polarity none requires all +1 signs");
+      }
+      if (step.delayStrategy == dsp::DelayStrategy::even &&
+          delay != evenDelay(step.lengthSamples, channels, channel)) {
+        fail(
+            stepPath + "/delaysSamples",
+            "even requires delays distributed over the available "
+            "positions");
+      }
+    }
+    if (step.matrix.size() != *matrixElements) {
+      fail(stepPath + "/matrix", "expected an N by N matrix");
+    }
+    validateResolvedMixMatrix(
+        step.mix, channels, step.matrix, stepPath + "/matrix");
+  }
+  if (stepLengthSum != diffuser.totalSamples) {
+    fail(
+        path + "/steps",
+        "expected step sample budgets to sum to the resolved total");
+  }
+}
+
+// Validates one resolved Feedback Loop stage at `stageIndex` -- 1 in the
+// loop-only shape, 2 when it follows a Diffuser.
+void validateFeedbackLoopStage(
+    const dsp::ResolvedConfig& resolved,
+    const dsp::ResolvedFeedbackLoop& feedbackLoop,
+    const std::uint32_t channels,
+    const std::optional<std::size_t>& matrixElements,
+    const std::uint64_t memoryBudgetBytes,
+    const std::size_t stageIndex) {
+  const auto path = stagePath(stageIndex);
+  if (feedbackLoop.channels != channels) {
+    fail(
+        path + "/channels",
+        "expected the resolved Split Channel count");
+  }
+  if (feedbackLoop.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
+      feedbackLoop.delayStrategy != dsp::DelayStrategy::uniformRandom &&
+      feedbackLoop.delayStrategy != dsp::DelayStrategy::even) {
+    fail(
+        path + "/delayStrategy",
+        "expected segmented-random, uniform-random, or even");
+  }
+  if (!(feedbackLoop.delayMinMs > 0.0) ||
+      !std::isfinite(feedbackLoop.delayMinMs)) {
+    fail(
+        path + "/delayMinMs",
+        "expected finite value greater than zero");
+  }
+  if (!(feedbackLoop.delayMaxMs >= feedbackLoop.delayMinMs) ||
+      !std::isfinite(feedbackLoop.delayMaxMs)) {
+    fail(
+        path + "/delayMaxMs",
+        "expected finite value at least delayMinMs");
+  }
+  const auto expectedDelayMinSamples = static_cast<std::uint64_t>(
+      std::floor(
+          static_cast<long double>(feedbackLoop.delayMinMs) *
+              resolved.sampleRate / 1000.0L +
+          0.5L));
+  const auto expectedDelayMaxSamples = static_cast<std::uint64_t>(
+      std::floor(
+          static_cast<long double>(feedbackLoop.delayMaxMs) *
+              resolved.sampleRate / 1000.0L +
+          0.5L));
+  if (feedbackLoop.delayMinSamples != expectedDelayMinSamples ||
+      feedbackLoop.delayMaxSamples != expectedDelayMaxSamples) {
+    fail(
+        path,
+        "expected delayMinSamples/delayMaxSamples derived from "
+        "delayMinMs/delayMaxMs");
+  }
+  if (feedbackLoop.delayMaxSamples < feedbackLoop.delayMinSamples) {
+    fail(
+        path,
+        "expected delayMaxSamples at least delayMinSamples");
+  }
+  checkFeedbackLoopMemoryBudget(
+      channels,
+      feedbackLoop.delayMaxSamples,
+      memoryBudgetBytes,
+      path);
+  if (!(feedbackLoop.rt60Sec > 0.0) ||
+      !std::isfinite(feedbackLoop.rt60Sec)) {
+    fail(
+        path + "/rt60Sec",
+        "expected finite value greater than zero");
+  }
+  if (!(feedbackLoop.decayMargin > 0.0) ||
+      !std::isfinite(feedbackLoop.decayMargin)) {
+    fail(
+        path + "/decayMargin",
+        "expected finite value greater than zero");
+  }
+  const auto tailBudgetExact = static_cast<long double>(
+                                   feedbackLoop.rt60Sec) *
+      feedbackLoop.decayMargin * resolved.sampleRate;
+  const auto expectedTailBudget =
+      std::isfinite(tailBudgetExact) &&
+              tailBudgetExact < static_cast<long double>(
+                                    std::numeric_limits<
+                                        std::uint64_t>::max())
+          ? static_cast<std::uint64_t>(std::ceil(tailBudgetExact))
+          : std::numeric_limits<std::uint64_t>::max();
+  if (feedbackLoop.tailBudgetSamples != expectedTailBudget) {
+    fail(
+        path + "/tailBudgetSamples",
+        "expected value derived from rt60Sec and decayMargin");
+  }
+  if (feedbackLoop.tailBudgetSamples == 0) {
+    fail(
+        path + "/tailBudgetSamples",
+        "expected value greater than zero");
+  }
+  if (feedbackLoop.mix != dsp::MixMatrixType::hadamard &&
+      feedbackLoop.mix != dsp::MixMatrixType::householder &&
+      feedbackLoop.mix != dsp::MixMatrixType::randomOrthogonal) {
+    fail(
+        path + "/mix",
+        "expected hadamard, householder, or random-orthogonal");
+  }
+  if (feedbackLoop.mix == dsp::MixMatrixType::hadamard &&
+      !isPowerOfTwo(channels)) {
+    fail(
+        path + "/mix",
+        "hadamard requires a power-of-two Channel count");
+  }
+  if (!matrixElements.has_value()) {
+    fail(path + "/mix", "mixing matrix is too large");
+  }
+  const auto requireChannelValues =
+      [channels, &path](const std::size_t size, const std::string_view field) {
+        if (size != channels) {
+          fail(
+              path + std::string(field),
+              "expected one value per Channel");
+        }
+      };
+  requireChannelValues(feedbackLoop.delaysSamples.size(), "/delaysSamples");
+  requireChannelValues(feedbackLoop.delaysMs.size(), "/delaysMs");
+  requireChannelValues(feedbackLoop.bufferSizes.size(), "/bufferSizes");
+  requireChannelValues(feedbackLoop.gains.size(), "/gains");
+
+  auto sortedDelays = feedbackLoop.delaysSamples;
+  std::sort(sortedDelays.begin(), sortedDelays.end());
+  if (feedbackLoop.delayStrategy != dsp::DelayStrategy::uniformRandom &&
+      std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
+          sortedDelays.end()) {
+    fail(
+        path + "/delaysSamples",
+        "expected distinct delays within the delay range");
+  }
+  const auto positions =
+      feedbackLoop.delayMaxSamples - feedbackLoop.delayMinSamples + 1;
+  if (feedbackLoop.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto start = partitionBoundary(positions, channels, channel);
+      const auto end =
+          partitionBoundary(positions, channels, channel + 1U);
+      const auto offset =
+          sortedDelays[channel] - feedbackLoop.delayMinSamples;
+      if (offset < start || offset >= end) {
+        fail(
+            path + "/delaysSamples",
+            "segmented-random requires one delay in every segment");
+      }
+    }
+  }
+  for (std::uint32_t channel = 0; channel < channels; ++channel) {
+    const auto delay = feedbackLoop.delaysSamples[channel];
+    if (delay < feedbackLoop.delayMinSamples ||
+        delay > feedbackLoop.delayMaxSamples) {
+      fail(
+          path + "/delaysSamples",
+          "expected each delay within [delayMinSamples, delayMaxSamples]");
+    }
+    const auto expectedDelayMs =
+        static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
+    if (feedbackLoop.delaysMs[channel] != expectedDelayMs) {
+      fail(
+          path + "/delaysMs",
+          "expected milliseconds derived from integer delays");
+    }
+    if (feedbackLoop.bufferSizes[channel] != delay) {
+      fail(
+          path + "/bufferSizes",
+          "expected each buffer size to equal its integer delay");
+    }
+    if (feedbackLoop.delayStrategy == dsp::DelayStrategy::even &&
+        delay != feedbackLoop.delayMinSamples +
+                     evenDelay(positions - 1, channels, channel)) {
+      fail(
+          path + "/delaysSamples",
+          "even requires delays distributed over the available "
+          "positions");
+    }
+    const auto loopTimeSec =
+        static_cast<double>(delay) / resolved.sampleRate;
+    const auto expectedGain =
+        std::pow(10.0, -3.0 * loopTimeSec / feedbackLoop.rt60Sec);
+    if (!(feedbackLoop.gains[channel] > 0.0) ||
+        !(feedbackLoop.gains[channel] < 1.0) ||
+        !std::isfinite(feedbackLoop.gains[channel])) {
+      fail(
+          path + "/gains",
+          "expected finite gain strictly between zero and one");
+    }
+    const auto gainTolerance = 4.0 * std::numeric_limits<double>::epsilon();
+    if (std::abs(feedbackLoop.gains[channel] - expectedGain) >
+        gainTolerance) {
+      fail(
+          path + "/gains",
+          "expected gain solved from that Channel's own loop time and "
+          "rt60Sec");
+    }
+  }
+  if (feedbackLoop.matrix.size() != *matrixElements) {
+    fail(path + "/matrix", "expected an N by N matrix");
+  }
+  validateResolvedMixMatrix(
+      feedbackLoop.mix,
+      channels,
+      feedbackLoop.matrix,
+      path + "/matrix");
+}
+
 void validateResolvedConfig(
     const dsp::ResolvedConfig& resolved,
     const ResolutionEvidence* const resolutionEvidence,
@@ -962,9 +1423,10 @@ void validateResolvedConfig(
   }
 
   const auto& split =
-      std::get<dsp::ResolvedSplit>(resolved.composition.stages[0]);
-  const auto& downmix =
-      std::get<dsp::ResolvedDownmix>(resolved.composition.stages[2]);
+      std::get<dsp::ResolvedSplit>(resolved.composition.stages.front());
+  const auto downmixIndex = resolved.composition.stages.size() - 1;
+  const auto& downmix = std::get<dsp::ResolvedDownmix>(
+      resolved.composition.stages[downmixIndex]);
   const auto channels = split.channels;
   if (split.inputChannels == 0 || split.inputChannels > 2) {
     fail(
@@ -1034,445 +1496,52 @@ void validateResolvedConfig(
 
   const auto matrixElements = matrixElementCount(channels);
 
-  if (const auto* diffuser = std::get_if<dsp::ResolvedDiffuser>(
-          &resolved.composition.stages[1])) {
-    const auto validatingRequest =
-        resolutionEvidence != nullptr &&
-        resolutionEvidence->diffuser.has_value();
-    if (validatingRequest &&
-        resolutionEvidence->diffuser->expectedStepLengths.size() !=
-            resolutionEvidence->diffuser->stepCount) {
-      switch (resolutionEvidence->diffuser->sampleBudget.status) {
-      case SampleBudgetStatus::valid:
-        break;
-      case SampleBudgetStatus::nonPositive:
-        fail(
-            "/composition/stages/1/totalMs",
-            "expected value greater than zero");
-      case SampleBudgetStatus::tooLarge:
-        fail(
-            "/composition/stages/1/totalMs",
-            "resolved sample budget is too large");
-      case SampleBudgetStatus::belowOneSample:
-        fail(
-            "/composition/stages/1/totalMs",
-            "resolved sample budget must be at least one sample");
-      case SampleBudgetStatus::tooFewPositions:
-        fail(
-            "/composition/stages/1/totalMs",
-            "delay strategy requires at least one sample position per Channel");
-      }
-      fail(
-          "/composition/stages/1/steps",
-          "expected a valid step count and distribution");
-    }
-    if (diffuser->steps.empty()) {
-      fail("/composition/stages/1/steps", "expected at least one step");
-    }
-    if (diffuser->totalSamples == 0) {
-      fail(
-          "/composition/stages/1/totalSamples",
-          "expected value greater than zero");
-    }
-    checkDiffuserMemoryBudget(
-        channels,
-        diffuser->totalSamples,
-        diffuser->steps.size(),
-        memoryBudgetBytes,
-        "/composition/stages/1");
-    if (validatingRequest &&
-        diffuser->steps.size() != resolutionEvidence->diffuser->stepCount) {
-      fail(
-          "/composition/stages/1/steps",
-          "expected one resolved step per requested step");
-    }
-    std::uint64_t stepLengthSum = 0;
-    for (std::size_t stepPosition = 0; stepPosition < diffuser->steps.size();
-         ++stepPosition) {
-      const auto& step = diffuser->steps[stepPosition];
-      const auto stepPath =
-          "/composition/stages/1/steps/" + std::to_string(stepPosition);
-      if (step.index != stepPosition) {
-        fail(stepPath + "/index", "expected the resolved step position");
-      }
-      if (step.lengthSamples == 0) {
-        fail(
-            stepPath + "/lengthSamples",
-            "expected the complete nonzero step sample budget");
-      }
-      if (step.lengthSamples == std::numeric_limits<std::uint64_t>::max()) {
-        fail(
-            stepPath + "/lengthSamples",
-            "delay strategy requires at least one sample position per "
-            "Channel");
-      }
-      if (validatingRequest &&
-          stepPosition <
-              resolutionEvidence->diffuser->expectedStepLengths.size() &&
-          step.lengthSamples !=
-              resolutionEvidence->diffuser
-                  ->expectedStepLengths[stepPosition]) {
-        fail(
-            stepPath + "/lengthSamples",
-            "expected the largest-remainder apportioned step sample budget");
-      }
-      stepLengthSum += step.lengthSamples;
-      const auto expectedLengthMs =
-          static_cast<double>(step.lengthSamples) * 1000.0 /
-          resolved.sampleRate;
-      if (step.lengthMs != expectedLengthMs) {
-        fail(
-            stepPath + "/lengthMs",
-            "expected milliseconds derived from the integer sample budget");
-      }
-      if (step.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
-          step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
-          step.delayStrategy != dsp::DelayStrategy::even) {
-        fail(
-            stepPath + "/delayStrategy",
-            "expected segmented-random, uniform-random, or even");
-      }
-      if (step.polarity != dsp::PolarityStrategy::seededRandom &&
-          step.polarity != dsp::PolarityStrategy::none) {
-        fail(
-            stepPath + "/polarity",
-            "expected seeded-random or none");
-      }
-      if (step.mix != dsp::MixMatrixType::hadamard &&
-          step.mix != dsp::MixMatrixType::householder &&
-          step.mix != dsp::MixMatrixType::randomOrthogonal) {
-        fail(
-            stepPath + "/mix",
-            "expected hadamard, householder, or random-orthogonal");
-      }
-      if (step.mix == dsp::MixMatrixType::hadamard && !isPowerOfTwo(channels)) {
-        fail(
-            stepPath + "/mix",
-            "hadamard requires a power-of-two Channel count");
-      }
-      if (!matrixElements.has_value()) {
-        fail(stepPath + "/mix", "mixing matrix is too large");
-      }
-      if (requiresDistinctChannelPositions(step.delayStrategy) &&
-          step.lengthSamples + 1 < channels) {
-        fail(
-            stepPath + "/lengthSamples",
-            "delay strategy requires at least one sample position per "
-            "Channel");
-      }
-      const auto requireChannelValues =
-          [channels, &stepPath](const std::size_t size,
-                                const std::string_view field) {
-            if (size != channels) {
-              fail(stepPath + std::string(field), "expected one value per Channel");
-            }
-          };
-      requireChannelValues(step.delaysSamples.size(), "/delaysSamples");
-      requireChannelValues(step.delaysMs.size(), "/delaysMs");
-      requireChannelValues(step.bufferSizes.size(), "/bufferSizes");
-      requireChannelValues(step.permutation.size(), "/permutation");
-      requireChannelValues(step.polaritySigns.size(), "/polaritySigns");
-
-      auto sortedDelays = step.delaysSamples;
-      std::sort(sortedDelays.begin(), sortedDelays.end());
-      // Uniform-random deliberately samples with replacement, so clumping and
-      // collisions are a permitted ablation rather than a validation failure.
-      if (step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
-          std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
-              sortedDelays.end()) {
-        fail(
-            stepPath + "/delaysSamples",
-            "expected distinct delays within the step sample budget");
-      }
-      if (step.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
-        const auto positions = step.lengthSamples + 1;
-        for (std::uint32_t channel = 0; channel < channels; ++channel) {
-          const auto start =
-              partitionBoundary(positions, channels, channel);
-          const auto end =
-              partitionBoundary(positions, channels, channel + 1U);
-          if (sortedDelays[channel] < start ||
-              sortedDelays[channel] >= end) {
+  for (std::size_t stageIndex = 1; stageIndex < downmixIndex; ++stageIndex) {
+    std::visit(
+        [&](const auto& stage) {
+          using Stage = std::decay_t<decltype(stage)>;
+          if constexpr (std::is_same_v<Stage, dsp::ResolvedDiffuser>) {
+            validateDiffuserStage(
+                resolved,
+                stage,
+                channels,
+                matrixElements,
+                resolutionEvidence,
+                memoryBudgetBytes,
+                stageIndex);
+          } else if constexpr (
+              std::is_same_v<Stage, dsp::ResolvedFeedbackLoop>) {
+            validateFeedbackLoopStage(
+                resolved,
+                stage,
+                channels,
+                matrixElements,
+                memoryBudgetBytes,
+                stageIndex);
+          } else {
             fail(
-                stepPath + "/delaysSamples",
-                "segmented-random requires one delay in every segment");
+                stagePath(stageIndex),
+                "expected a Diffuser or Feedback Loop stage");
           }
-        }
-      }
-      std::vector<bool> seenPermutation(channels, false);
-      for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        const auto delay = step.delaysSamples[channel];
-        if (delay > step.lengthSamples) {
-          fail(
-              stepPath + "/delaysSamples",
-              "expected distinct delays within the step sample budget");
-        }
-        const auto expectedDelayMs =
-            static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
-        if (step.delaysMs[channel] != expectedDelayMs) {
-          fail(
-              stepPath + "/delaysMs",
-              "expected milliseconds derived from integer delays");
-        }
-        if (step.bufferSizes[channel] != delay) {
-          fail(
-              stepPath + "/bufferSizes",
-              "expected each buffer size to equal its integer delay");
-        }
-        const auto source = step.permutation[channel];
-        if (source >= channels || seenPermutation[source]) {
-          fail(
-              stepPath + "/permutation",
-              "expected a permutation of Channel indices");
-        }
-        if (!step.shuffle && source != channel) {
-          fail(
-              stepPath + "/permutation",
-              "shuffle false requires the identity permutation");
-        }
-        seenPermutation[source] = true;
-        if (step.polaritySigns[channel] != -1 &&
-            step.polaritySigns[channel] != 1) {
-          fail(stepPath + "/polaritySigns", "expected -1 or 1");
-        }
-        if (step.polarity == dsp::PolarityStrategy::none &&
-            step.polaritySigns[channel] != 1) {
-          fail(
-              stepPath + "/polaritySigns",
-              "polarity none requires all +1 signs");
-        }
-        if (step.delayStrategy == dsp::DelayStrategy::even &&
-            delay != evenDelay(step.lengthSamples, channels, channel)) {
-          fail(
-              stepPath + "/delaysSamples",
-              "even requires delays distributed over the available "
-              "positions");
-        }
-      }
-      if (step.matrix.size() != *matrixElements) {
-        fail(stepPath + "/matrix", "expected an N by N matrix");
-      }
-      validateResolvedMixMatrix(
-          step.mix, channels, step.matrix, stepPath + "/matrix");
-    }
-    if (stepLengthSum != diffuser->totalSamples) {
-      fail(
-          "/composition/stages/1/steps",
-          "expected step sample budgets to sum to the resolved total");
-    }
-  } else {
-    const auto& feedbackLoop = std::get<dsp::ResolvedFeedbackLoop>(
-        resolved.composition.stages[1]);
-    if (feedbackLoop.channels != channels) {
-      fail(
-          "/composition/stages/1/channels",
-          "expected the resolved Split Channel count");
-    }
-    if (feedbackLoop.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
-        feedbackLoop.delayStrategy != dsp::DelayStrategy::uniformRandom &&
-        feedbackLoop.delayStrategy != dsp::DelayStrategy::even) {
-      fail(
-          "/composition/stages/1/delayStrategy",
-          "expected segmented-random, uniform-random, or even");
-    }
-    if (!(feedbackLoop.delayMinMs > 0.0) ||
-        !std::isfinite(feedbackLoop.delayMinMs)) {
-      fail(
-          "/composition/stages/1/delayMinMs",
-          "expected finite value greater than zero");
-    }
-    if (!(feedbackLoop.delayMaxMs >= feedbackLoop.delayMinMs) ||
-        !std::isfinite(feedbackLoop.delayMaxMs)) {
-      fail(
-          "/composition/stages/1/delayMaxMs",
-          "expected finite value at least delayMinMs");
-    }
-    const auto expectedDelayMinSamples = static_cast<std::uint64_t>(
-        std::floor(
-            static_cast<long double>(feedbackLoop.delayMinMs) *
-                resolved.sampleRate / 1000.0L +
-            0.5L));
-    const auto expectedDelayMaxSamples = static_cast<std::uint64_t>(
-        std::floor(
-            static_cast<long double>(feedbackLoop.delayMaxMs) *
-                resolved.sampleRate / 1000.0L +
-            0.5L));
-    if (feedbackLoop.delayMinSamples != expectedDelayMinSamples ||
-        feedbackLoop.delayMaxSamples != expectedDelayMaxSamples) {
-      fail(
-          "/composition/stages/1",
-          "expected delayMinSamples/delayMaxSamples derived from "
-          "delayMinMs/delayMaxMs");
-    }
-    if (feedbackLoop.delayMaxSamples < feedbackLoop.delayMinSamples) {
-      fail(
-          "/composition/stages/1",
-          "expected delayMaxSamples at least delayMinSamples");
-    }
-    checkFeedbackLoopMemoryBudget(
-        channels,
-        feedbackLoop.delayMaxSamples,
-        memoryBudgetBytes,
-        "/composition/stages/1");
-    if (!(feedbackLoop.rt60Sec > 0.0) ||
-        !std::isfinite(feedbackLoop.rt60Sec)) {
-      fail(
-          "/composition/stages/1/rt60Sec",
-          "expected finite value greater than zero");
-    }
-    if (!(feedbackLoop.decayMargin > 0.0) ||
-        !std::isfinite(feedbackLoop.decayMargin)) {
-      fail(
-          "/composition/stages/1/decayMargin",
-          "expected finite value greater than zero");
-    }
-    const auto tailBudgetExact = static_cast<long double>(
-                                     feedbackLoop.rt60Sec) *
-        feedbackLoop.decayMargin * resolved.sampleRate;
-    const auto expectedTailBudget =
-        std::isfinite(tailBudgetExact) &&
-                tailBudgetExact < static_cast<long double>(
-                                      std::numeric_limits<
-                                          std::uint64_t>::max())
-            ? static_cast<std::uint64_t>(std::ceil(tailBudgetExact))
-            : std::numeric_limits<std::uint64_t>::max();
-    if (feedbackLoop.tailBudgetSamples != expectedTailBudget) {
-      fail(
-          "/composition/stages/1/tailBudgetSamples",
-          "expected value derived from rt60Sec and decayMargin");
-    }
-    if (feedbackLoop.tailBudgetSamples == 0) {
-      fail(
-          "/composition/stages/1/tailBudgetSamples",
-          "expected value greater than zero");
-    }
-    if (feedbackLoop.mix != dsp::MixMatrixType::hadamard &&
-        feedbackLoop.mix != dsp::MixMatrixType::householder &&
-        feedbackLoop.mix != dsp::MixMatrixType::randomOrthogonal) {
-      fail(
-          "/composition/stages/1/mix",
-          "expected hadamard, householder, or random-orthogonal");
-    }
-    if (feedbackLoop.mix == dsp::MixMatrixType::hadamard &&
-        !isPowerOfTwo(channels)) {
-      fail(
-          "/composition/stages/1/mix",
-          "hadamard requires a power-of-two Channel count");
-    }
-    if (!matrixElements.has_value()) {
-      fail("/composition/stages/1/mix", "mixing matrix is too large");
-    }
-    const auto requireChannelValues =
-        [channels](const std::size_t size, const std::string_view field) {
-          if (size != channels) {
-            fail(
-                "/composition/stages/1" + std::string(field),
-                "expected one value per Channel");
-          }
-        };
-    requireChannelValues(feedbackLoop.delaysSamples.size(), "/delaysSamples");
-    requireChannelValues(feedbackLoop.delaysMs.size(), "/delaysMs");
-    requireChannelValues(feedbackLoop.bufferSizes.size(), "/bufferSizes");
-    requireChannelValues(feedbackLoop.gains.size(), "/gains");
-
-    auto sortedDelays = feedbackLoop.delaysSamples;
-    std::sort(sortedDelays.begin(), sortedDelays.end());
-    if (feedbackLoop.delayStrategy != dsp::DelayStrategy::uniformRandom &&
-        std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
-            sortedDelays.end()) {
-      fail(
-          "/composition/stages/1/delaysSamples",
-          "expected distinct delays within the delay range");
-    }
-    const auto positions =
-        feedbackLoop.delayMaxSamples - feedbackLoop.delayMinSamples + 1;
-    if (feedbackLoop.delayStrategy == dsp::DelayStrategy::segmentedRandom) {
-      for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        const auto start = partitionBoundary(positions, channels, channel);
-        const auto end =
-            partitionBoundary(positions, channels, channel + 1U);
-        const auto offset =
-            sortedDelays[channel] - feedbackLoop.delayMinSamples;
-        if (offset < start || offset >= end) {
-          fail(
-              "/composition/stages/1/delaysSamples",
-              "segmented-random requires one delay in every segment");
-        }
-      }
-    }
-    for (std::uint32_t channel = 0; channel < channels; ++channel) {
-      const auto delay = feedbackLoop.delaysSamples[channel];
-      if (delay < feedbackLoop.delayMinSamples ||
-          delay > feedbackLoop.delayMaxSamples) {
-        fail(
-            "/composition/stages/1/delaysSamples",
-            "expected each delay within [delayMinSamples, delayMaxSamples]");
-      }
-      const auto expectedDelayMs =
-          static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
-      if (feedbackLoop.delaysMs[channel] != expectedDelayMs) {
-        fail(
-            "/composition/stages/1/delaysMs",
-            "expected milliseconds derived from integer delays");
-      }
-      if (feedbackLoop.bufferSizes[channel] != delay) {
-        fail(
-            "/composition/stages/1/bufferSizes",
-            "expected each buffer size to equal its integer delay");
-      }
-      if (feedbackLoop.delayStrategy == dsp::DelayStrategy::even &&
-          delay != feedbackLoop.delayMinSamples +
-                       evenDelay(positions - 1, channels, channel)) {
-        fail(
-            "/composition/stages/1/delaysSamples",
-            "even requires delays distributed over the available "
-            "positions");
-      }
-      const auto loopTimeSec =
-          static_cast<double>(delay) / resolved.sampleRate;
-      const auto expectedGain =
-          std::pow(10.0, -3.0 * loopTimeSec / feedbackLoop.rt60Sec);
-      if (!(feedbackLoop.gains[channel] > 0.0) ||
-          !(feedbackLoop.gains[channel] < 1.0) ||
-          !std::isfinite(feedbackLoop.gains[channel])) {
-        fail(
-            "/composition/stages/1/gains",
-            "expected finite gain strictly between zero and one");
-      }
-      const auto gainTolerance = 4.0 * std::numeric_limits<double>::epsilon();
-      if (std::abs(feedbackLoop.gains[channel] - expectedGain) >
-          gainTolerance) {
-        fail(
-            "/composition/stages/1/gains",
-            "expected gain solved from that Channel's own loop time and "
-            "rt60Sec");
-      }
-    }
-    if (feedbackLoop.matrix.size() != *matrixElements) {
-      fail("/composition/stages/1/matrix", "expected an N by N matrix");
-    }
-    validateResolvedMixMatrix(
-        feedbackLoop.mix,
-        channels,
-        feedbackLoop.matrix,
-        "/composition/stages/1/matrix");
+        },
+        resolved.composition.stages[stageIndex]);
   }
 
   if (downmix.inputChannels != channels ||
       downmix.outputChannels != 2) {
     fail(
-        "/composition/stages/2",
+        stagePath(downmixIndex),
         "Downmix dimensions must map the internal Channels to stereo");
   }
   if (downmix.strategy != dsp::DownmixStrategy::select) {
     fail(
-        "/composition/stages/2/strategy",
+        stagePath(downmixIndex) + "/strategy",
         "the first diffusion slice requires select");
   }
   if (!(downmix.compensation > 0.0) ||
       !std::isfinite(downmix.compensation)) {
     fail(
-        "/composition/stages/2/compensation",
+        stagePath(downmixIndex) + "/compensation",
         "expected finite positive gain");
   }
   double expectedCompensation = 0.0;
@@ -1488,12 +1557,12 @@ void validateResolvedConfig(
     break;
   default:
     fail(
-        "/composition/stages/2/normalisation",
+        stagePath(downmixIndex) + "/normalisation",
         "expected energy or none");
   }
   if (downmix.compensation != expectedCompensation) {
     fail(
-        "/composition/stages/2/compensation",
+        stagePath(downmixIndex) + "/compensation",
         "expected gain derived from Downmix normalisation");
   }
 }

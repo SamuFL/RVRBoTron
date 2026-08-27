@@ -1346,6 +1346,21 @@ def main():
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
         (
+            '{"composition": {"stages": ['
+            '{"type": "split"}, {"type": "feedback-loop"}, '
+            '{"type": "diffuser"}, {"type": "downmix"}'
+            ']}}',
+            "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
+        ),
+        (
+            '{"composition": {"stages": ['
+            '{"type": "split"}, {"type": "diffuser"}, '
+            '{"type": "diffuser"}, {"type": "feedback-loop"}, '
+            '{"type": "downmix"}'
+            ']}}',
+            "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
+        ),
+        (
             json.dumps(invalid_channels_request),
             "invalid_configuration at /composition/stages/0/channels: "
             "expected value greater than zero",
