@@ -72,8 +72,10 @@ target_link_libraries(
 target_compile_features(rvrbotron_config PUBLIC cxx_std_17)
 
 add_library(rvrbotron_cli_support
+  src/cli/Benchmark.cpp
   src/cli/ConfigJson.cpp
   src/cli/FileSha256.cpp
+  src/cli/Platform.cpp
   src/cli/RenderMetadata.cpp
   src/cli/RenderResultTransaction.cpp
 )
@@ -89,12 +91,14 @@ target_link_libraries(
     rvrbotron_config
   PRIVATE
     nlohmann_json::nlohmann_json
+    $<$<PLATFORM_ID:Windows>:psapi>
 )
 target_compile_features(rvrbotron_cli_support PUBLIC cxx_std_17)
 target_compile_definitions(
   rvrbotron_cli_support
   PRIVATE
     RVRBOTRON_VERSION="${PROJECT_VERSION}"
+    "RVRBOTRON_BUILD_TYPE=\"$<CONFIG>\""
 )
 
 add_library(rvrbotron_wav

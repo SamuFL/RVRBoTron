@@ -44,6 +44,10 @@ public:
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;
   [[nodiscard]] std::uint64_t finiteTailFrames() const noexcept;
+  // Exact DSP-owned bytes: the heap-allocated pimpl's object storage, its
+  // owned-container capacities, and every owned Split/Diffuser/Downmix
+  // sub-object reachable from it.
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   struct Implementation;

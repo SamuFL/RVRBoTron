@@ -1,6 +1,7 @@
 #include "rvrbotron/cli/RenderMetadata.h"
 
 #include "rvrbotron/HarnessError.h"
+#include "rvrbotron/cli/Platform.h"
 #include "rvrbotron/dsp/Sample.h"
 
 #include <nlohmann/json.hpp>
@@ -22,28 +23,6 @@ std::string_view configurationInputName(
     return "resolved";
   }
   return "unknown";
-}
-
-std::string_view platformName() noexcept {
-#if defined(_WIN32)
-  return "windows";
-#elif defined(__APPLE__)
-  return "macos";
-#elif defined(__linux__)
-  return "linux";
-#else
-  return "unknown";
-#endif
-}
-
-std::string_view architectureName() noexcept {
-#if defined(_M_X64) || defined(__x86_64__)
-  return "x86_64";
-#elif defined(_M_ARM64) || defined(__aarch64__)
-  return "arm64";
-#else
-  return "unknown";
-#endif
 }
 
 } // namespace

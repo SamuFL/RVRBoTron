@@ -35,6 +35,7 @@ public:
   [[nodiscard]] std::size_t channelCount() const noexcept;
   [[nodiscard]] std::size_t stepCount() const noexcept;
   [[nodiscard]] std::uint64_t totalSamples() const noexcept;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   std::size_t channels_;

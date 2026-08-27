@@ -1,6 +1,7 @@
 #include "rvrbotron/dsp/Diffuser.h"
 
 #include "rvrbotron/dsp/DiffusionStep.h"
+#include "rvrbotron/dsp/OwnedBytes.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -66,6 +67,15 @@ std::size_t Diffuser::stepCount() const noexcept {
 
 std::uint64_t Diffuser::totalSamples() const noexcept {
   return totalSamples_;
+}
+
+std::size_t Diffuser::ownedBytes() const noexcept {
+  std::size_t total = sizeof(*this) + ownedVectorBytes(stepIndices_) +
+                      ownedVectorBytes(steps_);
+  for (const auto& step : steps_) {
+    total += step->ownedBytes();
+  }
+  return total;
 }
 
 } // namespace rvrbotron::dsp

@@ -861,5 +861,65 @@ int main() {
     }
   }
 
+  // Reverb::ownedBytes() accounts owned-container capacities, not size:
+  // bumping one Channel's resolved delay (and matching buffer size) by
+  // 1000 samples changes only that Channel's delay-storage allocation.
+  // Comparing the exact byte delta (rather than an absolute figure, which
+  // depends on platform/compiler-specific struct layout) keeps this
+  // portable across every supported platform.
+  auto baselineConfig = twoChannelDiffusionConfig();
+  auto& baselineStep =
+      std::get<rvrbotron::dsp::ResolvedDiffuser>(
+          baselineConfig.composition.stages[1])
+          .steps.front();
+  auto enlargedConfig = baselineConfig;
+  auto& enlargedStep =
+      std::get<rvrbotron::dsp::ResolvedDiffuser>(
+          enlargedConfig.composition.stages[1])
+          .steps.front();
+  constexpr std::uint64_t extraDelaySamples = 1000;
+  enlargedStep.delaysSamples[1] += extraDelaySamples;
+  enlargedStep.bufferSizes[1] += extraDelaySamples;
+
+  rvrbotron::dsp::Reverb baselineReverb(baselineConfig);
+  rvrbotron::dsp::Reverb enlargedReverb(enlargedConfig);
+  beginAllocationCount();
+  const auto baselineBytes = baselineReverb.ownedBytes();
+  const auto enlargedBytes = enlargedReverb.ownedBytes();
+  const auto ownedBytesAllocations = endAllocationCount();
+  if (ownedBytesAllocations != 0) {
+    std::cerr << "Reverb::ownedBytes allocated while measuring\n";
+    return 1;
+  }
+  if (baselineBytes == 0) {
+    std::cerr << "Reverb::ownedBytes reported zero for a real Diffuser\n";
+    return 1;
+  }
+  const auto expectedDelta =
+      extraDelaySamples * sizeof(rvrbotron::dsp::Sample);
+  if (enlargedBytes - baselineBytes != expectedDelta) {
+    std::cerr << "Reverb::ownedBytes did not track delay-storage capacity: "
+              << (enlargedBytes - baselineBytes) << " != " << expectedDelta
+              << '\n';
+    return 1;
+  }
+  // Enlarging the resolved buffer must not disturb the still-allocation-free
+  // real-time contract of the (separately constructed) baseline Reverb.
+  std::array<rvrbotron::dsp::Sample, 2> ownedBytesImpulse{1.0F, 0.0F};
+  std::array<rvrbotron::dsp::Sample, 2> ownedBytesWetLeft{};
+  std::array<rvrbotron::dsp::Sample, 2> ownedBytesWetRight{};
+  const rvrbotron::dsp::Sample* ownedBytesInputs[]{
+      ownedBytesImpulse.data()};
+  rvrbotron::dsp::Sample* ownedBytesOutputs[]{
+      ownedBytesWetLeft.data(), ownedBytesWetRight.data()};
+  beginAllocationCount();
+  baselineReverb.process(
+      ownedBytesInputs, 1, ownedBytesOutputs, 2, 2);
+  if (endAllocationCount() != 0) {
+    std::cerr
+        << "Reverb::process allocated after ownedBytes was queried\n";
+    return 1;
+  }
+
   return 0;
 }

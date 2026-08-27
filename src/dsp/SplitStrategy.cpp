@@ -69,6 +69,10 @@ std::size_t DuplicateSplitStrategy::channelCount() const noexcept {
   return channels_;
 }
 
+std::size_t DuplicateSplitStrategy::ownedBytes() const noexcept {
+  return sizeof(*this);
+}
+
 std::unique_ptr<SplitStrategy> makeSplitStrategy(
     const ResolvedSplit& config) {
   // Mono input has no left/right dimension to preserve, so every requested
@@ -113,6 +117,10 @@ std::size_t StereoHalvesSplitStrategy::channelCount() const noexcept {
   return channels_;
 }
 
+std::size_t StereoHalvesSplitStrategy::ownedBytes() const noexcept {
+  return sizeof(*this);
+}
+
 StereoInterleaveSplitStrategy::StereoInterleaveSplitStrategy(
     const ResolvedSplit& config)
     : channels_(config.channels),
@@ -137,6 +145,10 @@ std::size_t StereoInterleaveSplitStrategy::inputChannelCount() const noexcept {
 
 std::size_t StereoInterleaveSplitStrategy::channelCount() const noexcept {
   return channels_;
+}
+
+std::size_t StereoInterleaveSplitStrategy::ownedBytes() const noexcept {
+  return sizeof(*this);
 }
 
 } // namespace rvrbotron::dsp

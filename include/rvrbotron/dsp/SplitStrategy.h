@@ -17,6 +17,7 @@ public:
                             Sample* channels) const noexcept = 0;
   [[nodiscard]] virtual std::size_t inputChannelCount() const noexcept = 0;
   [[nodiscard]] virtual std::size_t channelCount() const noexcept = 0;
+  [[nodiscard]] virtual std::size_t ownedBytes() const noexcept = 0;
 };
 
 class DuplicateSplitStrategy final : public SplitStrategy {
@@ -28,6 +29,7 @@ public:
                     Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t inputChannelCount() const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t inputChannels_;
@@ -48,6 +50,7 @@ public:
                     Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t inputChannelCount() const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t channels_;
@@ -67,6 +70,7 @@ public:
                     Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t inputChannelCount() const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t channels_;

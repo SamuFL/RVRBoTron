@@ -35,6 +35,15 @@ cmake --build --preset double
 ctest --preset double
 ```
 
+The `release` and `release-double` presets build optimized (`Release`)
+binaries for meaningful `benchmark` timing evidence; `default`/`double` stay
+Debug builds for development:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+```
+
 Every CI job runs the complete command-level suite and proves exact identity
 from its own committed fixtures; artifacts are not transferred between
 machines. Float builds run on macOS arm64, macOS Intel, and Windows x86_64.
@@ -309,6 +318,36 @@ Render Results of the same Resolved Configuration -- typically rendered at
 different `--block-size` values -- for exact decoded equality of `output.wav`
 and every Stage capture, with first-mismatch detail on failure. This mode
 prints its own JSON report and does not publish an artifact.
+
+### Benchmark a Resolved Configuration
+
+Measure empirical CPU and memory cost around `Reverb::process`, excluding
+configuration and file I/O, using an optimized build (`--preset release` or
+`--preset release-double`):
+
+```bash
+build/release/rvrbotron benchmark \
+  --resolved build/requested-result/resolved.json \
+  --block-size 128 \
+  --warmup-seconds 1 \
+  --measure-seconds 5 \
+  --json build/benchmark-report.json
+```
+
+The Composition must be non-empty and its Channel counts mono or stereo.
+Deterministic nonzero seeded blocks drive the constructed `Reverb` for the
+warm-up duration (discarded), then for the measured duration, timing every
+block individually; neither phase touches file or JSON I/O. The terminal and
+JSON reports are identical and include: median, p95, and worst block time;
+the real-time budget, median/worst utilization, and missed-deadline count at
+the resolved sample rate and requested block size; exact DSP-owned bytes
+(object storage plus every owned-container's actual capacity, not size); a
+best-effort process resident-set-size delta, labeled separately as
+allocator/runtime-noisy evidence; and provenance -- renderer version,
+platform, architecture, compiler, build type, Sample precision, sample rate,
+block size, Channel count, step count, and the mixing matrix used by every
+Diffusion Step. Benchmarking a Debug binary prints a prominent warning to
+stderr but is not refused.
 
 ### Validate a Listening Sample Locally
 

@@ -1,5 +1,7 @@
 #include "rvrbotron/dsp/MixMatrix.h"
 
+#include "rvrbotron/dsp/OwnedBytes.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -78,6 +80,10 @@ std::size_t HadamardMixMatrix::channelCount() const noexcept {
   return channels_;
 }
 
+std::size_t HadamardMixMatrix::ownedBytes() const noexcept {
+  return sizeof(*this);
+}
+
 HouseholderMixMatrix::HouseholderMixMatrix(
     const std::size_t channels,
     const std::vector<double>& resolvedCoefficients)
@@ -129,6 +135,10 @@ void HouseholderMixMatrix::mix(Sample* const channels) const noexcept {
 
 std::size_t HouseholderMixMatrix::channelCount() const noexcept {
   return channels_;
+}
+
+std::size_t HouseholderMixMatrix::ownedBytes() const noexcept {
+  return sizeof(*this);
 }
 
 namespace {
@@ -195,6 +205,11 @@ void RandomOrthogonalMixMatrix::mix(Sample* const channels) const noexcept {
 
 std::size_t RandomOrthogonalMixMatrix::channelCount() const noexcept {
   return channels_;
+}
+
+std::size_t RandomOrthogonalMixMatrix::ownedBytes() const noexcept {
+  return sizeof(*this) + ownedVectorBytes(matrix_) +
+         ownedVectorBytes(scratch_);
 }
 
 std::unique_ptr<MixMatrix> makeMixMatrix(

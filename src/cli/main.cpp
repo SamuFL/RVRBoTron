@@ -1,4 +1,5 @@
 #include "rvrbotron/HarnessError.h"
+#include "rvrbotron/cli/Benchmark.h"
 #include "rvrbotron/cli/ConfigJson.h"
 #include "rvrbotron/cli/FileSha256.h"
 #include "rvrbotron/cli/RenderMetadata.h"
@@ -128,7 +129,7 @@ std::uint64_t parseMemoryBudgetMib(const std::string_view value) {
 }
 
 RenderArguments parseArguments(const int argc, char** argv) {
-  if (argc < 2 || std::string(argv[1]) != "render" || argc % 2 != 0) {
+  if (argc % 2 != 0) {
     throw rvrbotron::HarnessError(
         rvrbotron::ErrorCategory::invalidArguments,
         "usage: rvrbotron render --input <wav> [--config <request.json> | "
@@ -564,7 +565,16 @@ int main(const int argc, char** argv) {
   const auto errorFormat = requestedErrorFormat(argc, argv);
   try {
     installInterruptionHandlers();
-    render(parseArguments(argc, argv));
+    const std::string command = argc >= 2 ? argv[1] : "";
+    if (command == "render") {
+      render(parseArguments(argc, argv));
+    } else if (command == "benchmark") {
+      rvrbotron::cli::runBenchmark(argc, argv);
+    } else {
+      throw rvrbotron::HarnessError(
+          rvrbotron::ErrorCategory::invalidArguments,
+          "usage: rvrbotron <render|benchmark> ...");
+    }
     return 0;
   } catch (const rvrbotron::HarnessError& error) {
     return reportError(error, errorFormat);

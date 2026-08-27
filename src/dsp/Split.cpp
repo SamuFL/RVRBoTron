@@ -23,4 +23,8 @@ std::size_t Split::channelCount() const noexcept {
   return strategy_->channelCount();
 }
 
+std::size_t Split::ownedBytes() const noexcept {
+  return sizeof(*this) + strategy_->ownedBytes();
+}
+
 } // namespace rvrbotron::dsp

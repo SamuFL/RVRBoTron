@@ -2,6 +2,7 @@
 
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/OwnedBytes.h"
 #include "rvrbotron/dsp/Split.h"
 
 #include <algorithm>
@@ -124,6 +125,22 @@ std::size_t Reverb::outputChannelCount() const noexcept {
 
 std::uint64_t Reverb::finiteTailFrames() const noexcept {
   return implementation_->tailFrames;
+}
+
+std::size_t Reverb::ownedBytes() const noexcept {
+  const auto& state = *implementation_;
+  std::size_t total = sizeof(state) + ownedVectorBytes(state.splitValues) +
+                      ownedVectorBytes(state.diffusionValues);
+  if (state.split != nullptr) {
+    total += state.split->ownedBytes();
+  }
+  if (state.diffuser != nullptr) {
+    total += state.diffuser->ownedBytes();
+  }
+  if (state.downmix != nullptr) {
+    total += state.downmix->ownedBytes();
+  }
+  return total;
 }
 
 } // namespace rvrbotron::dsp

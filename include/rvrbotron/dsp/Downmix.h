@@ -17,6 +17,7 @@ public:
 
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   DownmixStrategy strategy_;
