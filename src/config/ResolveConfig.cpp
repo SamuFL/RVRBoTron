@@ -117,7 +117,7 @@ std::optional<std::uint64_t> checkedAdd(
 std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
     const std::uint32_t channels,
     const std::uint64_t totalSamples,
-    const std::uint32_t stepCount) noexcept {
+    const std::uint64_t stepCount) noexcept {
   constexpr std::uint64_t kSampleBytes = 8;
   constexpr std::uint64_t kMetadataBytesPerChannel = 24;
   auto delayBytes = checkedMul(channels, totalSamples);
@@ -147,7 +147,7 @@ std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
 void checkDiffuserMemoryBudget(
     const std::uint32_t channels,
     const std::uint64_t totalSamples,
-    const std::uint32_t stepCount,
+    const std::uint64_t stepCount,
     const std::uint64_t budgetBytes,
     const std::string_view path) {
   const auto estimate =
@@ -778,7 +778,7 @@ void validateResolvedConfig(
   checkDiffuserMemoryBudget(
       channels,
       diffuser.totalSamples,
-      static_cast<std::uint32_t>(diffuser.steps.size()),
+      diffuser.steps.size(),
       memoryBudgetBytes,
       "/composition/stages/1");
   if (validatingRequest &&
