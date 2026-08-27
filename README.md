@@ -106,7 +106,8 @@ Format version 1 also accepts the ordered
 `[split, diffuser, downmix]` Composition shape. The Diffuser resolves to an
 ordered chain of Hadamard Diffusion Steps (`4` by default) feeding a select
 Downmix. Diagnostic ablations support `normalisation: "none"`,
-`delayStrategy: "even"`, `shuffle: false`, and `polarity: "none"`:
+`delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`, and
+`polarity: "none"`:
 
 ```json
 {
@@ -209,7 +210,7 @@ mapping.
 | `totalMs` | finite number | `300` | Combined length of every Diffusion Step, apportioned per `distribution`. Mutually exclusive with `lengthsMs`. |
 | `distribution` | `"even"` \| `"doubling"` | `"doubling"` | `"even"` gives every step an equal share of `totalMs`; `"doubling"` weights step *i* by `2^i` (each step roughly twice the previous). Mutually exclusive with `lengthsMs`. |
 | `lengthsMs` | array of finite numbers (one per step, N ≥ 1) | unset | Explicit per-step lengths in milliseconds, in step order. Use instead of `steps`/`totalMs`/`distribution` for full control over each step's share. |
-| `step.delayStrategy` | `"segmented-random"` \| `"even"` | `"segmented-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `step.delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | Shared default applied to every step unless overridden in `stepOverrides`. `"uniform-random"` samples each Channel's delay independently with replacement, so it permits duplicate delays and is exempt from the "N distinct positions" requirement the other two strategies enforce. |
 | `step.mix` | `"hadamard"` | `"hadamard"` (only option) | Shared default applied to every step unless overridden in `stepOverrides`. |
 | `step.shuffle` | boolean | `true` | Shared default applied to every step unless overridden in `stepOverrides`. |
 | `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
@@ -236,9 +237,10 @@ one canonical WAV per resolved step, named `01-diffusion-step-{i}.wav`.
 | `strategy` | `"select"` | `"select"` (only option) |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
 
-`delayStrategy: "even"`, `shuffle: false`, `polarity: "none"`, and
-`normalisation: "none"` are diagnostic ablations for isolating one DSP
-behavior at a time; they are not intended as listening presets.
+`delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
+`polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for
+isolating one DSP behavior at a time; they are not intended as listening
+presets.
 
 Keep this table in sync whenever a request field, its accepted values, or its
 default changes.
