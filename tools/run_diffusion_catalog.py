@@ -44,6 +44,11 @@ def load_catalog(path: Path):
     names = [case["name"] for case in document["cases"]]
     if len(names) != len(set(names)):
         raise CatalogError("catalog contains duplicate case names")
+    if "reference" not in names:
+        raise CatalogError("catalog is missing required quantitative case: 'reference'")
+    listening_names = [case["name"] for case in document["listeningCases"]]
+    if len(listening_names) != len(set(listening_names)):
+        raise CatalogError("catalog contains duplicate listening case names")
     for listening_case in document["listeningCases"]:
         paired = listening_case["pairedQuantitativeCase"]
         if paired not in names:
