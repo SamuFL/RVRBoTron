@@ -183,11 +183,7 @@ void checkDiffuserMemoryBudget(
 std::optional<std::uint64_t> estimateFeedbackLoopMemoryBytes(
     const std::uint32_t channels,
     const std::uint64_t maxDelaySamples) noexcept {
-#if defined(RVRBOTRON_SAMPLE_DOUBLE)
   constexpr std::uint64_t kSampleBytes = 8;
-#else
-  constexpr std::uint64_t kSampleBytes = 4;
-#endif
   constexpr std::uint64_t kMetadataBytesPerChannel = 16;
   auto delayBytes = checkedMul(channels, maxDelaySamples);
   delayBytes =
@@ -1410,7 +1406,7 @@ void validateResolvedConfig(
           delay > feedbackLoop.delayMaxSamples) {
         fail(
             "/composition/stages/1/delaysSamples",
-            "expected each delay within [delayMinSamples, delayMaxSamples]";
+            "expected each delay within [delayMinSamples, delayMaxSamples]");
       }
       const auto expectedDelayMs =
           static_cast<double>(delay) * 1000.0 / resolved.sampleRate;
