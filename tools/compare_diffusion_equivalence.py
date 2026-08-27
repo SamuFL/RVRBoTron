@@ -27,7 +27,7 @@ def platform_label(entry):
 
 def choose_baseline(entries):
     for entry in entries:
-        if entry["platform"] == "macOS" and entry["architecture"] == "arm64":
+        if entry["platform"].lower() == "macos" and entry["architecture"] == "arm64":
             return entry
     return sorted(entries, key=platform_label)[0]
 
