@@ -29,4 +29,8 @@ std::size_t Downmix::outputChannelCount() const noexcept {
   return outputChannels_;
 }
 
+std::size_t Downmix::ownedBytes() const noexcept {
+  return sizeof(*this);
+}
+
 } // namespace rvrbotron::dsp

@@ -1,6 +1,7 @@
 #include "rvrbotron/dsp/DiffusionStep.h"
 
 #include "rvrbotron/dsp/MixMatrix.h"
+#include "rvrbotron/dsp/OwnedBytes.h"
 
 #include <limits>
 #include <stdexcept>
@@ -96,6 +97,15 @@ void DiffusionStep::processFrame(const Sample* const inputs,
 
 std::size_t DiffusionStep::channelCount() const noexcept {
   return channels_;
+}
+
+std::size_t DiffusionStep::ownedBytes() const noexcept {
+  return sizeof(*this) + ownedVectorBytes(delays_) +
+         ownedVectorBytes(delayOffsets_) +
+         ownedVectorBytes(delayPositions_) +
+         ownedVectorBytes(delayStorage_) + ownedVectorBytes(permutation_) +
+         ownedVectorBytes(polarity_) + ownedVectorBytes(delayedValues_) +
+         mix_->ownedBytes();
 }
 
 } // namespace rvrbotron::dsp

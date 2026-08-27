@@ -20,6 +20,7 @@ public:
   void processFrame(const Sample* inputs, Sample* outputs) noexcept;
 
   [[nodiscard]] std::size_t channelCount() const noexcept;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   std::size_t channels_;

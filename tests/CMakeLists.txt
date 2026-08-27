@@ -126,3 +126,14 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/diffusion-analyzer-contract
     ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
+
+add_test(
+  NAME benchmark_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_benchmark_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/benchmark-contract
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)

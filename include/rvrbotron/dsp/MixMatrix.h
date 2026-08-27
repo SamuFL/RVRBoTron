@@ -15,6 +15,9 @@ public:
 
   virtual void mix(Sample* channels) const noexcept = 0;
   [[nodiscard]] virtual std::size_t channelCount() const noexcept = 0;
+  // Object storage plus any owned-container capacities on the heap block
+  // this matrix occupies, in bytes.
+  [[nodiscard]] virtual std::size_t ownedBytes() const noexcept = 0;
 };
 
 class HadamardMixMatrix final : public MixMatrix {
@@ -24,6 +27,7 @@ public:
 
   void mix(Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t channels_;
@@ -41,6 +45,7 @@ public:
 
   void mix(Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t channels_;
@@ -58,6 +63,7 @@ public:
 
   void mix(Sample* channels) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
+  [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
 private:
   std::size_t channels_;

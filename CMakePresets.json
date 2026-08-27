@@ -25,6 +25,24 @@
       "cacheVariables": {
         "RVRBOTRON_SAMPLE_DOUBLE": "ON"
       }
+    },
+    {
+      "name": "release",
+      "displayName": "Optimized release build",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "release-double",
+      "displayName": "Optimized double-precision release build",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/release-double",
+      "cacheVariables": {
+        "RVRBOTRON_SAMPLE_DOUBLE": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +53,14 @@
     {
       "name": "double",
       "configurePreset": "double"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "release-double",
+      "configurePreset": "release-double"
     }
   ],
   "testPresets": [
@@ -48,6 +74,20 @@
     {
       "name": "double",
       "configurePreset": "double",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-double",
+      "configurePreset": "release-double",
       "output": {
         "outputOnFailure": true
       }
