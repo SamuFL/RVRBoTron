@@ -14,7 +14,10 @@ Active implementation work is tracked in this repository's GitHub Issues.
 ## Quick start
 
 Install CMake 3.25 or newer, Ninja, Python 3, and a C++17 compiler. Git LFS is
-also required to download or add the curated listening samples.
+also required to download or add the curated listening samples. Rendering and
+`tools/analyze_render.py` need only the standard library; the diffusion
+analyzer additionally needs the packages in `tools/requirements.txt`
+(`pip3 install -r tools/requirements.txt`).
 
 ### Configure, build, and test
 
@@ -287,9 +290,25 @@ python3 tools/analyze_diffusion.py \
 requires `inputFrames + resolved diffuser.totalSamples` frames in the output
 and every capture, measures the actual captured Split and cumulative Diffusion
 Step energies (including each step's relative error from Split), and measures
-Hadamard orthogonality from the serialized resolved coefficients. Python does
-not reconstruct Split mapping or DSP sample precision. Publication is
-append-only and idempotent.
+orthogonality from every serialized resolved matrix (Hadamard, Householder, or
+RandomOrthogonal alike). Python does not reconstruct Split mapping or DSP
+sample precision. Publication is append-only and idempotent.
+
+The artifact also reports, using NumPy: a signed Correlation matrix at Split
+and every Diffusion Step; an Alignment score (pairwise Jaccard overlap of
+active-frame sets, -120 dB capture-relative activity floor) and 10 ms
+Distinct-arrival density curve measured on the complete Diffuser output,
+beside the theoretical N^k Echo-path count; and Coloration (unwindowed,
+next-power-of-two FFT peak-to-peak/RMS dB deviation, spectral flatness, and a
+compact 1/12-octave curve) for both the combined N-Channel signal and the
+diagnostic stereo `output.wav`, reported separately since only the former
+carries the all-pass claim.
+
+Pass `--compare <other-render-result>` instead of `--source` to check two
+Render Results of the same Resolved Configuration -- typically rendered at
+different `--block-size` values -- for exact decoded equality of `output.wav`
+and every Stage capture, with first-mismatch detail on failure. This mode
+prints its own JSON report and does not publish an artifact.
 
 ### Validate a Listening Sample Locally
 
