@@ -11,6 +11,8 @@ namespace rvrbotron::cli {
 parseRequestedConfig(std::string_view contents);
 
 [[nodiscard]] dsp::ResolvedConfig
-parseResolvedConfig(std::string_view contents);
+parseResolvedConfig(std::string_view contents,
+                    std::uint64_t memoryBudgetBytes =
+                        config::kDefaultDiffuserMemoryBudgetBytes);
 
 } // namespace rvrbotron::cli
