@@ -805,6 +805,18 @@ def main():
         {"index": 0, "polarity": "none"},
         {"index": 0, "shuffle": False},
     ]
+    # 1024 doubling steps: every individual weight (2**i) stays finite, but
+    # their sum (2**1024 - 1) overflows a double-precision accumulator, so
+    # every step's ideal apportioned share would divide out to zero if left
+    # unguarded -- a largest-remainder bug this must reject cleanly instead
+    # of reading past the end of its internal ordering array.
+    doubling_weight_overflow_request = json.loads(reference_request.read_text())
+    doubling_weight_overflow_request["composition"]["stages"][1] = {
+        "type": "diffuser",
+        "steps": 1024,
+        "totalMs": 300,
+        "distribution": "doubling",
+    }
     unsafe_format_request = json.loads(reference_request.read_text())
     unsafe_format_request["formatVersion"] = 2
     unsafe_format_request["composition"]["stages"][0]["channels"] = 1073741824
@@ -882,6 +894,11 @@ def main():
             json.dumps(step_override_duplicate_request),
             "invalid_configuration at /composition/stages/1/stepOverrides/1/index: "
             "expected distinct step indices",
+        ),
+        (
+            json.dumps(doubling_weight_overflow_request),
+            "invalid_configuration at /composition/stages/1/steps: "
+            "expected a valid step count and distribution",
         ),
         (
             '{"seed": ',

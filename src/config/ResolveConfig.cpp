@@ -165,6 +165,12 @@ void checkDiffuserMemoryBudget(
 // share, then the leftover samples are distributed one at a time to the
 // steps with the largest fractional remainder, using ascending step index
 // to break ties. The result always sums exactly to `totalSamples`.
+//
+// Precondition: `weights` sums to a finite, strictly positive value (see
+// `diffuserStepWeights`, this function's only caller, which enforces that
+// before ever reaching here). A non-finite or non-positive sum would make
+// every step's ideal share divide out to zero, leaving `remaining` far
+// larger than `stepCount` and reading past the end of `order` below.
 std::vector<std::uint64_t> apportionStepSamples(
     const std::uint64_t totalSamples,
     const std::vector<long double>& weights) {
@@ -204,31 +210,41 @@ std::vector<std::uint64_t> apportionStepSamples(
 // Computes the relative per-step weight used for largest-remainder
 // apportionment: explicit `lengthsMs` values when present, otherwise an
 // even split or a doubling (2^index) split of the shared total. Returns
-// nullopt if a weight overflowed to a non-finite value (for example an
-// unreasonably large doubling step count).
+// nullopt if any individual weight, or their sum, is not a finite positive
+// value — for example an unreasonably large doubling step count, or
+// `lengthsMs` entries large enough that their sum overflows. Validating the
+// sum here (not just each weight) matters because `apportionStepSamples`
+// divides by it: a non-finite or non-positive sum would make every step's
+// share round down to zero, leaving far more "remaining" samples than
+// there are steps to distribute them to.
 std::optional<std::vector<long double>> diffuserStepWeights(
     const DiffuserConfig& requested,
     const std::uint32_t stepCount) {
+  std::vector<long double> weights;
   if (requested.lengthsMs.has_value()) {
-    std::vector<long double> weights;
     weights.reserve(requested.lengthsMs->size());
     for (const auto lengthMs : *requested.lengthsMs) {
       weights.push_back(static_cast<long double>(lengthMs));
     }
-    return weights;
-  }
-  const auto distribution =
-      requested.distribution.value_or(DiffusionDistribution::doubling);
-  std::vector<long double> weights(stepCount, 1.0L);
-  if (distribution == DiffusionDistribution::doubling) {
-    long double value = 1.0L;
-    for (std::uint32_t index = 0; index < stepCount; ++index) {
-      if (!std::isfinite(value)) {
-        return std::nullopt;
+  } else {
+    const auto distribution =
+        requested.distribution.value_or(DiffusionDistribution::doubling);
+    weights.assign(stepCount, 1.0L);
+    if (distribution == DiffusionDistribution::doubling) {
+      long double value = 1.0L;
+      for (std::uint32_t index = 0; index < stepCount; ++index) {
+        if (!std::isfinite(value)) {
+          return std::nullopt;
+        }
+        weights[index] = value;
+        value *= 2.0L;
       }
-      weights[index] = value;
-      value *= 2.0L;
     }
+  }
+  const auto weightSum =
+      std::accumulate(weights.begin(), weights.end(), 0.0L);
+  if (!std::isfinite(weightSum) || weightSum <= 0.0L) {
+    return std::nullopt;
   }
   return weights;
 }
