@@ -36,7 +36,7 @@ jobs:
         run: brew install ninja
 
       - name: Install Python dependencies
-        run: pip3 install -r tools/requirements.txt
+        run: pip3 install --break-system-packages -r tools/requirements.txt
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -72,7 +72,7 @@ jobs:
         run: choco install ninja --no-progress -y
 
       - name: Install Python dependencies
-        run: pip3 install -r tools/requirements.txt
+        run: pip3 install --break-system-packages -r tools/requirements.txt
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
