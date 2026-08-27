@@ -101,7 +101,13 @@ def numpy_frames(wav):
     float64 array. Every Stage capture and output.wav this analyzer reads is
     always IEEE float32 or float64 -- Milestone 1's PCM formats are only
     ever used for source fixtures, never renderer output."""
+    if wav["formatTag"] != 3 or wav["sampleBits"] not in (32, 64):
+        raise ValueError(f'{wav["path"]} is not a canonical IEEE float WAV')
+    # Explicit little-endian dtypes: WAV sample data is always little-endian,
+    # but np.float32/np.float64 alone use the host's native byte order and
+    # would silently decode garbage on a big-endian platform.
     dtype = np.dtype("<f4") if wav["sampleBits"] == 32 else np.dtype("<f8")
+    with wav["path"].open("rb") as source:
         source.seek(wav["dataOffset"])
         raw = source.read(wav["dataSize"])
     flat = np.frombuffer(raw, dtype=dtype)
@@ -536,8 +542,9 @@ def parse_arguments():
         description="Analyze finite diffusion evidence in a Render Result."
     )
     parser.add_argument("render_result", type=Path)
-    parser.add_argument("--source", type=Path)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--source", type=Path)
+    mode.add_argument(
         "--compare",
         type=Path,
         metavar="OTHER_RENDER_RESULT",
@@ -562,8 +569,6 @@ def main():
                 json.dumps(comparison, allow_nan=False, indent=2, sort_keys=True)
             )
             return 0 if comparison["equal"] else 1
-        if arguments.source is None:
-            raise ValueError("--source is required unless --compare is given")
         analysis = analyze(arguments.render_result, arguments.source)
         contents = (
             json.dumps(analysis, allow_nan=False, indent=2, sort_keys=True)
