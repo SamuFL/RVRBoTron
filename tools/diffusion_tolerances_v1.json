@@ -1,0 +1,98 @@
+{
+  "formatVersion": 1,
+  "rationale": "Provisional headroom pending the first cross-platform CI run for issue #37 (macOS arm64 clang, macOS Intel clang, Windows x86_64 MSVC). These are placeholder upper bounds reasoned from this repository's existing single-machine cross-precision tolerances (tests/test_diffusion_analyzer_cli.py: 2e-7 relative for float32, 1e-14 for float64) loosened by roughly two orders of magnitude to leave room for compiler/architecture-driven summation-order differences on the compact Reference impulse tracer. They are replaced with tight, measured values plus real observed headroom once CI evidence from all three platforms has been reviewed -- see docs/adr/0001-cross-platform-reproducibility.md.",
+  "byPrecision": {
+    "float32": {
+      "energyRelativeError": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional: ~50x the single-machine float32 energy tolerance."
+      },
+      "orthogonalityMaximumAbsoluteError": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional headroom above float32 machine epsilon accumulation for an 8x8 Hadamard matrix."
+      },
+      "orthogonalityRmsError": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional, same basis as maximumAbsoluteError."
+      },
+      "correlationMeanAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional: correlation is a normalized zero-lag dot product, same order as orthogonality error."
+      },
+      "correlationMaxAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional, same basis as meanAbsoluteOffDiagonal."
+      },
+      "alignmentMinimum": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Alignment is a Jaccard overlap of active-frame sets on a tiny, well-separated tracer; expected to be exactly reproducible unless a sample sits near the -120 dB activity floor."
+      },
+      "alignmentMean": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Same basis as alignmentMinimum."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-3,
+        "rationale": "Provisional: dB-scale metric, loosened for cross-platform FFT accumulation-order differences."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-3,
+        "rationale": "Provisional, same basis as colorationPeakToPeakDb."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-5,
+        "rationale": "Provisional, same basis as correlation/orthogonality metrics."
+      },
+      "densityCount": {
+        "absoluteTolerance": 0,
+        "rationale": "Measured Distinct-arrival counts (total and per-bin) on the compact Reference impulse tracer sit far above the -120 dB activity floor, so no sample is expected to cross the floor differently across platforms; committed at zero pending contrary CI evidence rather than assumed structural."
+      }
+    },
+    "float64": {
+      "energyRelativeError": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional: ~100x the single-machine float64 energy tolerance."
+      },
+      "orthogonalityMaximumAbsoluteError": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional headroom above float64 machine epsilon accumulation for an 8x8 Hadamard matrix."
+      },
+      "orthogonalityRmsError": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional, same basis as maximumAbsoluteError."
+      },
+      "correlationMeanAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional, same basis as orthogonality error."
+      },
+      "correlationMaxAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional, same basis as meanAbsoluteOffDiagonal."
+      },
+      "alignmentMinimum": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Alignment is a Jaccard overlap of active-frame sets on a tiny, well-separated tracer; expected to be exactly reproducible unless a sample sits near the -120 dB activity floor."
+      },
+      "alignmentMean": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Same basis as alignmentMinimum."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "Provisional: dB-scale metric, loosened for cross-platform FFT accumulation-order differences."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "Provisional, same basis as colorationPeakToPeakDb."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Provisional, same basis as correlation/orthogonality metrics."
+      },
+      "densityCount": {
+        "absoluteTolerance": 0,
+        "rationale": "Measured Distinct-arrival counts (total and per-bin) on the compact Reference impulse tracer sit far above the -120 dB activity floor, so no sample is expected to cross the floor differently across platforms; committed at zero pending contrary CI evidence rather than assumed structural."
+      }
+    }
+  }
+}
