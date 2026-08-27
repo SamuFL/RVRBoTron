@@ -15,23 +15,36 @@ contains render.json is never re-rendered. A failed or interrupted run can
 be resumed by rerunning the same command -- already-rendered cases skip
 straight to whichever of analysis/benchmarking they are still missing,
 without replacing existing evidence.
+
+Materialisation, command execution, render/benchmark invocation, per-step
+resumability, and benchmark aggregation are diffusion-agnostic and live in
+experiment_runner; this module supplies only what is specific to the
+diffusion catalog: its schema, the diffusion analyzer, and the artifact
+paths each case's steps produce.
 """
 
 import argparse
-import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
+
+from experiment_runner import (
+    CatalogError,
+    CaseOutcome,
+    benchmark_case,
+    build_benchmark_summary,
+    materialize,
+    print_human_table,
+    render_case,
+    run_command,
+    run_resumable_steps,
+    write_materialized,
+)
 
 CANONICAL_WARMUP_SECONDS = 1.0
 CANONICAL_MEASURE_SECONDS = 5.0
 CANONICAL_BLOCK_SIZE = 128
 REFERENCE_BLOCK_SIZE_SWEEP = (32, 64, 128, 256, 512)
-
-
-class CatalogError(ValueError):
-    pass
 
 
 def load_catalog(path: Path):
@@ -59,161 +72,6 @@ def load_catalog(path: Path):
     return document
 
 
-def _unescape_token(token: str) -> str:
-    return token.replace("~1", "/").replace("~0", "~")
-
-
-def _split_pointer(pointer: str):
-    if pointer == "":
-        raise CatalogError("JSON Pointer must not be the document root")
-    if not pointer.startswith("/"):
-        raise CatalogError(f"JSON Pointer must start with '/': {pointer}")
-    return [_unescape_token(token) for token in pointer.split("/")[1:]]
-
-
-def _navigate(document, tokens, pointer):
-    node = document
-    for token in tokens:
-        if isinstance(node, list):
-            try:
-                index = int(token)
-            except ValueError as error:
-                raise CatalogError(
-                    f"JSON Pointer array index is not an integer: {pointer}"
-                ) from error
-            if not 0 <= index < len(node):
-                raise CatalogError(f"JSON Pointer index out of range: {pointer}")
-            node = node[index]
-        elif isinstance(node, dict):
-            if token not in node:
-                raise CatalogError(f"JSON Pointer references a missing field: {pointer}")
-            node = node[token]
-        else:
-            raise CatalogError(f"JSON Pointer traverses a non-container value: {pointer}")
-    return node
-
-
-def _apply_operation(document, operation):
-    op = operation["op"]
-    pointer = operation["path"]
-    tokens = _split_pointer(pointer)
-    parent = _navigate(document, tokens[:-1], pointer)
-    last = tokens[-1]
-
-    if isinstance(parent, list):
-        try:
-            index = len(parent) if last == "-" else int(last)
-        except ValueError as error:
-            raise CatalogError(
-                f"JSON Pointer array index is not an integer: {pointer}"
-            ) from error
-        if op == "remove":
-            if not 0 <= index < len(parent):
-                raise CatalogError(f"JSON Pointer index out of range: {pointer}")
-            del parent[index]
-        elif op == "add":
-            if not 0 <= index <= len(parent):
-                raise CatalogError(f"JSON Pointer index out of range: {pointer}")
-            parent.insert(index, operation["value"])
-        elif op == "replace":
-            if not 0 <= index < len(parent):
-                raise CatalogError(f"JSON Pointer index out of range: {pointer}")
-            parent[index] = operation["value"]
-        else:
-            raise CatalogError(f"unsupported override op: {op}")
-    elif isinstance(parent, dict):
-        if op == "remove":
-            if last not in parent:
-                raise CatalogError(f"JSON Pointer references a missing field: {pointer}")
-            del parent[last]
-        elif op == "add":
-            parent[last] = operation["value"]
-        elif op == "replace":
-            if last not in parent:
-                raise CatalogError(f"JSON Pointer references a missing field: {pointer}")
-            parent[last] = operation["value"]
-        else:
-            raise CatalogError(f"unsupported override op: {op}")
-    else:
-        raise CatalogError(f"JSON Pointer traverses a non-container value: {pointer}")
-
-
-def materialize(reference: dict, overrides):
-    """Applies named JSON-Pointer overrides to a deep copy of the complete
-    Reference configuration, returning a new complete Requested
-    Configuration. Every override must resolve against an existing field
-    (replace/remove) or an existing parent container (add): a catalog case
-    that references a path the Reference configuration does not have is a
-    catalog-authoring error and fails loudly rather than silently creating
-    unrelated structure."""
-    materialized = copy.deepcopy(reference)
-    for operation in overrides:
-        _apply_operation(materialized, operation)
-    return materialized
-
-
-def run_command(*arguments):
-    return subprocess.run(
-        list(map(str, arguments)),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-class CaseOutcome:
-    def __init__(self, name, status, detail=None, benchmark=None):
-        self.name = name
-        self.status = status  # "completed" | "resumed" | "skipped" | "failed"
-        self.detail = detail
-        self.benchmark = benchmark
-
-    def to_json(self):
-        return {"name": self.name, "status": self.status, "detail": self.detail}
-
-
-def render_case(renderer, source, request_path, output_dir, capture_stages=True):
-    arguments = [
-        renderer,
-        "render",
-        "--input",
-        source,
-        "--config",
-        request_path,
-        "--output",
-        output_dir,
-    ]
-    if capture_stages:
-        arguments[-2:-2] = ["--capture-stages", "all"]
-    return run_command(*arguments)
-
-
-def benchmark_case(
-    renderer, resolved_path, block_size, warmup_seconds, measure_seconds, json_path
-):
-    return run_command(
-        renderer,
-        "benchmark",
-        "--resolved",
-        resolved_path,
-        "--block-size",
-        block_size,
-        "--warmup-seconds",
-        warmup_seconds,
-        "--measure-seconds",
-        measure_seconds,
-        "--json",
-        json_path,
-    )
-
-
-def write_materialized(output_root, filename, materialized):
-    path = output_root / "materialized" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(materialized, indent=2) + "\n")
-    return path
-
-
 def run_quantitative_case(
     case,
     reference,
@@ -234,64 +92,54 @@ def run_quantitative_case(
     case_dir = output_root / "cases" / name
     resolved_path = case_dir / "resolved.json"
     benchmark_path = case_dir / f"benchmark-{CANONICAL_BLOCK_SIZE}.json"
-    did_new_work = False
+    source = stereo_source if case.get("source") == "stereo" else mono_source
 
-    if not (case_dir / "render.json").exists():
-        source = stereo_source if case.get("source") == "stereo" else mono_source
+    def render_step():
         materialized = materialize(reference, case["overrides"])
         materialized_path = write_materialized(
             output_root, f"{name}.json", materialized
         )
-        rendered = render_case(renderer, source, materialized_path, case_dir)
-        if rendered.returncode != 0:
-            return CaseOutcome(name, "failed", f"render: {rendered.stderr.strip()}")
-        did_new_work = True
-    else:
-        source = stereo_source if case.get("source") == "stereo" else mono_source
+        return render_case(renderer, source, materialized_path, case_dir)
 
-    if not (case_dir / "analysis" / "diffusion-v1.json").exists():
-        analyzed = run_command(sys.executable, analyzer, case_dir, "--source", source)
-        if analyzed.returncode != 0:
-            return CaseOutcome(name, "failed", f"analyze: {analyzed.stderr.strip()}")
-        did_new_work = True
-
-    if not benchmark_path.exists():
-        benchmarked = benchmark_case(
-            renderer,
-            resolved_path,
-            CANONICAL_BLOCK_SIZE,
-            warmup_seconds,
-            measure_seconds,
+    steps = [
+        (case_dir / "render.json", "render", render_step),
+        (
+            case_dir / "analysis" / "diffusion-v1.json",
+            "analyze",
+            lambda: run_command(sys.executable, analyzer, case_dir, "--source", source),
+        ),
+        (
             benchmark_path,
-        )
-        if benchmarked.returncode != 0:
-            return CaseOutcome(
-                name, "failed", f"benchmark: {benchmarked.stderr.strip()}"
-            )
-        did_new_work = True
+            "benchmark",
+            lambda: benchmark_case(
+                renderer,
+                resolved_path,
+                CANONICAL_BLOCK_SIZE,
+                warmup_seconds,
+                measure_seconds,
+                benchmark_path,
+            ),
+        ),
+    ]
 
     if name == "reference":
         for block_size in REFERENCE_BLOCK_SIZE_SWEEP:
             if block_size == CANONICAL_BLOCK_SIZE:
                 continue
             sweep_path = case_dir / f"benchmark-{block_size}.json"
-            if sweep_path.exists():
-                continue
-            swept = benchmark_case(
-                renderer,
-                resolved_path,
-                block_size,
-                warmup_seconds,
-                measure_seconds,
-                sweep_path,
-            )
-            if swept.returncode != 0:
-                return CaseOutcome(
-                    name,
-                    "failed",
-                    f"benchmark (block size {block_size}): {swept.stderr.strip()}",
+            steps.append(
+                (
+                    sweep_path,
+                    f"benchmark (block size {block_size})",
+                    lambda bs=block_size, sp=sweep_path: benchmark_case(
+                        renderer, resolved_path, bs, warmup_seconds, measure_seconds, sp
+                    ),
                 )
-            did_new_work = True
+            )
+
+    did_new_work, failure = run_resumable_steps(steps)
+    if failure is not None:
+        return CaseOutcome(name, "failed", failure)
 
     status = "completed" if did_new_work else "resumed"
     return CaseOutcome(
@@ -336,59 +184,6 @@ def run_listening_case(
     if rendered.returncode != 0:
         return CaseOutcome(name, "failed", f"render: {rendered.stderr.strip()}")
     return CaseOutcome(name, "completed")
-
-
-def build_benchmark_summary(outcomes):
-    completed = {
-        outcome.name: outcome.benchmark
-        for outcome in outcomes
-        if outcome.benchmark is not None
-    }
-    if "reference" not in completed:
-        return None
-    reference_median = completed["reference"]["medianBlockSeconds"]
-
-    ranked = []
-    for name, benchmark in completed.items():
-        median = benchmark["medianBlockSeconds"]
-        ranked.append(
-            {
-                "case": name,
-                "medianBlockSeconds": median,
-                "p95BlockSeconds": benchmark["p95BlockSeconds"],
-                "worstBlockSeconds": benchmark["worstBlockSeconds"],
-                "deltaFromReferenceMedianSeconds": median - reference_median,
-                "ratioToReferenceMedian": (
-                    median / reference_median if reference_median > 0 else 0.0
-                ),
-            }
-        )
-    ranked.sort(key=lambda entry: entry["medianBlockSeconds"], reverse=True)
-
-    return {
-        "formatVersion": 1,
-        "referenceCase": "reference",
-        "blockSize": CANONICAL_BLOCK_SIZE,
-        "rankedBySlowestMedian": ranked,
-    }
-
-
-def print_human_table(summary):
-    if summary is None:
-        print("No Reference benchmark available; skipping ranked table.")
-        return
-    print(
-        f'{"case":<28} {"median (us)":>12} {"p95 (us)":>12} '
-        f'{"worst (us)":>12} {"vs reference":>14}'
-    )
-    for entry in summary["rankedBySlowestMedian"]:
-        print(
-            f'{entry["case"]:<28} '
-            f'{entry["medianBlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["p95BlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["worstBlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["ratioToReferenceMedian"]:>13.2f}x'
-        )
 
 
 def parse_arguments():
@@ -465,7 +260,7 @@ def main():
                 f': {outcome.detail}' if outcome.detail else ''
             ))
 
-    summary = build_benchmark_summary(outcomes)
+    summary = build_benchmark_summary(outcomes, "reference", CANONICAL_BLOCK_SIZE)
     if summary is not None:
         summary_path = arguments.output / "benchmark-summary.json"
         summary_path.write_text(
