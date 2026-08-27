@@ -101,10 +101,7 @@ def numpy_frames(wav):
     float64 array. Every Stage capture and output.wav this analyzer reads is
     always IEEE float32 or float64 -- Milestone 1's PCM formats are only
     ever used for source fixtures, never renderer output."""
-    if wav["formatTag"] != 3 or wav["sampleBits"] not in (32, 64):
-        raise ValueError(f'{wav["path"]} is not a canonical IEEE float WAV')
-    dtype = np.float32 if wav["sampleBits"] == 32 else np.float64
-    with wav["path"].open("rb") as source:
+    dtype = np.dtype("<f4") if wav["sampleBits"] == 32 else np.dtype("<f8")
         source.seek(wav["dataOffset"])
         raw = source.read(wav["dataSize"])
     flat = np.frombuffer(raw, dtype=dtype)
