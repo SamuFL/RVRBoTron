@@ -211,10 +211,18 @@ mapping.
 | `distribution` | `"even"` \| `"doubling"` | `"doubling"` | `"even"` gives every step an equal share of `totalMs`; `"doubling"` weights step *i* by `2^i` (each step roughly twice the previous). Mutually exclusive with `lengthsMs`. |
 | `lengthsMs` | array of finite numbers (one per step, N ≥ 1) | unset | Explicit per-step lengths in milliseconds, in step order. Use instead of `steps`/`totalMs`/`distribution` for full control over each step's share. |
 | `step.delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | Shared default applied to every step unless overridden in `stepOverrides`. `"uniform-random"` samples each Channel's delay independently with replacement, so it permits duplicate delays and is exempt from the "N distinct positions" requirement the other two strategies enforce. |
-| `step.mix` | `"hadamard"` | `"hadamard"` (only option) | Shared default applied to every step unless overridden in `stepOverrides`. |
+| `step.mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"hadamard"` | Shared default applied to every step unless overridden in `stepOverrides`. A matrix of a given type is resolved once and shared across every step that uses it. `"hadamard"` requires a power-of-two Channel count; `"householder"` and `"random-orthogonal"` accept any Channel count. |
 | `step.shuffle` | boolean | `true` | Shared default applied to every step unless overridden in `stepOverrides`. |
 | `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
 | `stepOverrides` | array of `{index, delayStrategy?, mix?, shuffle?, polarity?}` | unset | Sparse per-step overrides keyed by zero-based step index. Only listed fields are overridden; omitted fields fall back to the shared `step` defaults above. Each index must be unique and within `[0, stepCount)`. |
+
+`"hadamard"` mixes maximally (`N·log₂N` additions) and is the diffuser's
+default. `"householder"` subtracts twice the mean of the Channels from every
+Channel — cheap, mild mixing, valid for any N. `"random-orthogonal"` is a
+seeded dense orthogonal matrix with no Haar-uniformity claim: a fixed
+`[-1, 1]` fill is orthogonalized via Householder QR with a fixed sign
+convention, and a singular or near-singular fill is rejected outright rather
+than silently repaired.
 
 Every Diffusion Step's `delaysSamples`, `permutation`, and `polaritySigns`
 are derived from `(seed, step index, Channel)`, so a given step index's

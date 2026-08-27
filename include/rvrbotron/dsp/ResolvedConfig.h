@@ -25,6 +25,8 @@ enum class DelayStrategy {
 
 enum class MixMatrixType {
   hadamard,
+  householder,
+  randomOrthogonal,
 };
 
 enum class PolarityStrategy {

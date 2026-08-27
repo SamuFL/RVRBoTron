@@ -51,6 +51,7 @@ if(RVRBOTRON_SAMPLE_DOUBLE)
 endif()
 
 add_library(rvrbotron_config
+  src/config/MixMatrixResolution.cpp
   src/config/PositionalRandom.cpp
   src/config/ResolveConfig.cpp
   src/config/ResolvedConfigJson.cpp

@@ -16,6 +16,15 @@ target_compile_features(test_positional_random PRIVATE cxx_std_17)
 
 add_test(NAME positional_random_vectors COMMAND test_positional_random)
 
+add_executable(test_mix_matrix_resolution
+  test_mix_matrix_resolution.cpp
+)
+
+target_link_libraries(test_mix_matrix_resolution PRIVATE rvrbotron_config)
+target_compile_features(test_mix_matrix_resolution PRIVATE cxx_std_17)
+
+add_test(NAME mix_matrix_resolution COMMAND test_mix_matrix_resolution)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(RVRBOTRON_SAMPLE_DOUBLE)

@@ -1,6 +1,7 @@
 #include "rvrbotron/config/ResolveConfig.h"
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
+#include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/dsp/Split.h"
 
@@ -227,7 +228,9 @@ rvrbotron::dsp::Sample nextInputSample(
 }
 
 rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
-    const std::uint32_t channels) {
+    const std::uint32_t channels,
+    const rvrbotron::dsp::MixMatrixType mix =
+        rvrbotron::dsp::MixMatrixType::hadamard) {
   rvrbotron::config::SplitConfig split;
   split.channels = channels;
   split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
@@ -235,7 +238,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
 
   rvrbotron::config::DiffusionStepConfig step;
   step.delayStrategy = rvrbotron::dsp::DelayStrategy::segmentedRandom;
-  step.mix = rvrbotron::dsp::MixMatrixType::hadamard;
+  step.mix = mix;
   step.shuffle = true;
   step.polarity = rvrbotron::dsp::PolarityStrategy::seededRandom;
 
@@ -263,9 +266,12 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
   return rvrbotron::config::resolveConfig(requested, 48000, 1);
 }
 
-bool reverbDiffusionStepIsAllPass(const std::uint32_t channels) {
+bool reverbDiffusionStepIsAllPass(
+    const std::uint32_t channels,
+    const rvrbotron::dsp::MixMatrixType mix =
+        rvrbotron::dsp::MixMatrixType::hadamard) {
   constexpr std::size_t inputFrames = 257;
-  const auto config = resolvedDiffusionConfig(channels);
+  const auto config = resolvedDiffusionConfig(channels, mix);
   EnergyCapture capture(channels);
   rvrbotron::dsp::Reverb reverb(config, &capture);
   const auto responseFrames =
@@ -375,6 +381,76 @@ int main() {
   if (fwhtRoundTrip != fwhtInput) {
     std::cerr << "normalized Hadamard transform was not involutory\n";
     return 1;
+  }
+
+  // Householder reflection off the all-ones vector, N=4: diagonal 0.5,
+  // off-diagonal -0.5. Mixed via the O(N) closed form rather than a dense
+  // multiply, so this exercises that formula directly.
+  const std::vector<double> householderMatrix4{
+      0.5,  -0.5, -0.5, -0.5, -0.5, 0.5,  -0.5, -0.5,
+      -0.5, -0.5, 0.5,  -0.5, -0.5, -0.5, -0.5, 0.5,
+  };
+  rvrbotron::dsp::HouseholderMixMatrix householder(4, householderMatrix4);
+  std::array<rvrbotron::dsp::Sample, 4> householderChannels{
+      1.0F, 2.0F, 3.0F, 4.0F};
+  beginAllocationCount();
+  householder.mix(householderChannels.data());
+  const auto householderAllocations = endAllocationCount();
+  if (householderAllocations != 0) {
+    std::cerr << "Householder MixMatrix allocated while mixing\n";
+    return 1;
+  }
+  const std::array<rvrbotron::dsp::Sample, 4> expectedHouseholder{
+      -4.0F, -3.0F, -2.0F, -1.0F};
+  if (householderChannels != expectedHouseholder) {
+    std::cerr << "Householder MixMatrix did not subtract twice the mean\n";
+    return 1;
+  }
+  householder.mix(householderChannels.data());
+  if (householderChannels !=
+      std::array<rvrbotron::dsp::Sample, 4>{1.0F, 2.0F, 3.0F, 4.0F}) {
+    std::cerr << "Householder MixMatrix was not involutory\n";
+    return 1;
+  }
+
+  auto invalidHouseholderMatrix = householderMatrix4;
+  invalidHouseholderMatrix[1] = -0.25;
+  try {
+    rvrbotron::dsp::HouseholderMixMatrix invalidHouseholder(
+        4, invalidHouseholderMatrix);
+    std::cerr
+        << "Householder MixMatrix accepted a non-canonical coefficient\n";
+    return 1;
+  } catch (const std::invalid_argument&) {
+  }
+
+  // A known orthogonal 2x2 matrix supplied directly, independent of the
+  // Householder QR construction: RandomOrthogonalMixMatrix trusts the
+  // resolved coefficients' MM^T = I property, not their provenance.
+  const std::vector<double> rotationMatrix2{0.0, 1.0, -1.0, 0.0};
+  rvrbotron::dsp::RandomOrthogonalMixMatrix rotation(2, rotationMatrix2);
+  std::array<rvrbotron::dsp::Sample, 2> rotationChannels{1.0F, 0.0F};
+  beginAllocationCount();
+  rotation.mix(rotationChannels.data());
+  const auto rotationAllocations = endAllocationCount();
+  if (rotationAllocations != 0) {
+    std::cerr << "RandomOrthogonal MixMatrix allocated while mixing\n";
+    return 1;
+  }
+  if (rotationChannels != std::array<rvrbotron::dsp::Sample, 2>{0.0F, -1.0F}) {
+    std::cerr << "RandomOrthogonal MixMatrix did not apply its resolved "
+                 "coefficients\n";
+    return 1;
+  }
+
+  const std::vector<double> nonOrthogonalMatrix2{1.0, 1.0, 0.0, 1.0};
+  try {
+    rvrbotron::dsp::RandomOrthogonalMixMatrix invalidRotation(
+        2, nonOrthogonalMatrix2);
+    std::cerr
+        << "RandomOrthogonal MixMatrix accepted non-orthogonal coefficients\n";
+    return 1;
+  } catch (const std::invalid_argument&) {
   }
 
   auto invalidMatrixConfig = fwhtConfig;
@@ -768,6 +844,20 @@ int main() {
       std::cerr << "Diffusion Step changed pseudo-random input energy at "
                 << channels << " Channels\n";
       return 1;
+    }
+  }
+
+  // Householder and RandomOrthogonal are valid for any Channel count,
+  // including non-powers-of-two, unlike Hadamard.
+  for (const auto mix :
+       {rvrbotron::dsp::MixMatrixType::householder,
+        rvrbotron::dsp::MixMatrixType::randomOrthogonal}) {
+    for (const auto channels : {1U, 3U, 5U, 9U, 20U}) {
+      if (!reverbDiffusionStepIsAllPass(channels, mix)) {
+        std::cerr << "Diffusion Step changed pseudo-random input energy at "
+                  << channels << " Channels with a non-Hadamard matrix\n";
+        return 1;
+      }
     }
   }
 

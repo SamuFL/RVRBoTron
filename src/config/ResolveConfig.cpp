@@ -1,9 +1,11 @@
 #include "rvrbotron/config/ResolveConfig.h"
 
 #include "rvrbotron/HarnessError.h"
+#include "rvrbotron/config/MixMatrixResolution.h"
 #include "rvrbotron/config/PositionalRandom.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -259,25 +261,18 @@ std::optional<std::vector<long double>> diffuserStepWeights(
   return weights;
 }
 
-std::optional<std::size_t> hadamardElementCount(
-    const std::uint32_t channels) noexcept {
-  if (channels == 0) {
-    return std::nullopt;
+// Hadamard is valid only for a power-of-two Channel count; Householder and
+// RandomOrthogonal are valid for any resource-permitted N.
+bool isValidChannelCountForMix(
+    const dsp::MixMatrixType mix, const std::uint32_t channels) noexcept {
+  switch (mix) {
+  case dsp::MixMatrixType::hadamard:
+    return isPowerOfTwo(channels);
+  case dsp::MixMatrixType::householder:
+  case dsp::MixMatrixType::randomOrthogonal:
+    return channels > 0;
   }
-  const auto maxElements = std::vector<double>{}.max_size();
-  if (channels > maxElements / channels) {
-    return std::nullopt;
-  }
-  return static_cast<std::size_t>(channels) * channels;
-}
-
-bool hasOddParity(std::uint32_t value) noexcept {
-  bool odd = false;
-  while (value != 0) {
-    odd = !odd;
-    value &= value - 1U;
-  }
-  return odd;
+  return false;
 }
 
 std::uint64_t boundedRandom(const std::uint64_t seed,
@@ -318,19 +313,6 @@ std::uint64_t evenDelay(const std::uint64_t lastPosition,
   const auto remainder = lastPosition % intervals;
   return quotient * channel +
          (remainder * channel) / intervals;
-}
-
-std::vector<double> makeHadamard(const std::uint32_t channels,
-                                 const std::size_t elementCount) {
-  const auto scale = 1.0 / std::sqrt(static_cast<double>(channels));
-  std::vector<double> matrix(elementCount);
-  for (std::uint32_t row = 0; row < channels; ++row) {
-    for (std::uint32_t column = 0; column < channels; ++column) {
-      matrix[static_cast<std::size_t>(row) * channels + column] =
-          hasOddParity(row & column) ? -scale : scale;
-    }
-  }
-  return matrix;
 }
 
 bool isStereoPreservingSplit(
@@ -391,12 +373,12 @@ dsp::ResolvedDiffuser resolveDiffuser(
     return diffuser;
   }
 
-  const auto matrixElements = hadamardElementCount(channels);
-  // The only supported matrix type is currently Hadamard, which is
-  // deterministic for a given Channel count, so every step shares the same
-  // matrix instance (computed once) even though it is fully serialized
-  // per step.
-  std::optional<std::vector<double>> sharedMatrix;
+  const auto matrixElements = matrixElementCount(channels);
+  // A matrix of a given type is deterministic for a given Channel count, so
+  // it is shared across every step that resolves to that type (computed
+  // once per type) even though it is fully serialized per step. Indexed by
+  // the MixMatrixType enum's underlying value.
+  std::array<std::optional<std::vector<double>>, 3> sharedMatrixByType;
 
   diffuser.steps.reserve(derivation.stepCount);
   for (std::uint32_t index = 0; index < derivation.stepCount; ++index) {
@@ -451,8 +433,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
     const auto canDeriveChannelValues =
         derivation.deriveChannelValues &&
         derivation.sampleBudget.status == SampleBudgetStatus::valid &&
-        isPowerOfTwo(channels) &&
-        mix == dsp::MixMatrixType::hadamard &&
+        isValidChannelCountForMix(mix, channels) &&
         supportedDelayStrategy &&
         supportedPolarity &&
         matrixElements.has_value() &&
@@ -519,10 +500,30 @@ dsp::ResolvedDiffuser resolveDiffuser(
         step.polaritySigns.push_back((value & 1U) == 0 ? 1 : -1);
       }
     }
-    if (!sharedMatrix.has_value()) {
-      sharedMatrix = makeHadamard(channels, *matrixElements);
+    auto& cachedMatrix = sharedMatrixByType[static_cast<std::size_t>(mix)];
+    if (!cachedMatrix.has_value()) {
+      switch (mix) {
+      case dsp::MixMatrixType::hadamard:
+        cachedMatrix = resolveHadamardMatrix(channels);
+        break;
+      case dsp::MixMatrixType::householder:
+        cachedMatrix = resolveHouseholderMatrix(channels);
+        break;
+      case dsp::MixMatrixType::randomOrthogonal: {
+        auto randomOrthogonal = resolveRandomOrthogonalMatrix(channels, seed);
+        if (!randomOrthogonal.has_value()) {
+          fail(
+              "/composition/stages/1/steps/" + std::to_string(index) +
+                  "/mix",
+              "RandomOrthogonal construction was singular or "
+              "near-singular");
+        }
+        cachedMatrix = std::move(randomOrthogonal);
+        break;
+      }
+      }
     }
-    step.matrix = *sharedMatrix;
+    step.matrix = *cachedMatrix;
 
     diffuser.steps.push_back(std::move(step));
   }
@@ -819,8 +820,7 @@ void validateResolvedConfig(
         "/composition/stages/1/steps",
         "expected one resolved step per requested step");
   }
-  const auto matrixElements = hadamardElementCount(channels);
-  const auto powerOfTwoChannels = isPowerOfTwo(channels);
+  const auto matrixElements = matrixElementCount(channels);
   std::uint64_t stepLengthSum = 0;
   for (std::size_t stepPosition = 0; stepPosition < diffuser.steps.size();
        ++stepPosition) {
@@ -873,16 +873,20 @@ void validateResolvedConfig(
           stepPath + "/polarity",
           "expected seeded-random or none");
     }
-    if (step.mix != dsp::MixMatrixType::hadamard) {
-      fail(stepPath + "/mix", "every step requires hadamard");
+    if (step.mix != dsp::MixMatrixType::hadamard &&
+        step.mix != dsp::MixMatrixType::householder &&
+        step.mix != dsp::MixMatrixType::randomOrthogonal) {
+      fail(
+          stepPath + "/mix",
+          "expected hadamard, householder, or random-orthogonal");
     }
-    if (!powerOfTwoChannels) {
+    if (step.mix == dsp::MixMatrixType::hadamard && !isPowerOfTwo(channels)) {
       fail(
           stepPath + "/mix",
           "hadamard requires a power-of-two Channel count");
     }
     if (!matrixElements.has_value()) {
-      fail(stepPath + "/mix", "Hadamard matrix is too large");
+      fail(stepPath + "/mix", "mixing matrix is too large");
     }
     if (requiresDistinctChannelPositions(step.delayStrategy) &&
         step.lengthSamples + 1 < channels) {
@@ -983,30 +987,66 @@ void validateResolvedConfig(
     if (step.matrix.size() != *matrixElements) {
       fail(stepPath + "/matrix", "expected an N by N matrix");
     }
-    const auto expectedScale =
-        1.0 / std::sqrt(static_cast<double>(channels));
-    const auto resolvedScale = step.matrix.front();
-    const auto scaleTolerance =
-        4.0 * std::numeric_limits<double>::epsilon() * expectedScale;
-    if (!std::isfinite(resolvedScale) || resolvedScale <= 0.0 ||
-        std::abs(resolvedScale - expectedScale) > scaleTolerance) {
-      fail(
-          stepPath + "/matrix",
-          "expected the normalized canonical Sylvester-Hadamard matrix");
-    }
-    for (std::uint32_t row = 0; row < channels; ++row) {
-      for (std::uint32_t column = 0; column < channels; ++column) {
-        const auto expected =
-            hasOddParity(row & column) ? -resolvedScale : resolvedScale;
-        if (step.matrix[
-                static_cast<std::size_t>(row) * channels + column] !=
-            expected) {
+    switch (step.mix) {
+    case dsp::MixMatrixType::hadamard: {
+      const auto canonical = resolveHadamardMatrix(channels);
+      const auto tolerance =
+          4.0 * std::numeric_limits<double>::epsilon() * canonical.front();
+      for (std::size_t element = 0; element < canonical.size(); ++element) {
+        const auto actual = step.matrix[element];
+        if (!std::isfinite(actual) ||
+            std::abs(actual - canonical[element]) > tolerance) {
           fail(
               stepPath + "/matrix",
               "expected the normalized canonical Sylvester-Hadamard "
               "matrix");
         }
       }
+      break;
+    }
+    case dsp::MixMatrixType::householder: {
+      const auto canonical = resolveHouseholderMatrix(channels);
+      const auto tolerance =
+          4.0 * std::numeric_limits<double>::epsilon() *
+          std::max(1.0, std::abs(canonical.front()));
+      for (std::size_t element = 0; element < canonical.size(); ++element) {
+        const auto actual = step.matrix[element];
+        if (!std::isfinite(actual) ||
+            std::abs(actual - canonical[element]) > tolerance) {
+          fail(
+              stepPath + "/matrix",
+              "expected the normalized canonical Householder matrix");
+        }
+      }
+      break;
+    }
+    case dsp::MixMatrixType::randomOrthogonal: {
+      // Property-checked from the resolved coefficients themselves
+      // (MM^T = I) rather than by recomputing and trusting the seeded
+      // construction that produced them -- a hand-authored ablation may
+      // substitute any valid orthogonal matrix.
+      constexpr double kOrthogonalityTolerance = 1e-9;
+      for (std::uint32_t rowA = 0; rowA < channels; ++rowA) {
+        for (std::uint32_t rowB = 0; rowB < channels; ++rowB) {
+          double dot = 0.0;
+          for (std::uint32_t column = 0; column < channels; ++column) {
+            dot +=
+                step.matrix[
+                    static_cast<std::size_t>(rowA) * channels + column] *
+                step.matrix[
+                    static_cast<std::size_t>(rowB) * channels + column];
+          }
+          const auto expected = rowA == rowB ? 1.0 : 0.0;
+          if (!std::isfinite(dot) ||
+              std::abs(dot - expected) > kOrthogonalityTolerance) {
+            fail(
+                stepPath + "/matrix",
+                "expected an orthogonal resolved matrix (M M^T = I)");
+          }
+        }
+      }
+      break;
+    }
     }
   }
   if (stepLengthSum != diffuser.totalSamples) {

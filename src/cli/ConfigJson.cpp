@@ -193,10 +193,17 @@ dsp::DelayStrategy parseDelayStrategy(
 dsp::MixMatrixType parseMix(
     const Json& value,
     const std::string_view path) {
-  if (parseString(value, path) != "hadamard") {
-    fail(path, "expected hadamard");
+  const auto name = parseString(value, path);
+  if (name == "hadamard") {
+    return dsp::MixMatrixType::hadamard;
   }
-  return dsp::MixMatrixType::hadamard;
+  if (name == "householder") {
+    return dsp::MixMatrixType::householder;
+  }
+  if (name == "random-orthogonal") {
+    return dsp::MixMatrixType::randomOrthogonal;
+  }
+  fail(path, "expected hadamard, householder, or random-orthogonal");
 }
 
 dsp::PolarityStrategy parsePolarity(
