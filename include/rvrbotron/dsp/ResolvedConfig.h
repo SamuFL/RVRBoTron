@@ -19,6 +19,7 @@ enum class EnergyNormalisation {
 
 enum class DelayStrategy {
   segmentedRandom,
+  uniformRandom,
   even,
 };
 

@@ -30,6 +30,8 @@ const char* delayStrategyName(const dsp::DelayStrategy strategy) {
   switch (strategy) {
   case dsp::DelayStrategy::segmentedRandom:
     return "segmented-random";
+  case dsp::DelayStrategy::uniformRandom:
+    return "uniform-random";
   case dsp::DelayStrategy::even:
     return "even";
   }
