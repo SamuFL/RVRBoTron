@@ -22,8 +22,12 @@
 #include <vector>
 
 #if defined(_WIN32)
-#include <psapi.h>
+// windows.h must precede psapi.h: psapi.h uses types (ULONG_PTR, PVOID, ...)
+// that only windows.h defines.
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#include <psapi.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #elif defined(__linux__)

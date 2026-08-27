@@ -91,6 +91,7 @@ target_link_libraries(
     rvrbotron_config
   PRIVATE
     nlohmann_json::nlohmann_json
+    $<$<PLATFORM_ID:Windows>:psapi>
 )
 target_compile_features(rvrbotron_cli_support PUBLIC cxx_std_17)
 target_compile_definitions(
