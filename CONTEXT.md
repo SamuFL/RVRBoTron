@@ -72,9 +72,17 @@ _Avoid_: Echo path
 Timbral character imposed by regularity in the reverb's phase response.
 _Avoid_: Damping
 
+**Reference band**:
+The 1 kHz octave band, at which RT60 is defined and against which frequency-dependent decay is expressed as deviation.
+_Avoid_: Mid band, undamped band
+
 **RT60**:
-The requested time for the reference band to decay by 60 dB.
+The requested time for the Reference band, the 1 kHz octave, to decay by 60 dB.
 _Avoid_: Tail length
+
+**Tail budget**:
+The resolved upper bound on the frames a render writes after its input ends, derived from RT60.
+_Avoid_: Tail length, drain length, finite response
 
 **Correlation**:
 The normalized zero-lag dot product between Channel signals: 1.0 identical, -1.0 polarity-inverted, and 0.0 linearly independent at zero lag.
