@@ -98,7 +98,7 @@ target_compile_definitions(
   rvrbotron_cli_support
   PRIVATE
     RVRBOTRON_VERSION="${PROJECT_VERSION}"
-    RVRBOTRON_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    "RVRBOTRON_BUILD_TYPE=\"$<CONFIG>\""
 )
 
 add_library(rvrbotron_wav
