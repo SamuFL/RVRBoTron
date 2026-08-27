@@ -169,6 +169,7 @@ def main():
         "channels": 1,
         "frames": 17,
         "inputFrames": 17,
+        "tailBudgetFrames": 0,
     }
     if metadata != expected_metadata:
         raise AssertionError(f"unexpected render metadata: {metadata}")

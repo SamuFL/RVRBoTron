@@ -66,6 +66,17 @@ add_test(
 )
 
 add_test(
+  NAME feedback_loop_render
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_feedback_loop_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/feedback-loop-render
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
+)
+
+add_test(
   NAME split_strategy_render
   COMMAND
     ${Python3_EXECUTABLE}

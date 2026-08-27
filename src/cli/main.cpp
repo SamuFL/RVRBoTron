@@ -458,6 +458,7 @@ void render(const RenderArguments& arguments) {
       arguments.blockSize * outputChannelCount);
   std::uint64_t inputFrames = 0;
   std::uint64_t renderedFrames = 0;
+  std::uint64_t tailBudgetFrames = 0;
 
   {
     rvrbotron::io::WavWriter writer(
@@ -499,7 +500,8 @@ void render(const RenderArguments& arguments) {
       renderedFrames += framesRead;
     }
 
-    std::uint64_t remainingTail = reverb.finiteTailFrames();
+    tailBudgetFrames = reverb.tailBudgetFrames();
+    std::uint64_t remainingTail = tailBudgetFrames;
     std::fill(
         inputSamples.begin(),
         inputSamples.end(),
@@ -547,6 +549,7 @@ void render(const RenderArguments& arguments) {
           static_cast<std::uint32_t>(outputChannelCount),
           inputFrames,
           renderedFrames,
+          tailBudgetFrames,
           arguments.blockSize,
           arguments.captureAllStages
               ? std::optional<std::string>{"all-v1"}

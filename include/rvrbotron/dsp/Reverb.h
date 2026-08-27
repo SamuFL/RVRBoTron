@@ -43,7 +43,11 @@ public:
 
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;
-  [[nodiscard]] std::uint64_t finiteTailFrames() const noexcept;
+  // Resolved upper bound on frames to render past input EOF: a Diffuser's
+  // genuinely finite response length, a Feedback Loop's Tail budget, or
+  // their sum when both stages are present. See CONTEXT.md's Tail budget
+  // entry.
+  [[nodiscard]] std::uint64_t tailBudgetFrames() const noexcept;
   // Exact DSP-owned bytes: the heap-allocated pimpl's object storage, its
   // owned-container capacities, and every owned Split/Diffuser/Downmix
   // sub-object reachable from it.

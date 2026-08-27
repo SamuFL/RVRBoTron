@@ -93,9 +93,11 @@ The immutable Render Result contains:
 
 `render.json` records the input filename and SHA-256, renderer version,
 platform, architecture, sample precision, block size, configuration input
-mode, sample rate, output channel count, input frame count, and output frame
-count. It intentionally contains no timestamp, host or user identity, full
-input path, or source-tree fingerprint.
+mode, sample rate, output channel count, input frame count, output frame
+count, and the resolved Tail budget authorised for draining past input EOF
+(0 for a Composition with no Diffuser or Feedback Loop). It intentionally
+contains no timestamp, host or user identity, full input path, or
+source-tree fingerprint.
 
 Rendering builds the evidence in a temporary sibling and publishes it
 atomically. Choose a fresh output path for every render because an existing
@@ -114,12 +116,13 @@ build/default/rvrbotron render \
 
 ### Render the first Reference Diffusion Step
 
-Format version 1 also accepts the ordered
-`[split, diffuser, downmix]` Composition shape. The Diffuser resolves to an
-ordered chain of Hadamard Diffusion Steps (`4` by default) feeding a select
-Downmix. Diagnostic ablations support `normalisation: "none"`,
-`delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`, and
-`polarity: "none"`:
+Format version 1 also accepts the ordered `[split, diffuser, downmix]` and
+`[split, feedback-loop, downmix]` Composition shapes (the latter documented
+in [Sustain a Response with a Feedback Loop](#sustain-a-response-with-a-feedback-loop)
+below). The Diffuser resolves to an ordered chain of Hadamard Diffusion
+Steps (`4` by default) feeding a select Downmix. Diagnostic ablations
+support `normalisation: "none"`, `delayStrategy: "even"` or
+`"uniform-random"`, `shuffle: false`, and `polarity: "none"`:
 
 ```json
 {
@@ -264,6 +267,70 @@ presets.
 
 Keep this table in sync whenever a request field, its accepted values, or its
 default changes.
+
+### Sustain a Response with a Feedback Loop
+
+The `[split, feedback-loop, downmix]` Composition shape circulates each
+Channel through its own delay line, deliberately loses energy each
+circulation via a per-Channel decay gain solved from a requested RT60, and
+mixes the Channels orthogonally. Unlike the Diffuser, its output is
+**unaligned** (Channels carry different echo times) and **not all-pass** --
+the Feedback Loop is the one stage documented to lose energy on purpose.
+Render a curated listening sample through it to hear a sustained,
+decaying tail:
+
+```bash
+build/default/rvrbotron render \
+  --input samples/listening/PianoDry.wav \
+  --config request.json \
+  --output build/tail-result
+```
+
+```json
+{
+  "formatVersion": 1,
+  "seed": 0,
+  "composition": {
+    "stages": [
+      {
+        "type": "split",
+        "channels": 8,
+        "strategy": "duplicate",
+        "normalisation": "energy"
+      },
+      {
+        "type": "feedback-loop",
+        "delayMinMs": 100,
+        "delayMaxMs": 200,
+        "delayStrategy": "segmented-random",
+        "rt60Sec": 2.4,
+        "decayMargin": 1.5,
+        "mix": "householder"
+      },
+      {
+        "type": "downmix",
+        "strategy": "select"
+      }
+    ]
+  }
+}
+```
+
+| Field | Values | Default | Notes |
+| --- | --- | --- | --- |
+| `delayMinMs` / `delayMaxMs` | finite number > 0 | `100` / `200` | Room size; `delayMinMs` also sets the pre-tail gap. |
+| `delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | `"even"` demonstrates flutter -- avoid it for a listening preset. |
+| `rt60Sec` | finite number > 0 | `2.4` | Requested decay time at the 1 kHz Reference band; solved into per-Channel gain at configuration. |
+| `decayMargin` | finite number > 0 | `1.5` | Multiplies `rt60Sec` to derive the resolved Tail budget (the upper bound on frames rendered past input EOF); `1.5` places the drain's end near -90 dB. |
+| `mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"householder"` | Mild mixing is the default here, in contrast to the Diffuser's maximal Hadamard default. |
+
+Each Channel's decay gain is solved independently from that Channel's own
+loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate
+regardless of its own delay -- the requested `rt60Sec` is measurable in the
+output even with unequal delays. The resolved Tail budget, delays, gains,
+and matrix coefficients are recorded in `resolved.json`, so a resolved
+rerender reproduces the tail exactly. `render.json`'s `tailBudgetFrames`
+records the upper bound actually authorised for this render.
 
 ### Analyze the Render Result
 

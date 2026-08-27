@@ -1,6 +1,7 @@
 #include "rvrbotron/config/ResolveConfig.h"
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
+#include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/dsp/Split.h"
@@ -266,6 +267,45 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
   return rvrbotron::config::resolveConfig(requested, 48000, 1);
 }
 
+rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
+    const std::uint32_t channels,
+    const double rt60Sec,
+    const double delayMinMs,
+    const double delayMaxMs,
+    const rvrbotron::dsp::MixMatrixType mix =
+        rvrbotron::dsp::MixMatrixType::householder,
+    const rvrbotron::dsp::DelayStrategy delayStrategy =
+        rvrbotron::dsp::DelayStrategy::even,
+    const std::uint32_t sampleRate = 48000) {
+  rvrbotron::config::SplitConfig split;
+  split.channels = channels;
+  split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+  split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::FeedbackLoopConfig loop;
+  loop.delayMinMs = delayMinMs;
+  loop.delayMaxMs = delayMaxMs;
+  loop.delayStrategy = delayStrategy;
+  loop.rt60Sec = rt60Sec;
+  loop.mix = mix;
+
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::CompositionConfig composition;
+  composition.stagesSpecified = true;
+  composition.stages.emplace_back(split);
+  composition.stages.emplace_back(loop);
+  composition.stages.emplace_back(downmix);
+
+  rvrbotron::config::ReverbConfig requested;
+  requested.formatVersion = 1;
+  requested.seed = 0x9e3779b97f4a7c15ULL;
+  requested.composition = std::move(composition);
+  return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
+}
+
 bool reverbDiffusionStepIsAllPass(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -275,7 +315,7 @@ bool reverbDiffusionStepIsAllPass(
   EnergyCapture capture(channels);
   rvrbotron::dsp::Reverb reverb(config, &capture);
   const auto responseFrames =
-      inputFrames + static_cast<std::size_t>(reverb.finiteTailFrames());
+      inputFrames + static_cast<std::size_t>(reverb.tailBudgetFrames());
   std::vector<rvrbotron::dsp::Sample> input(
       responseFrames, rvrbotron::dsp::Sample{0});
   std::vector<rvrbotron::dsp::Sample> left(responseFrames);
@@ -918,6 +958,309 @@ int main() {
   if (endAllocationCount() != 0) {
     std::cerr
         << "Reverb::process allocated after ownedBytes was queried\n";
+    return 1;
+  }
+
+  // A hand-derivable N=2 Feedback Loop fixture (distinct integer delays 2
+  // and 3, N=2 Householder mixing -- a pure swap-and-negate, computed by
+  // hand from resolveHouseholderMatrix's closed form) verified against an
+  // independently worked oracle rather than trusting this DSP class's own
+  // output. Unlike the Diffuser's aligned arrivals (twoChannelDiffusionConfig
+  // above), each Channel here carries its own distinct echo time -- the
+  // Feedback Loop's output is unaligned.
+  rvrbotron::dsp::ResolvedFeedbackLoop unalignedLoopConfig;
+  unalignedLoopConfig.channels = 2;
+  unalignedLoopConfig.delaysSamples = {2, 3};
+  unalignedLoopConfig.bufferSizes = {2, 3};
+  unalignedLoopConfig.gains = {0.5, 0.5};
+  unalignedLoopConfig.mix = rvrbotron::dsp::MixMatrixType::householder;
+  unalignedLoopConfig.matrix = {0.0, -1.0, -1.0, 0.0};
+  rvrbotron::dsp::FeedbackLoop unalignedLoop(unalignedLoopConfig);
+
+  std::array<std::array<rvrbotron::dsp::Sample, 2>, 8> loopFrames{};
+  const std::array<rvrbotron::dsp::Sample, 2> firstLoopInput{1.0F, 0.0F};
+  const std::array<rvrbotron::dsp::Sample, 2> silentLoopInput{0.0F, 0.0F};
+  beginAllocationCount();
+  for (std::size_t frame = 0; frame < loopFrames.size(); ++frame) {
+    const auto& in = frame == 0 ? firstLoopInput : silentLoopInput;
+    unalignedLoop.processFrame(in.data(), loopFrames[frame].data());
+  }
+  const auto loopAllocations = endAllocationCount();
+  if (loopAllocations != 0) {
+    std::cerr << "Feedback Loop allocated while processing\n";
+    return 1;
+  }
+
+  const auto firstNonzero = [&](const std::size_t channel) -> std::size_t {
+    for (std::size_t frame = 0; frame < loopFrames.size(); ++frame) {
+      if (loopFrames[frame][channel] != rvrbotron::dsp::Sample{0}) {
+        return frame;
+      }
+    }
+    return loopFrames.size();
+  };
+  const auto firstArrival0 = firstNonzero(0);
+  const auto firstArrival1 = firstNonzero(1);
+  if (firstArrival0 != 2 || firstArrival1 != 5) {
+    std::cerr << "Feedback Loop did not produce the expected per-Channel "
+                 "arrival times: "
+              << firstArrival0 << ", " << firstArrival1 << '\n';
+    return 1;
+  }
+  if (firstArrival0 == firstArrival1) {
+    std::cerr
+        << "Feedback Loop output was unexpectedly aligned across Channels\n";
+    return 1;
+  }
+  if (!close(loopFrames[2][0], 1.0) || !close(loopFrames[5][1], -0.5)) {
+    std::cerr << "Feedback Loop delayed/gained arrival values are incorrect\n";
+    return 1;
+  }
+
+  // Head-to-head aligned-vs-unaligned comparison, independently computed
+  // rather than inferred from a comment: active-sample-index sets
+  // (CONTEXT.md's "Aligned" -- Channels carrying the same echo times) for
+  // the existing two-Channel Diffuser fixture above versus this Feedback
+  // Loop fixture. Feeding twoChannelDiffusionConfig's Diffuser the same
+  // impulse on both Channels, its delays {0, 1} and Hadamard mixing put
+  // both Channels active at exactly frames {0, 1} -- identical sets,
+  // differing only in sign, which is exactly the aligned definition.
+  {
+    const auto diffusionConfig = twoChannelDiffusionConfig();
+    const auto& diffuserStage = std::get<rvrbotron::dsp::ResolvedDiffuser>(
+        diffusionConfig.composition.stages[1]);
+    rvrbotron::dsp::Diffuser alignedDiffuser(diffuserStage);
+    std::array<std::array<rvrbotron::dsp::Sample, 2>, 4> diffuserFrames{};
+    const std::array<rvrbotron::dsp::Sample, 2> firstDiffuserInput{
+        1.0F, 1.0F};
+    const std::array<rvrbotron::dsp::Sample, 2> silentDiffuserInput{
+        0.0F, 0.0F};
+    for (std::size_t frame = 0; frame < diffuserFrames.size(); ++frame) {
+      const auto& in = frame == 0 ? firstDiffuserInput : silentDiffuserInput;
+      alignedDiffuser.processFrame(in.data(), diffuserFrames[frame].data());
+    }
+    const auto activeSet = [](const auto& frames, const std::size_t channel) {
+      std::vector<std::size_t> active;
+      for (std::size_t frame = 0; frame < frames.size(); ++frame) {
+        if (frames[frame][channel] != rvrbotron::dsp::Sample{0}) {
+          active.push_back(frame);
+        }
+      }
+      return active;
+    };
+    const auto diffuserActive0 = activeSet(diffuserFrames, 0);
+    const auto diffuserActive1 = activeSet(diffuserFrames, 1);
+    const std::vector<std::size_t> expectedDiffuserActive{0, 1};
+    if (diffuserActive0 != expectedDiffuserActive ||
+        diffuserActive1 != expectedDiffuserActive) {
+      std::cerr << "Diffuser fixture was not aligned as expected\n";
+      return 1;
+    }
+
+    const auto loopActive0 = activeSet(loopFrames, 0);
+    const auto loopActive1 = activeSet(loopFrames, 1);
+    bool loopSetsOverlap = false;
+    for (const auto frame : loopActive0) {
+      if (std::find(loopActive1.begin(), loopActive1.end(), frame) !=
+          loopActive1.end()) {
+        loopSetsOverlap = true;
+        break;
+      }
+    }
+    if (loopActive0.empty() || loopActive1.empty() || loopSetsOverlap) {
+      std::cerr << "Feedback Loop active-sample sets were not genuinely "
+                   "unaligned against the Diffuser's aligned fixture\n";
+      return 1;
+    }
+  }
+
+  // Decay accuracy and stability across deliberately unequal delays,
+  // through the full Reverb (Split -> Feedback Loop -> select Downmix).
+  // Every Channel's own gain is solved to decay at the same dB/second rate
+  // regardless of its own loop time, so the aggregate stereo output should
+  // decay at that same rate even though the four Channels here circulate
+  // at different periods.
+  constexpr std::uint32_t decayChannels = 4;
+  constexpr double requestedRt60Sec = 0.3;
+  constexpr std::uint32_t decaySampleRate = 8000;
+  const auto decayConfig = resolvedFeedbackLoopConfig(
+      decayChannels,
+      requestedRt60Sec,
+      5.0,
+      10.0,
+      rvrbotron::dsp::MixMatrixType::householder,
+      rvrbotron::dsp::DelayStrategy::even,
+      decaySampleRate);
+  if (decayConfig.sampleRate != decaySampleRate) {
+    std::cerr << "Feedback Loop decay fixture sample rate is wrong\n";
+    return 1;
+  }
+  rvrbotron::dsp::Reverb decayReverb(decayConfig);
+  const auto decayTailFrames =
+      static_cast<std::size_t>(decayReverb.tailBudgetFrames());
+  constexpr std::size_t decayGuard = 200;
+  constexpr std::size_t decayWindow = 400;
+  constexpr std::size_t decaySeparation = 2000;
+  if (decayTailFrames < decayGuard + decaySeparation + decayWindow) {
+    std::cerr << "Feedback Loop decay fixture Tail budget is too short for "
+                 "this test\n";
+    return 1;
+  }
+  const auto decayFrameCount = decayTailFrames + 1;
+  std::vector<rvrbotron::dsp::Sample> decayInput(
+      decayFrameCount, rvrbotron::dsp::Sample{0});
+  decayInput[0] = 1.0F;
+  std::vector<rvrbotron::dsp::Sample> decayLeft(decayFrameCount);
+  std::vector<rvrbotron::dsp::Sample> decayRight(decayFrameCount);
+  const rvrbotron::dsp::Sample* decayInputs[]{decayInput.data()};
+  rvrbotron::dsp::Sample* decayOutputs[]{
+      decayLeft.data(), decayRight.data()};
+  beginAllocationCount();
+  decayReverb.process(
+      decayInputs, 1, decayOutputs, 2, decayFrameCount);
+  const auto decayAllocations = endAllocationCount();
+  if (decayAllocations != 0) {
+    std::cerr << "Feedback Loop Reverb allocated while processing\n";
+    return 1;
+  }
+
+  const auto windowEnergy = [&](const std::size_t start,
+                                const std::size_t length) {
+    double energy = 0.0;
+    for (std::size_t frame = start; frame < start + length; ++frame) {
+      const auto l = static_cast<double>(decayLeft[frame]);
+      const auto r = static_cast<double>(decayRight[frame]);
+      energy += l * l + r * r;
+    }
+    return energy;
+  };
+  // No-growth / stability sweep: peak absolute sample anywhere in the tail
+  // must never exceed a small multiple of the peak in the first window --
+  // constructive beating between Channels is expected, runaway growth is
+  // not (`gain < 1` and orthogonal mixing guarantee contraction).
+  double earlyPeak = 0.0;
+  for (std::size_t frame = decayGuard; frame < decayGuard + decayWindow;
+       ++frame) {
+    earlyPeak = std::max(
+        {earlyPeak,
+         std::abs(static_cast<double>(decayLeft[frame])),
+         std::abs(static_cast<double>(decayRight[frame]))});
+  }
+  for (std::size_t frame = decayGuard; frame < decayFrameCount; ++frame) {
+    const auto peak = std::max(
+        std::abs(static_cast<double>(decayLeft[frame])),
+        std::abs(static_cast<double>(decayRight[frame])));
+    if (peak > 1.5 * earlyPeak) {
+      std::cerr << "Feedback Loop tail grew unexpectedly at frame " << frame
+                << '\n';
+      return 1;
+    }
+  }
+
+  // Repeat the no-growth sweep per internal Channel directly against the
+  // Feedback Loop DSP class, bypassing select Downmix -- which only reads
+  // two of the four Channels and could otherwise mask growth confined to a
+  // Channel it never selects.
+  const auto& decayLoopStage = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+      decayConfig.composition.stages[1]);
+  rvrbotron::dsp::FeedbackLoop decayLoop(decayLoopStage);
+  std::vector<std::vector<rvrbotron::dsp::Sample>> decayChannelFrames(
+      decayChannels,
+      std::vector<rvrbotron::dsp::Sample>(decayFrameCount));
+  std::vector<rvrbotron::dsp::Sample> decayLoopInputFrame(
+      decayChannels, rvrbotron::dsp::Sample{0});
+  std::vector<rvrbotron::dsp::Sample> decayLoopOutputFrame(decayChannels);
+  // Matches the Split stage's energy-normalized duplicate mapping, so this
+  // direct-DSP fixture receives the same per-Channel impulse as the
+  // Reverb-level render above.
+  const auto decaySplitGain = static_cast<rvrbotron::dsp::Sample>(
+      1.0 / std::sqrt(static_cast<double>(decayChannels)));
+  beginAllocationCount();
+  for (std::size_t frame = 0; frame < decayFrameCount; ++frame) {
+    std::fill(
+        decayLoopInputFrame.begin(),
+        decayLoopInputFrame.end(),
+        frame == 0 ? decaySplitGain : rvrbotron::dsp::Sample{0});
+    decayLoop.processFrame(
+        decayLoopInputFrame.data(), decayLoopOutputFrame.data());
+    for (std::uint32_t channel = 0; channel < decayChannels; ++channel) {
+      decayChannelFrames[channel][frame] = decayLoopOutputFrame[channel];
+    }
+  }
+  const auto decayLoopAllocations = endAllocationCount();
+  if (decayLoopAllocations != 0) {
+    std::cerr << "Feedback Loop allocated while processing the per-Channel "
+                 "decay fixture\n";
+    return 1;
+  }
+  for (std::uint32_t channel = 0; channel < decayChannels; ++channel) {
+    double channelEarlyPeak = 0.0;
+    for (std::size_t frame = decayGuard; frame < decayGuard + decayWindow;
+         ++frame) {
+      channelEarlyPeak = std::max(
+          channelEarlyPeak,
+          std::abs(static_cast<double>(decayChannelFrames[channel][frame])));
+    }
+    for (std::size_t frame = decayGuard; frame < decayFrameCount; ++frame) {
+      const auto peak =
+          std::abs(static_cast<double>(decayChannelFrames[channel][frame]));
+      if (peak > 1.5 * channelEarlyPeak) {
+        std::cerr << "Feedback Loop Channel " << channel
+                  << " grew unexpectedly at frame " << frame << '\n';
+        return 1;
+      }
+    }
+  }
+
+  const auto decayEnergyA = windowEnergy(decayGuard, decayWindow);
+  const auto decayEnergyB =
+      windowEnergy(decayGuard + decaySeparation, decayWindow);
+  if (!(decayEnergyA > 0.0) || !(decayEnergyB > 0.0) ||
+      decayEnergyB >= decayEnergyA) {
+    std::cerr
+        << "Feedback Loop tail did not decay monotonically between windows\n";
+    return 1;
+  }
+  const auto decayDbDrop = 10.0 * std::log10(decayEnergyA / decayEnergyB);
+  const auto decayDeltaTSeconds =
+      static_cast<double>(decaySeparation) / decaySampleRate;
+  const auto impliedRt60 = 60.0 * decayDeltaTSeconds / decayDbDrop;
+  if (std::abs(impliedRt60 - requestedRt60Sec) > 0.05 * requestedRt60Sec) {
+    std::cerr << "Feedback Loop decay accuracy outside +-5%: implied "
+              << impliedRt60 << "s vs requested " << requestedRt60Sec
+              << "s\n";
+    return 1;
+  }
+
+  // Reverb::ownedBytes() accounts a Feedback Loop's delay-storage capacity
+  // the same way it does the Diffuser's, above.
+  auto baselineLoopConfig = decayConfig;
+  auto enlargedLoopConfig = decayConfig;
+  auto& enlargedLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+      enlargedLoopConfig.composition.stages[1]);
+  constexpr std::uint64_t extraLoopDelaySamples = 500;
+  enlargedLoop.delaysSamples[0] += extraLoopDelaySamples;
+  enlargedLoop.bufferSizes[0] += extraLoopDelaySamples;
+
+  rvrbotron::dsp::Reverb baselineLoopReverb(baselineLoopConfig);
+  rvrbotron::dsp::Reverb enlargedLoopReverb(enlargedLoopConfig);
+  beginAllocationCount();
+  const auto baselineLoopBytes = baselineLoopReverb.ownedBytes();
+  const auto enlargedLoopBytes = enlargedLoopReverb.ownedBytes();
+  const auto loopOwnedBytesAllocations = endAllocationCount();
+  if (loopOwnedBytesAllocations != 0) {
+    std::cerr << "Feedback Loop Reverb::ownedBytes allocated while "
+                 "measuring\n";
+    return 1;
+  }
+  const auto expectedLoopDelta =
+      extraLoopDelaySamples * sizeof(rvrbotron::dsp::Sample);
+  if (enlargedLoopBytes - baselineLoopBytes != expectedLoopDelta) {
+    std::cerr
+        << "Feedback Loop Reverb::ownedBytes did not track delay-storage "
+           "capacity: "
+        << (enlargedLoopBytes - baselineLoopBytes) << " != "
+        << expectedLoopDelta << '\n';
     return 1;
   }
 

@@ -68,6 +68,26 @@ struct ResolvedDiffuser {
   std::vector<ResolvedDiffusionStep> steps;
 };
 
+struct ResolvedFeedbackLoop {
+  std::uint32_t channels = 0;
+  std::uint64_t delayMinSamples = 0;
+  std::uint64_t delayMaxSamples = 0;
+  double delayMinMs = 0.0;
+  double delayMaxMs = 0.0;
+  DelayStrategy delayStrategy = DelayStrategy::segmentedRandom;
+  std::vector<std::uint64_t> delaysSamples;
+  std::vector<double> delaysMs;
+  std::vector<std::uint64_t> bufferSizes;
+  double rt60Sec = 0.0;
+  std::vector<double> gains;
+  MixMatrixType mix = MixMatrixType::householder;
+  std::vector<double> matrix;
+  double decayMargin = 0.0;
+  // Resolved upper bound on frames rendered past input EOF, derived from
+  // rt60Sec and decayMargin (see CONTEXT.md's Tail budget entry).
+  std::uint64_t tailBudgetSamples = 0;
+};
+
 struct ResolvedDownmix {
   std::uint32_t inputChannels = 0;
   std::uint32_t outputChannels = 2;
@@ -76,8 +96,11 @@ struct ResolvedDownmix {
   double compensation = 0.0;
 };
 
-using ResolvedStage =
-    std::variant<ResolvedSplit, ResolvedDiffuser, ResolvedDownmix>;
+using ResolvedStage = std::variant<
+    ResolvedSplit,
+    ResolvedDiffuser,
+    ResolvedFeedbackLoop,
+    ResolvedDownmix>;
 
 struct ResolvedComposition {
   std::vector<ResolvedStage> stages;

@@ -390,6 +390,46 @@ config::DiffuserConfig parseRequestedDiffuser(
   return diffuser;
 }
 
+config::FeedbackLoopConfig parseRequestedFeedbackLoop(
+    const Json& value,
+    const std::string_view path) {
+  rejectUnknownFields(
+      value,
+      path,
+      {"type",
+       "delayMinMs",
+       "delayMaxMs",
+       "delayStrategy",
+       "rt60Sec",
+       "decayMargin",
+       "mix"});
+  config::FeedbackLoopConfig loop;
+  if (value.contains("delayMinMs")) {
+    loop.delayMinMs = parseNumber(
+        value.at("delayMinMs"), std::string(path) + "/delayMinMs");
+  }
+  if (value.contains("delayMaxMs")) {
+    loop.delayMaxMs = parseNumber(
+        value.at("delayMaxMs"), std::string(path) + "/delayMaxMs");
+  }
+  if (value.contains("delayStrategy")) {
+    loop.delayStrategy = parseDelayStrategy(
+        value.at("delayStrategy"), std::string(path) + "/delayStrategy");
+  }
+  if (value.contains("rt60Sec")) {
+    loop.rt60Sec =
+        parseNumber(value.at("rt60Sec"), std::string(path) + "/rt60Sec");
+  }
+  if (value.contains("decayMargin")) {
+    loop.decayMargin = parseNumber(
+        value.at("decayMargin"), std::string(path) + "/decayMargin");
+  }
+  if (value.contains("mix")) {
+    loop.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
+  }
+  return loop;
+}
+
 config::DownmixConfig parseRequestedDownmix(
     const Json& value,
     const std::string_view path) {
@@ -429,10 +469,15 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
       composition.stages.emplace_back(parseRequestedSplit(stage, path));
     } else if (type == "diffuser") {
       composition.stages.emplace_back(parseRequestedDiffuser(stage, path));
+    } else if (type == "feedback-loop") {
+      composition.stages.emplace_back(
+          parseRequestedFeedbackLoop(stage, path));
     } else if (type == "downmix") {
       composition.stages.emplace_back(parseRequestedDownmix(stage, path));
     } else {
-      fail(path + "/type", "expected split, diffuser, or downmix");
+      fail(
+          path + "/type",
+          "expected split, diffuser, feedback-loop, or downmix");
     }
   }
   return composition;
@@ -612,6 +657,90 @@ dsp::ResolvedDiffuser parseResolvedDiffuser(
   return diffuser;
 }
 
+dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
+    const Json& value,
+    const std::string_view path) {
+  rejectUnknownFields(
+      value,
+      path,
+      {"type",
+       "channels",
+       "delayMinSamples",
+       "delayMaxSamples",
+       "delayMinMs",
+       "delayMaxMs",
+       "delayStrategy",
+       "delaysSamples",
+       "delaysMs",
+       "bufferSizes",
+       "rt60Sec",
+       "gains",
+       "mix",
+       "matrix",
+       "decayMargin",
+       "tailBudgetSamples"});
+  for (const auto field :
+       {"channels",
+        "delayMinSamples",
+        "delayMaxSamples",
+        "delayMinMs",
+        "delayMaxMs",
+        "delayStrategy",
+        "delaysSamples",
+        "delaysMs",
+        "bufferSizes",
+        "rt60Sec",
+        "gains",
+        "mix",
+        "matrix",
+        "decayMargin",
+        "tailBudgetSamples"}) {
+    requireField(value, field, path);
+  }
+
+  std::vector<double> matrix;
+  const auto matrixPath = std::string(path) + "/matrix";
+  const auto& rows = value.at("matrix");
+  requireArray(rows, matrixPath);
+  for (std::size_t row = 0; row < rows.size(); ++row) {
+    auto values = parseNumberArray(
+        rows.at(row), matrixPath + "/" + std::to_string(row));
+    matrix.insert(matrix.end(), values.begin(), values.end());
+  }
+
+  dsp::ResolvedFeedbackLoop loop;
+  loop.channels =
+      parseUnsigned32(value.at("channels"), std::string(path) + "/channels");
+  loop.delayMinSamples = parseUnsigned64(
+      value.at("delayMinSamples"), std::string(path) + "/delayMinSamples");
+  loop.delayMaxSamples = parseUnsigned64(
+      value.at("delayMaxSamples"), std::string(path) + "/delayMaxSamples");
+  loop.delayMinMs = parseNumber(
+      value.at("delayMinMs"), std::string(path) + "/delayMinMs");
+  loop.delayMaxMs = parseNumber(
+      value.at("delayMaxMs"), std::string(path) + "/delayMaxMs");
+  loop.delayStrategy = parseDelayStrategy(
+      value.at("delayStrategy"), std::string(path) + "/delayStrategy");
+  loop.delaysSamples = parseUnsigned64Array(
+      value.at("delaysSamples"), std::string(path) + "/delaysSamples");
+  loop.delaysMs = parseNumberArray(
+      value.at("delaysMs"), std::string(path) + "/delaysMs");
+  loop.bufferSizes = parseUnsigned64Array(
+      value.at("bufferSizes"), std::string(path) + "/bufferSizes");
+  loop.rt60Sec =
+      parseNumber(value.at("rt60Sec"), std::string(path) + "/rt60Sec");
+  loop.gains =
+      parseNumberArray(value.at("gains"), std::string(path) + "/gains");
+  loop.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
+  loop.matrix = std::move(matrix);
+  loop.decayMargin = parseNumber(
+      value.at("decayMargin"), std::string(path) + "/decayMargin");
+  loop.tailBudgetSamples = parseUnsigned64(
+      value.at("tailBudgetSamples"),
+      std::string(path) + "/tailBudgetSamples");
+  return loop;
+}
+
 dsp::ResolvedDownmix parseResolvedDownmix(
     const Json& value,
     const std::string_view path) {
@@ -664,10 +793,15 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
       composition.stages.emplace_back(parseResolvedSplit(stage, path));
     } else if (type == "diffuser") {
       composition.stages.emplace_back(parseResolvedDiffuser(stage, path));
+    } else if (type == "feedback-loop") {
+      composition.stages.emplace_back(
+          parseResolvedFeedbackLoop(stage, path));
     } else if (type == "downmix") {
       composition.stages.emplace_back(parseResolvedDownmix(stage, path));
     } else {
-      fail(path + "/type", "expected split, diffuser, or downmix");
+      fail(
+          path + "/type",
+          "expected split, diffuser, feedback-loop, or downmix");
     }
   }
   return composition;

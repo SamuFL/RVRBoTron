@@ -131,6 +131,7 @@ def main():
         "channels": 1,
         "frames": 32,
         "inputFrames": 32,
+        "tailBudgetFrames": 0,
         "blockSize": 512,
     }
     if render != expected_render:
