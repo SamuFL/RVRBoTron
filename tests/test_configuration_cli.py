@@ -634,6 +634,144 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved ablations changed output")
 
+    # Uniform-random deliberately samples with replacement, so it tolerates a
+    # step budget (1 sample, 2 positions) far shorter than 4 Channels would
+    # ever need for segmented-random or even -- and this seed/budget/Channel
+    # combination is independently known (see docs/adr/0002) to draw the
+    # same position twice.
+    uniform_random_request = workspace / "uniform-random-request.json"
+    uniform_random_result = workspace / "uniform-random-result"
+    uniform_random_rerender = workspace / "uniform-random-rerender"
+    uniform_random_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 4,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 0.02,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "uniform-random",
+                                "mix": "hadamard",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            uniform_random_request,
+            "--output",
+            uniform_random_result,
+        )
+    )
+    uniform_random_resolved = json.loads(
+        (uniform_random_result / "resolved.json").read_text()
+    )
+    uniform_random_step = uniform_random_resolved["composition"]["stages"][1][
+        "steps"
+    ][0]
+    if uniform_random_step["lengthSamples"] != 1:
+        raise AssertionError(
+            f"unexpected uniform-random step budget: {uniform_random_step}"
+        )
+    if uniform_random_step["delaysSamples"] != [1, 0, 0, 0]:
+        raise AssertionError(f"unexpected uniform-random delays: {uniform_random_step}")
+    if len(set(uniform_random_step["delaysSamples"])) == len(
+        uniform_random_step["delaysSamples"]
+    ):
+        raise AssertionError("expected uniform-random to permit a delay collision")
+    if uniform_random_step["permutation"] != [2, 1, 0, 3]:
+        raise AssertionError(f"unexpected deterministic shuffle: {uniform_random_step}")
+    if uniform_random_step["polaritySigns"] != [1, 1, -1, 1]:
+        raise AssertionError(
+            f"unexpected deterministic polarity: {uniform_random_step}"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            uniform_random_result / "resolved.json",
+            "--output",
+            uniform_random_rerender,
+        )
+    )
+    if (uniform_random_rerender / "resolved.json").read_bytes() != (
+        uniform_random_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("resolved uniform-random rerender changed configuration")
+    if (uniform_random_rerender / "output.wav").read_bytes() != (
+        uniform_random_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("resolved uniform-random rerender changed output")
+
+    # The same duplicate-delay evidence that uniform-random resolved above
+    # must be accepted directly as a hand-authored Resolved Configuration.
+    uniform_ablation_document = json.loads(json.dumps(ablation_resolved))
+    uniform_duplicate_step = uniform_ablation_document["composition"]["stages"][1][
+        "steps"
+    ][0]
+    uniform_duplicate_step["delayStrategy"] = "uniform-random"
+    uniform_duplicate_step["delaysSamples"][1] = uniform_duplicate_step[
+        "delaysSamples"
+    ][0]
+    uniform_duplicate_step["delaysMs"][1] = uniform_duplicate_step["delaysMs"][0]
+    uniform_duplicate_step["bufferSizes"][1] = uniform_duplicate_step["bufferSizes"][
+        0
+    ]
+    uniform_ablation_path = workspace / "uniform-ablation-resolved.json"
+    uniform_ablation_result = workspace / "uniform-ablation-result"
+    uniform_ablation_path.write_text(json.dumps(uniform_ablation_document))
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            uniform_ablation_path,
+            "--output",
+            uniform_ablation_result,
+        )
+    )
+    resolved_uniform_ablation = json.loads(
+        (uniform_ablation_result / "resolved.json").read_text()
+    )
+    resolved_uniform_step = resolved_uniform_ablation["composition"]["stages"][1][
+        "steps"
+    ][0]
+    if resolved_uniform_step["delayStrategy"] != "uniform-random":
+        raise AssertionError("uniform-random delayStrategy did not round-trip")
+    if (
+        resolved_uniform_step["delaysSamples"][0]
+        != resolved_uniform_step["delaysSamples"][1]
+    ):
+        raise AssertionError(
+            "uniform-random ablation should permit a resolved delay collision"
+        )
+
     single_channel_request = workspace / "single-channel-ablation-request.json"
     single_channel_result = workspace / "single-channel-ablation-result"
     single_channel_document = json.loads(ablation_request.read_text())
@@ -692,6 +830,20 @@ def main():
             invalid_even_delays,
             "/composition/stages/1/steps/0/delaysSamples: "
             "even requires delays distributed over the available positions",
+        )
+    )
+    invalid_duplicate_delays = json.loads(json.dumps(ablation_resolved))
+    invalid_duplicate_step = invalid_duplicate_delays["composition"]["stages"][1][
+        "steps"
+    ][0]
+    invalid_duplicate_step["delaysSamples"][1] = invalid_duplicate_step[
+        "delaysSamples"
+    ][0]
+    invalid_ablation_resolved.append(
+        (
+            invalid_duplicate_delays,
+            "/composition/stages/1/steps/0/delaysSamples: "
+            "expected distinct delays within the step sample budget",
         )
     )
     invalid_identity = json.loads(json.dumps(ablation_resolved))
@@ -789,6 +941,16 @@ def main():
     oversized_total_request["composition"]["stages"][1]["totalMs"] = 1e300
     short_delay_request = json.loads(reference_request.read_text())
     short_delay_request["composition"]["stages"][1]["totalMs"] = 0.1
+    # Same short budget and Channel count as the accepted uniform-random
+    # request above (1 sample, 2 positions, N=4): even still rejects it,
+    # proving the "too short" diagnostic is strategy-specific rather than a
+    # blanket minimum uniform-random happens to slip past.
+    short_even_delay_request = json.loads(reference_request.read_text())
+    short_even_delay_request["composition"]["stages"][0]["channels"] = 4
+    short_even_delay_request["composition"]["stages"][1]["totalMs"] = 0.02
+    short_even_delay_request["composition"]["stages"][1]["step"][
+        "delayStrategy"
+    ] = "even"
     non_power_of_two_request = json.loads(reference_request.read_text())
     non_power_of_two_request["composition"]["stages"][0]["channels"] = 3
     lengths_ms_with_steps_request = json.loads(reference_request.read_text())
@@ -876,6 +1038,11 @@ def main():
         ),
         (
             json.dumps(short_delay_request),
+            "invalid_configuration at /composition/stages/1/steps/0/lengthSamples: "
+            "delay strategy requires at least one sample position per Channel",
+        ),
+        (
+            json.dumps(short_even_delay_request),
             "invalid_configuration at /composition/stages/1/steps/0/lengthSamples: "
             "delay strategy requires at least one sample position per Channel",
         ),

@@ -181,10 +181,13 @@ dsp::DelayStrategy parseDelayStrategy(
   if (name == "segmented-random") {
     return dsp::DelayStrategy::segmentedRandom;
   }
+  if (name == "uniform-random") {
+    return dsp::DelayStrategy::uniformRandom;
+  }
   if (name == "even") {
     return dsp::DelayStrategy::even;
   }
-  fail(path, "expected segmented-random or even");
+  fail(path, "expected segmented-random, uniform-random, or even");
 }
 
 dsp::MixMatrixType parseMix(

@@ -86,6 +86,16 @@ SampleBudget deriveSampleBudget(const double totalMs,
   return {SampleBudgetStatus::valid, samples};
 }
 
+// Only segmented-random and even require N distinct sample positions:
+// uniform-random deliberately samples with replacement, so it only needs at
+// least one position to draw from (always true once the sample budget
+// itself is valid).
+bool requiresDistinctChannelPositions(
+    const dsp::DelayStrategy strategy) noexcept {
+  return strategy == dsp::DelayStrategy::segmentedRandom ||
+         strategy == dsp::DelayStrategy::even;
+}
+
 // Segmented-random and even delay strategies each require one distinct
 // integer sample position per Channel within a step's own sample budget.
 bool hasEnoughPositionsForChannels(
@@ -433,6 +443,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
 
     const auto supportedDelayStrategy =
         delayStrategy == dsp::DelayStrategy::segmentedRandom ||
+        delayStrategy == dsp::DelayStrategy::uniformRandom ||
         delayStrategy == dsp::DelayStrategy::even;
     const auto supportedPolarity =
         polarity == dsp::PolarityStrategy::seededRandom ||
@@ -445,7 +456,8 @@ dsp::ResolvedDiffuser resolveDiffuser(
         supportedDelayStrategy &&
         supportedPolarity &&
         matrixElements.has_value() &&
-        hasEnoughPositionsForChannels(step.lengthSamples, channels);
+        (!requiresDistinctChannelPositions(delayStrategy) ||
+         hasEnoughPositionsForChannels(step.lengthSamples, channels));
     if (!canDeriveChannelValues) {
       diffuser.steps.push_back(std::move(step));
       continue;
@@ -469,8 +481,12 @@ dsp::ResolvedDiffuser resolveDiffuser(
                         step.index,
                         channel,
                         end - start);
-      } else {
+      } else if (delayStrategy == dsp::DelayStrategy::even) {
         delay = evenDelay(step.lengthSamples, channels, channel);
+      } else {
+        const auto positions = step.lengthSamples + 1;
+        delay = boundedRandom(
+            seed, kDiffusionDelayUsage, step.index, channel, positions);
       }
       step.delaysSamples.push_back(delay);
       step.delaysMs.push_back(
@@ -845,10 +861,11 @@ void validateResolvedConfig(
           "expected milliseconds derived from the integer sample budget");
     }
     if (step.delayStrategy != dsp::DelayStrategy::segmentedRandom &&
+        step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
         step.delayStrategy != dsp::DelayStrategy::even) {
       fail(
           stepPath + "/delayStrategy",
-          "expected segmented-random or even");
+          "expected segmented-random, uniform-random, or even");
     }
     if (step.polarity != dsp::PolarityStrategy::seededRandom &&
         step.polarity != dsp::PolarityStrategy::none) {
@@ -867,7 +884,8 @@ void validateResolvedConfig(
     if (!matrixElements.has_value()) {
       fail(stepPath + "/mix", "Hadamard matrix is too large");
     }
-    if (step.lengthSamples + 1 < channels) {
+    if (requiresDistinctChannelPositions(step.delayStrategy) &&
+        step.lengthSamples + 1 < channels) {
       fail(
           stepPath + "/lengthSamples",
           "delay strategy requires at least one sample position per "
@@ -888,8 +906,11 @@ void validateResolvedConfig(
 
     auto sortedDelays = step.delaysSamples;
     std::sort(sortedDelays.begin(), sortedDelays.end());
-    if (std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
-        sortedDelays.end()) {
+    // Uniform-random deliberately samples with replacement, so clumping and
+    // collisions are a permitted ablation rather than a validation failure.
+    if (step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
+        std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
+            sortedDelays.end()) {
       fail(
           stepPath + "/delaysSamples",
           "expected distinct delays within the step sample budget");
