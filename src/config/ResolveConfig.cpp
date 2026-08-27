@@ -378,7 +378,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
   // it is shared across every step that resolves to that type (computed
   // once per type) even though it is fully serialized per step. Indexed by
   // the MixMatrixType enum's underlying value.
-  std::array<std::optional<std::vector<double>>, 3> sharedMatrixByType;
+  std::array<std::optional<std::vector<double>>, static_cast<std::size_t>(dsp::MixMatrixType::randomOrthogonal) + 1> sharedMatrixByType;
 
   diffuser.steps.reserve(derivation.stepCount);
   for (std::uint32_t index = 0; index < derivation.stepCount; ++index) {
