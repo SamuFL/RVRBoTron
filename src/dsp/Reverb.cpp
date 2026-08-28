@@ -7,6 +7,7 @@
 #include "rvrbotron/dsp/Split.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <variant>
 #include <vector>
@@ -19,6 +20,10 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   std::size_t outputChannels = 0;
   std::size_t channels = 0;
   std::uint64_t tailFrames = 0;
+  // The Feedback Loop's shortest resolved delay, in samples: the maximum
+  // legal block size (see CONTEXT.md's Block-size bound entry). Zero when
+  // no Feedback Loop is present, meaning no bound applies.
+  std::uint64_t blockSizeBound = 0;
   StageCaptureSink* captureSink = nullptr;
 
   std::unique_ptr<Split> split;
@@ -86,6 +91,7 @@ Reverb::Reverb(const ResolvedConfig& config,
           config.composition.stages[stageIndex]);
       state.feedbackLoop = std::make_unique<FeedbackLoop>(feedbackLoop);
       state.tailFrames += state.feedbackLoop->tailBudgetSamples();
+      state.blockSizeBound = state.feedbackLoop->blockSizeBoundSamples();
     }
   }
 
@@ -122,6 +128,15 @@ void Reverb::process(const Sample* const* inputs,
     }
     return;
   }
+
+  // Debug-only: the CLI is the enforcement point for the block-size bound
+  // (see main.cpp), rejecting an oversized block size before Reverb is ever
+  // constructed. This assert documents and catches a violation of that
+  // contract from any other caller, without making processing itself
+  // validating in release builds.
+  assert(
+      state.blockSizeBound == 0 ||
+      frameCount <= state.blockSizeBound);
 
   for (std::size_t frame = 0; frame < frameCount; ++frame) {
     state.split->processFrame(inputs, frame, state.splitValues.data());

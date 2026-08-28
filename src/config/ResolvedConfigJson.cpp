@@ -156,6 +156,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
       {"matrix", std::move(matrix)},
       {"decayMargin", loop.decayMargin},
       {"tailBudgetSamples", loop.tailBudgetSamples},
+      {"blockSizeBoundSamples", loop.blockSizeBoundSamples},
   };
 }
 

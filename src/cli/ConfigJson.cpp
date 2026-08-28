@@ -678,7 +678,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
        "mix",
        "matrix",
        "decayMargin",
-       "tailBudgetSamples"});
+       "tailBudgetSamples",
+       "blockSizeBoundSamples"});
   for (const auto field :
        {"channels",
         "delayMinSamples",
@@ -694,7 +695,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
         "mix",
         "matrix",
         "decayMargin",
-        "tailBudgetSamples"}) {
+        "tailBudgetSamples",
+        "blockSizeBoundSamples"}) {
     requireField(value, field, path);
   }
 
@@ -738,6 +740,9 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
   loop.tailBudgetSamples = parseUnsigned64(
       value.at("tailBudgetSamples"),
       std::string(path) + "/tailBudgetSamples");
+  loop.blockSizeBoundSamples = parseUnsigned64(
+      value.at("blockSizeBoundSamples"),
+      std::string(path) + "/blockSizeBoundSamples");
   return loop;
 }
 

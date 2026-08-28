@@ -86,6 +86,10 @@ struct ResolvedFeedbackLoop {
   // Resolved upper bound on frames rendered past input EOF, derived from
   // rt60Sec and decayMargin (see CONTEXT.md's Tail budget entry).
   std::uint64_t tailBudgetSamples = 0;
+  // Resolved upper bound on the legal block size: the shortest resolved
+  // per-Channel delay, in samples (see CONTEXT.md's Block-size bound
+  // entry).
+  std::uint64_t blockSizeBoundSamples = 0;
 };
 
 struct ResolvedDownmix {

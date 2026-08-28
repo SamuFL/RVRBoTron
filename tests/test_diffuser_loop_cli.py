@@ -125,6 +125,8 @@ def main():
     )
 
     loop_only_result = workspace / "loop-only-result"
+    # Resolved delays here are 48/96 samples, below the default 512-frame
+    # block size, so a legal --block-size (#53) must be requested explicitly.
     run_ok(
         renderer,
         "--input",
@@ -133,6 +135,8 @@ def main():
         loop_only_path,
         "--output",
         loop_only_result,
+        "--block-size",
+        "32",
     )
     result = workspace / "result"
     run_ok(
@@ -143,6 +147,8 @@ def main():
         diffuser_loop_path,
         "--output",
         result,
+        "--block-size",
+        "32",
     )
 
     channels, sample_rate, bits, samples = read_float_wav(result / "output.wav")
@@ -178,6 +184,7 @@ def main():
         "rt60Sec",
         "decayMargin",
         "tailBudgetSamples",
+        "blockSizeBoundSamples",
         "gains",
         "mix",
         "matrix",
@@ -219,6 +226,8 @@ def main():
         result / "resolved.json",
         "--output",
         rerendered,
+        "--block-size",
+        "32",
     )
     if (rerendered / "output.wav").read_bytes() != (result / "output.wav").read_bytes():
         raise AssertionError("resolved rerender changed Diffuser-into-loop output")

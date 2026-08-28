@@ -84,6 +84,10 @@ _Avoid_: Tail length
 The resolved upper bound on the frames a render writes after its input ends, derived from RT60.
 _Avoid_: Tail length, drain length, finite response
 
+**Block-size bound**:
+The resolved upper bound on legal block size, derived from the Feedback Loop's shortest resolved per-Channel delay.
+_Avoid_: Maximum block size, buffer size limit
+
 **Correlation**:
 The normalized zero-lag dot product between Channel signals: 1.0 identical, -1.0 polarity-inverted, and 0.0 linearly independent at zero lag.
 _Avoid_: Alignment

@@ -691,6 +691,8 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
         static_cast<double>(delay) * 1000.0 / sampleRate);
     loop.bufferSizes.push_back(delay);
   }
+  loop.blockSizeBoundSamples = *std::min_element(
+      loop.delaysSamples.begin(), loop.delaysSamples.end());
 
   loop.gains.reserve(channels);
   for (std::uint32_t channel = 0; channel < channels; ++channel) {
@@ -1323,6 +1325,19 @@ void validateFeedbackLoopStage(
   requireChannelValues(feedbackLoop.delaysMs.size(), "/delaysMs");
   requireChannelValues(feedbackLoop.bufferSizes.size(), "/bufferSizes");
   requireChannelValues(feedbackLoop.gains.size(), "/gains");
+
+  const auto expectedBlockSizeBound = *std::min_element(
+      feedbackLoop.delaysSamples.begin(), feedbackLoop.delaysSamples.end());
+  if (feedbackLoop.blockSizeBoundSamples != expectedBlockSizeBound) {
+    fail(
+        path + "/blockSizeBoundSamples",
+        "expected the minimum of the resolved per-Channel delays");
+  }
+  if (feedbackLoop.blockSizeBoundSamples == 0) {
+    fail(
+        path + "/blockSizeBoundSamples",
+        "expected value greater than zero");
+  }
 
   auto sortedDelays = feedbackLoop.delaysSamples;
   std::sort(sortedDelays.begin(), sortedDelays.end());
