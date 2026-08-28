@@ -46,13 +46,17 @@ Validation is total: every rejection names the offending parameter and why. A re
 
 ### Ordered stage data
 
-`composition.stages` is an ordered array of typed stage objects. Format version 1 preserves the empty array as the exact identity Composition established by the first milestone. For finite diffusion, the valid shapes are:
+`composition.stages` is an ordered array of typed stage objects. Format version 1 preserves the empty array as the exact identity Composition established by the first milestone. The valid shapes are:
 
 ```text
 []
 [split, downmix]
 [split, diffuser, downmix]
+[split, feedback-loop, downmix]
+[split, diffuser, feedback-loop, downmix]
 ```
+
+A Feedback Loop sits in series after a Diffuser and never inside it, so the four-stage shape only ever admits that one middle order.
 
 Impossible ordering or signal dimensions are rejected rather than repaired implicitly. Stage objects use the `type` discriminator and do not require user-authored IDs while each type is unique in the Composition.
 
@@ -118,7 +122,7 @@ Reverb           : owns the stages, built from ResolvedConfig
 
 **Research evidence stays outside sonic configuration.** `--capture-stages all` is a renderer option recorded in `render.json`, not part of Requested or Resolved Configuration. It writes manifested multi-Channel Stage captures through an optional capture-sink seam on `Reverb`; see [ADR-0003](../../../adr/0003-capture-internal-stage-evidence.md).
 
-**Finite response is drained automatically.** The renderer feeds silence for the resolved total Diffuser sample budget after source EOF. `render.json` keeps `frames` as output length and adds `inputFrames`; Stage captures share the final output timeline.
+**Total drain is authorised automatically.** The renderer feeds silence for the resolved Tail budget after source EOF: a Diffuser's own finite response, a Feedback Loop's Tail budget, or their sum when a Diffuser and a Feedback Loop are both present. `render.json` keeps `frames` as output length and adds `inputFrames`; Stage captures share the final output timeline.
 
 ---
 

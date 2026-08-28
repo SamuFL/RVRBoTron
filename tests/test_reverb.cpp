@@ -306,6 +306,62 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
 }
 
+// Same seed as resolvedFeedbackLoopConfig above, and the same Feedback Loop
+// parameters, but with a Diffuser placed in front -- so a direct comparison
+// between the two configs' resolved Feedback Loop stages proves loop time
+// is unaffected by the Diffuser (#55).
+rvrbotron::dsp::ResolvedConfig resolvedDiffuserThenLoopConfig(
+    const std::uint32_t channels,
+    const double rt60Sec,
+    const double delayMinMs,
+    const double delayMaxMs,
+    const rvrbotron::dsp::MixMatrixType mix =
+        rvrbotron::dsp::MixMatrixType::householder,
+    const rvrbotron::dsp::DelayStrategy delayStrategy =
+        rvrbotron::dsp::DelayStrategy::even,
+    const std::uint32_t sampleRate = 48000) {
+  rvrbotron::config::SplitConfig split;
+  split.channels = channels;
+  split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+  split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::DiffusionStepConfig step;
+  step.delayStrategy = rvrbotron::dsp::DelayStrategy::segmentedRandom;
+  step.mix = rvrbotron::dsp::MixMatrixType::hadamard;
+  step.shuffle = true;
+  step.polarity = rvrbotron::dsp::PolarityStrategy::seededRandom;
+
+  rvrbotron::config::DiffuserConfig diffuser;
+  diffuser.steps = 2;
+  diffuser.totalMs = 2.0;
+  diffuser.distribution = rvrbotron::config::DiffusionDistribution::even;
+  diffuser.step = step;
+
+  rvrbotron::config::FeedbackLoopConfig loop;
+  loop.delayMinMs = delayMinMs;
+  loop.delayMaxMs = delayMaxMs;
+  loop.delayStrategy = delayStrategy;
+  loop.rt60Sec = rt60Sec;
+  loop.mix = mix;
+
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::CompositionConfig composition;
+  composition.stagesSpecified = true;
+  composition.stages.emplace_back(split);
+  composition.stages.emplace_back(diffuser);
+  composition.stages.emplace_back(loop);
+  composition.stages.emplace_back(downmix);
+
+  rvrbotron::config::ReverbConfig requested;
+  requested.formatVersion = 1;
+  requested.seed = 0x9e3779b97f4a7c15ULL;
+  requested.composition = std::move(composition);
+  return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
+}
+
 bool reverbDiffusionStepIsAllPass(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -1261,6 +1317,156 @@ int main() {
            "capacity: "
         << (enlargedLoopBytes - baselineLoopBytes) << " != "
         << expectedLoopDelta << '\n';
+    return 1;
+  }
+
+  // Diffuser-into-loop chain (#55): [split, diffuser, feedback-loop,
+  // downmix]. Same seed and same Feedback Loop parameters as decayConfig
+  // above, so the loop's own resolved delays/gains/matrix can be compared
+  // directly against it.
+  const auto diffuserLoopConfig = resolvedDiffuserThenLoopConfig(
+      decayChannels,
+      requestedRt60Sec,
+      5.0,
+      10.0,
+      rvrbotron::dsp::MixMatrixType::householder,
+      rvrbotron::dsp::DelayStrategy::even,
+      decaySampleRate);
+  const auto& diffuserLoopStage =
+      std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+          diffuserLoopConfig.composition.stages[2]);
+
+  // Loop time for a Channel remains that Channel's own feedback delay,
+  // unaffected by Diffuser settings: the loop's resolved values are
+  // identical whether or not a Diffuser precedes it.
+  if (diffuserLoopStage.delaysSamples != decayLoopStage.delaysSamples ||
+      diffuserLoopStage.gains != decayLoopStage.gains ||
+      diffuserLoopStage.matrix != decayLoopStage.matrix) {
+    std::cerr << "Feedback Loop's own resolved values changed when a "
+                 "Diffuser was placed in front of it\n";
+    return 1;
+  }
+
+  // Total drain is the Diffuser's own finite response plus the loop's Tail
+  // budget.
+  const auto& diffuserLoopDiffuserStage =
+      std::get<rvrbotron::dsp::ResolvedDiffuser>(
+          diffuserLoopConfig.composition.stages[1]);
+  rvrbotron::dsp::Reverb diffuserLoopReverb(diffuserLoopConfig);
+  const auto expectedCombinedTail = diffuserLoopDiffuserStage.totalSamples +
+      diffuserLoopStage.tailBudgetSamples;
+  if (diffuserLoopReverb.tailBudgetFrames() != expectedCombinedTail) {
+    std::cerr << "Diffuser-into-loop Tail budget was not the Diffuser's "
+                 "finite response plus the loop's Tail budget: "
+              << diffuserLoopReverb.tailBudgetFrames()
+              << " != " << expectedCombinedTail << '\n';
+    return 1;
+  }
+  if (diffuserLoopDiffuserStage.totalSamples >=
+      *std::min_element(
+          decayLoopStage.delaysSamples.begin(),
+          decayLoopStage.delaysSamples.end())) {
+    std::cerr << "Diffuser-into-loop fixture's Diffuser response is not "
+                 "shorter than the loop's fastest delay, which the Echo "
+                 "density comparison below assumes\n";
+    return 1;
+  }
+
+  const auto diffuserLoopFrameCount =
+      static_cast<std::size_t>(diffuserLoopReverb.tailBudgetFrames()) + 1;
+  std::vector<rvrbotron::dsp::Sample> diffuserLoopInput(
+      diffuserLoopFrameCount, rvrbotron::dsp::Sample{0});
+  diffuserLoopInput[0] = 1.0F;
+  std::vector<rvrbotron::dsp::Sample> diffuserLoopLeft(diffuserLoopFrameCount);
+  std::vector<rvrbotron::dsp::Sample> diffuserLoopRight(
+      diffuserLoopFrameCount);
+  const rvrbotron::dsp::Sample* diffuserLoopInputs[]{
+      diffuserLoopInput.data()};
+  rvrbotron::dsp::Sample* diffuserLoopOutputs[]{
+      diffuserLoopLeft.data(), diffuserLoopRight.data()};
+  beginAllocationCount();
+  diffuserLoopReverb.process(
+      diffuserLoopInputs, 1, diffuserLoopOutputs, 2, diffuserLoopFrameCount);
+  const auto diffuserLoopAllocations = endAllocationCount();
+  if (diffuserLoopAllocations != 0) {
+    std::cerr << "Diffuser-into-loop Reverb allocated while processing\n";
+    return 1;
+  }
+
+  // Comparable decay time: the same two-window energy measurement used for
+  // the loop-only fixture above, at the same guard/window/separation, must
+  // land within the same requested-RT60 tolerance -- and close to the
+  // loop-only fixture's own implied RT60.
+  if (diffuserLoopFrameCount < decayGuard + decaySeparation + decayWindow) {
+    std::cerr << "Diffuser-into-loop fixture Tail budget is too short for "
+                 "this test\n";
+    return 1;
+  }
+  const auto diffuserLoopWindowEnergy = [&](const std::size_t start,
+                                            const std::size_t length) {
+    double energy = 0.0;
+    for (std::size_t frame = start; frame < start + length; ++frame) {
+      const auto l = static_cast<double>(diffuserLoopLeft[frame]);
+      const auto r = static_cast<double>(diffuserLoopRight[frame]);
+      energy += l * l + r * r;
+    }
+    return energy;
+  };
+  const auto diffuserLoopEnergyA =
+      diffuserLoopWindowEnergy(decayGuard, decayWindow);
+  const auto diffuserLoopEnergyB =
+      diffuserLoopWindowEnergy(decayGuard + decaySeparation, decayWindow);
+  if (!(diffuserLoopEnergyA > 0.0) || !(diffuserLoopEnergyB > 0.0) ||
+      diffuserLoopEnergyB >= diffuserLoopEnergyA) {
+    std::cerr << "Diffuser-into-loop tail did not decay monotonically "
+                 "between windows\n";
+    return 1;
+  }
+  const auto diffuserLoopDbDrop =
+      10.0 * std::log10(diffuserLoopEnergyA / diffuserLoopEnergyB);
+  const auto impliedDiffuserLoopRt60 =
+      60.0 * decayDeltaTSeconds / diffuserLoopDbDrop;
+  if (std::abs(impliedDiffuserLoopRt60 - requestedRt60Sec) >
+      0.05 * requestedRt60Sec) {
+    std::cerr << "Diffuser-into-loop decay accuracy outside +-5%: implied "
+              << impliedDiffuserLoopRt60 << "s vs requested "
+              << requestedRt60Sec << "s\n";
+    return 1;
+  }
+  if (std::abs(impliedDiffuserLoopRt60 - impliedRt60) >
+      0.05 * requestedRt60Sec) {
+    std::cerr << "Diffuser-into-loop decay time was not comparable to the "
+                 "loop-only decay time at the same rt60Sec: "
+              << impliedDiffuserLoopRt60 << "s vs " << impliedRt60 << "s\n";
+    return 1;
+  }
+
+  // Materially different Echo density: count distinct nonzero-arrival
+  // frames within the same early window used for the stability sweep above
+  // (well past both fixtures' first delay-tap return). The loop-only
+  // render can only produce one arrival per Channel per period, from each
+  // Channel's own single delayed impulse; the Diffuser's dense response
+  // recirculating through the same loop produces many more.
+  const auto countArrivals = [](const auto& left, const auto& right,
+                                const std::size_t start,
+                                const std::size_t length) {
+    std::size_t arrivals = 0;
+    for (std::size_t frame = start; frame < start + length; ++frame) {
+      if (left[frame] != rvrbotron::dsp::Sample{0} ||
+          right[frame] != rvrbotron::dsp::Sample{0}) {
+        ++arrivals;
+      }
+    }
+    return arrivals;
+  };
+  const auto loopOnlyArrivals =
+      countArrivals(decayLeft, decayRight, decayGuard, decayWindow);
+  const auto diffuserLoopArrivals = countArrivals(
+      diffuserLoopLeft, diffuserLoopRight, decayGuard, decayWindow);
+  if (diffuserLoopArrivals < 2 * loopOnlyArrivals) {
+    std::cerr << "Diffuser-into-loop Echo density was not materially "
+                 "greater than the loop-only render's: "
+              << diffuserLoopArrivals << " vs " << loopOnlyArrivals << '\n';
     return 1;
   }
 
