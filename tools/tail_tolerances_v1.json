@@ -1,0 +1,58 @@
+{
+  "formatVersion": 1,
+  "rationale": "PROVISIONAL: schema-complete placeholders for the tail-equivalence workflow (#58), not yet reviewed against real cross-platform CI evidence. Per docs/adr/0001-cross-platform-reproducibility.md, tolerances are only tightened after reviewing float and double evidence from every supported CI architecture (macOS arm64, macOS Intel, Windows x86_64) for the compact tail CI tracer (tests/test_tail_equivalence_cli.py); each committed value must then state its own observed delta and measured headroom, mirroring diffusion_tolerances_v1.json's issue #37 precedent. These placeholders are deliberately generous so the workflow itself is exercised without masking a real divergence before that review happens.",
+  "byPrecision": {
+    "float32": {
+      "nonFiniteSampleCount": {
+        "absoluteTolerance": 0,
+        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta, mirroring diffusion's alignmentMinimum/alignmentMean precedent -- a non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation. To be reviewed against real CI evidence."
+      },
+      "decayRt60Sec": {
+        "absoluteTolerance": 0.01,
+        "rationale": "PROVISIONAL placeholder covering every octave band's T20/T30 RT60 estimate (seconds). Schroeder integration, octave-band FFT filtering, and linear regression all run in NumPy float64 regardless of DSP sample precision, so cross-platform drift is expected to resemble diffusion's Coloration entries (1e-16-to-1e-15 scale) rather than this placeholder's 0.01s headroom. To be tightened after reviewing real CI evidence."
+      },
+      "alignmentScore": {
+        "absoluteTolerance": 0.0,
+        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta, mirroring diffusion's alignmentMinimum/alignmentMean precedent -- Alignment is a discrete Jaccard overlap of active-frame sets, not a floating-point accumulation. To be reviewed against real CI evidence."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder. diffusion_tolerances_v1.json committed 1e-12 here after observing a 2.66e-15 real delta; reusing the same FFT/dB code path, so tail's value is expected to land in the same range once reviewed against real CI evidence."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder; see colorationPeakToPeakDb. diffusion_tolerances_v1.json committed 1e-13 here after observing a 9.36e-16 real delta."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder; see colorationPeakToPeakDb. diffusion_tolerances_v1.json committed 1e-14 here after observing a 1.11e-16 real delta."
+      }
+    },
+    "float64": {
+      "nonFiniteSampleCount": {
+        "absoluteTolerance": 0,
+        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta; see the float32 entry. To be reviewed against real CI evidence."
+      },
+      "decayRt60Sec": {
+        "absoluteTolerance": 0.01,
+        "rationale": "PROVISIONAL placeholder; see the float32 entry. To be tightened after reviewing real CI evidence."
+      },
+      "alignmentScore": {
+        "absoluteTolerance": 0.0,
+        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta; see the float32 entry. To be reviewed against real CI evidence."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-12 here after observing a 7.11e-15 real delta."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-13 here after observing a 4.44e-16 real delta."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-14 here after observing a 2.22e-16 real delta."
+      }
+    }
+  }
+}
