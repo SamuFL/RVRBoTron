@@ -209,3 +209,16 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio
     ${CMAKE_CURRENT_BINARY_DIR}/diffusion-catalog-contract
 )
+
+add_test(
+  NAME tail_sweep_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_tail_sweep_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/run_tail_sweep.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_SOURCE_DIR}/tools/analyze_tail.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/tail-sweep-contract
+)
