@@ -61,11 +61,26 @@ def load_catalog(path: Path):
     for field in ("reference", "axes"):
         if field not in document:
             raise CatalogError(f"catalog is missing required field: {field}")
-    names = [axis["name"] for axis in document["axes"]]
+
+    names = []
+    for axis in document["axes"]:
+        for field in ("name", "values"):
+            if field not in axis:
+                raise CatalogError(f"axis is missing required field {field!r}: {axis}")
+        names.append(axis["name"])
     if len(names) != len(set(names)):
         raise CatalogError("catalog contains duplicate axis names")
+
     for axis in document["axes"]:
-        labels = [value["label"] for value in axis["values"]]
+        labels = []
+        for value in axis["values"]:
+            for field in ("label", "overrides"):
+                if field not in value:
+                    raise CatalogError(
+                        f"axis {axis['name']!r} has a value missing required "
+                        f"field {field!r}: {value}"
+                    )
+            labels.append(value["label"])
         if len(labels) != len(set(labels)):
             raise CatalogError(
                 f"axis {axis['name']!r} contains duplicate value labels"
@@ -82,7 +97,9 @@ def sample_unavailable_reason(sample: Path):
     of pointer text rather than audio)."""
     if not sample.exists():
         return f"listening sample not present locally (needs `git lfs pull`): {sample}"
-    if sample.read_bytes()[: len(_LFS_POINTER_PREFIX)] == _LFS_POINTER_PREFIX:
+    with sample.open("rb") as handle:
+        prefix = handle.read(len(_LFS_POINTER_PREFIX))
+    if prefix == _LFS_POINTER_PREFIX:
         return (
             f"listening sample is an unpulled Git LFS pointer, not audio "
             f"(needs `git lfs pull`): {sample}"
@@ -97,8 +114,13 @@ def matching_impulse(sample, mono_impulse, stereo_impulse):
     than silently mixing channel counts -- so the matching fixture is
     selected from the sample's own Channel count, mirroring
     run_diffusion_catalog.py's mono/stereo source pairing."""
-    with wave.open(str(sample), "rb") as wav:
-        channels = wav.getnchannels()
+    try:
+        with wave.open(str(sample), "rb") as wav:
+            channels = wav.getnchannels()
+    except (wave.Error, EOFError) as error:
+        raise CatalogError(
+            f"listening sample is not a readable WAV file: {sample} ({error})"
+        ) from error
     if channels == 1:
         return mono_impulse
     if channels == 2:

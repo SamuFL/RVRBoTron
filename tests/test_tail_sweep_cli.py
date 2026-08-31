@@ -159,6 +159,50 @@ def main():
     if output_dir.exists():
         raise AssertionError("a skipped (LFS pointer) sweep unexpectedly created output")
 
+    # A sample that exists locally but is not a readable WAV file fails
+    # cleanly with an explanatory message, not an unhandled traceback.
+    invalid_wav = workspace / "invalid.wav"
+    invalid_wav.write_bytes(b"not a wav file at all")
+    invalid = run_sweep(invalid_wav)
+    if invalid.returncode != 1:
+        raise AssertionError(f"invalid WAV sample should fail cleanly: {invalid.stdout}")
+    if "Traceback" in invalid.stderr:
+        raise AssertionError(f"invalid WAV sample crashed instead of failing cleanly: {invalid.stderr}")
+    if "not a readable WAV file" not in invalid.stderr:
+        raise AssertionError(f"invalid WAV sample was not explained: {invalid.stderr}")
+
+    # A malformed catalog (an axis missing a required field) fails with a
+    # descriptive message naming the field, not a bare KeyError.
+    malformed_catalog = dict(tracer_catalog)
+    malformed_catalog["axes"] = [{"values": []}]
+    malformed_catalog_path = workspace / "malformed-sweep.json"
+    malformed_catalog_path.write_text(json.dumps(malformed_catalog))
+    malformed = run(
+        sys.executable,
+        runner,
+        "--catalog",
+        malformed_catalog_path,
+        "--renderer",
+        renderer,
+        "--analyzer",
+        analyzer,
+        "--sample",
+        fixture,
+        "--mono-impulse",
+        fixture,
+        "--stereo-impulse",
+        stereo_fixture,
+        "--output",
+        output_dir,
+    )
+    if malformed.returncode != 1:
+        raise AssertionError(f"malformed catalog should fail cleanly: {malformed.stdout}")
+    if "missing required field" not in malformed.stderr or "'name'" not in malformed.stderr:
+        raise AssertionError(
+            f"malformed catalog surfaced a bare KeyError instead of a "
+            f"descriptive message naming the field: {malformed.stderr}"
+        )
+
     # A real (tracer) sample sweeps every point.
     first = run_sweep(fixture)
     if first.returncode != 0:

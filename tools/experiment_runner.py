@@ -165,8 +165,11 @@ def render_from_resolved(renderer, source, resolved_path, output_dir, block_size
     """Renders a different source against an already-resolved Configuration
     rather than a Requested Configuration, guaranteeing byte-identical DSP
     parameters (delays, gains, matrices) regardless of the two sources'
-    differing content or Channel count -- the pattern a catalog uses to pair
-    a deterministic impulse with the sample it accompanies."""
+    differing content -- the pattern a catalog uses to pair a deterministic
+    impulse with the sample it accompanies. The new source's Channel count
+    must still match the resolved Split's inputChannels exactly; the caller
+    is responsible for picking a source with the right Channel count (see
+    run_tail_sweep.py's matching_impulse)."""
     extra_flags = [] if block_size is None else ["--block-size", block_size]
     return _render(
         renderer, source, output_dir, "--resolved", resolved_path, extra_flags
