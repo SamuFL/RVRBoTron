@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -90,6 +91,16 @@ struct ResolvedFeedbackLoop {
   // per-Channel delay, in samples (see CONTEXT.md's Block-size bound
   // entry).
   std::uint64_t blockSizeBoundSamples = 0;
+  // The runtime silence-floor seam for the eventual plugin's idle behaviour
+  // (see docs/design/reverb/stages/04-feedback-loop.md and issue #54).
+  // Disabled (nullopt) by default: the feedback write path's denormal
+  // flush stays at a purely numerical threshold, so output is bit-identical
+  // to a build without this field. Enabling it -- deferred past this
+  // milestone -- would raise the flush to an audible threshold and let the
+  // drain terminate early, which changes rendered samples and is therefore
+  // a versioned Resolved Configuration value rather than an implementation
+  // detail.
+  std::optional<double> silenceFloorDb;
 };
 
 struct ResolvedDownmix {

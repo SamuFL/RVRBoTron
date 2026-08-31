@@ -3,10 +3,31 @@
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
 namespace rvrbotron::dsp {
+namespace {
+
+// Explicit, portable denormal flush for the feedback write path (see
+// docs/design/reverb/stages/04-feedback-loop.md and issue #54): a long
+// decaying tail must not stall on denormals, but a CPU flush-to-zero mode
+// would be platform-specific behaviour inside the DSP, in conflict with the
+// cross-platform equivalence tolerances already committed (ADR-0001). A
+// plain magnitude comparison against the smallest normal value is
+// deterministic and identical on every supported platform instead. This is
+// unconditional and independent of the still-dormant `silenceFloorDb` seam
+// (see ResolvedConfig.h), which will one day raise the flush to an audible
+// threshold rather than merely a numerically clean one.
+constexpr Sample kDenormalFlushThreshold =
+    std::numeric_limits<Sample>::min();
+
+Sample flushDenormal(const Sample value) noexcept {
+  return std::abs(value) < kDenormalFlushThreshold ? Sample{0} : value;
+}
+
+} // namespace
 
 FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     : channels_(config.delaysSamples.size()),
@@ -81,7 +102,8 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
     }
     const auto storageIndex =
         delayOffsets_[channel] + delayPositions_[channel];
-    delayStorage_[storageIndex] = inputs[channel] + fedBack_[channel];
+    delayStorage_[storageIndex] =
+        flushDenormal(inputs[channel] + fedBack_[channel]);
     delayPositions_[channel] = (delayPositions_[channel] + 1) % delay;
   }
 }

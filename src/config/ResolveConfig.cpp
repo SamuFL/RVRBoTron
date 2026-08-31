@@ -612,6 +612,9 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
       requested.delayMinMs.value_or(kDefaultFeedbackLoopDelayMinMs);
   loop.delayMaxMs =
       requested.delayMaxMs.value_or(kDefaultFeedbackLoopDelayMaxMs);
+  // Disabled by default (nullopt); there is no numeric default to fall
+  // back to since "disabled" is the Reference configuration itself (#54).
+  loop.silenceFloorDb = requested.silenceFloorDb;
 
   if (sampleRate != 0 && loop.rt60Sec > 0.0 &&
       std::isfinite(loop.rt60Sec) && loop.decayMargin > 0.0 &&
@@ -1276,6 +1279,10 @@ void validateFeedbackLoopStage(
     fail(
         path + "/decayMargin",
         "expected finite value greater than zero");
+  }
+  if (feedbackLoop.silenceFloorDb.has_value() &&
+      !std::isfinite(*feedbackLoop.silenceFloorDb)) {
+    fail(path + "/silenceFloorDb", "expected a finite value when present");
   }
   const auto tailBudgetExact = static_cast<long double>(
                                    feedbackLoop.rt60Sec) *

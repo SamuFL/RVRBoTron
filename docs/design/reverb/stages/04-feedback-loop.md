@@ -66,7 +66,8 @@ Unequal long delays, circulated repeatedly, leave each channel holding a differe
   "delayStrategy": "segmented-random",
   "rt60Sec": 2.4,
   "mix": "householder",
-  "gainMode": "per-channel"
+  "gainMode": "per-channel",
+  "silenceFloorDb": null
 }
 ```
 
@@ -77,6 +78,7 @@ Unequal long delays, circulated repeatedly, leave each channel holding a differe
 | `rt60Sec` | > 0 | Requested decay; solved into gain at configuration. |
 | `mix` | `householder` / `hadamard` / `random-orthogonal` | |
 | `gainMode` | `per-channel` / `uniform` | |
+| `silenceFloorDb` | dB, or disabled (default) | Runtime idle-behaviour seam; see below. Dormant until a later milestone enables it. |
 
 **RT60 is defined at the reference band.** Once Stage 5 adds a shelf inside the loop, high frequencies decay faster by design; `rt60Sec` refers to the undamped band and damping describes deviation from it. Without this convention the two stages fight over the same number.
 
@@ -99,6 +101,10 @@ FeedbackLoop
 
 **Modulation perturbs RT60.** Stage 6 varies delay lengths at runtime, so gains solved against nominal lengths become approximate — negligible at realistic depths, not at extreme ones. Recorded rather than corrected.
 
+**The tail is kept numerically clean by an explicit flush, not a CPU mode.** Every feedback write is compared against the smallest normal magnitude for the build's `Sample` type and zeroed below it. A CPU flush-to-zero mode would be platform-specific behavior inside the DSP, in conflict with the Cross-platform equivalence tolerances committed in [ADR-0001](../../../adr/0001-cross-platform-reproducibility.md); a plain comparison against a portable, deterministic constant instead cannot make supported platforms disagree. This flush is unconditional — always at the numerical floor — and independent of `silenceFloorDb` below.
+
+**`silenceFloorDb` is the designed-in seam for runtime idle behavior, dormant here.** A plugin host has no input EOF and no drain to authorize; what it needs instead is a way to decide a tail has gone quiet enough to stop processing. `silenceFloorDb`, carried in the Resolved Configuration, is that seam: disabled (the default, `null`) leaves the write-path flush at its numerical floor, so a render is bit-identical to a build without the field at all. A future milestone may raise the flush to this audible threshold and let a drain terminate early once every Channel is below it — at that point the field starts changing rendered samples, which is exactly why it lives in the *Resolved* Configuration rather than as an implementation constant: a value that can change output belongs in the versioned, reproducible record, not hidden inside the DSP.
+
 ---
 
 ## Invariants
@@ -108,6 +114,8 @@ FeedbackLoop
 - **Energy is lost deliberately.** The only stage that does not claim all-pass, and says so explicitly.
 - **Uniform decay across channels** under `gainMode: per-channel`.
 - **Unaligned output.** Echo times differ across channels.
+- **No sub-normal persists.** A feedback-path magnitude is either exactly zero or at least the smallest normal value for the build's `Sample` type; never a denormal in between.
+- **Identity while `silenceFloorDb` is disabled.** Output is bit-identical to a build without the field.
 
 ---
 

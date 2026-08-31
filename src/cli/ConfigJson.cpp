@@ -8,6 +8,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -106,6 +107,15 @@ double parseNumber(const Json& value, const std::string_view path) {
     fail(path, "expected finite number");
   }
   return number;
+}
+
+std::optional<double> parseOptionalNumber(
+    const Json& value,
+    const std::string_view path) {
+  if (value.is_null()) {
+    return std::nullopt;
+  }
+  return parseNumber(value, path);
 }
 
 std::vector<double> parseNumberArray(
@@ -402,7 +412,8 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
        "delayStrategy",
        "rt60Sec",
        "decayMargin",
-       "mix"});
+       "mix",
+       "silenceFloorDb"});
   config::FeedbackLoopConfig loop;
   if (value.contains("delayMinMs")) {
     loop.delayMinMs = parseNumber(
@@ -426,6 +437,11 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
   }
   if (value.contains("mix")) {
     loop.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
+  }
+  if (value.contains("silenceFloorDb") &&
+      !value.at("silenceFloorDb").is_null()) {
+    loop.silenceFloorDb = parseNumber(
+        value.at("silenceFloorDb"), std::string(path) + "/silenceFloorDb");
   }
   return loop;
 }
@@ -679,7 +695,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
        "matrix",
        "decayMargin",
        "tailBudgetSamples",
-       "blockSizeBoundSamples"});
+       "blockSizeBoundSamples",
+       "silenceFloorDb"});
   for (const auto field :
        {"channels",
         "delayMinSamples",
@@ -696,7 +713,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
         "matrix",
         "decayMargin",
         "tailBudgetSamples",
-        "blockSizeBoundSamples"}) {
+        "blockSizeBoundSamples",
+        "silenceFloorDb"}) {
     requireField(value, field, path);
   }
 
@@ -743,6 +761,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
   loop.blockSizeBoundSamples = parseUnsigned64(
       value.at("blockSizeBoundSamples"),
       std::string(path) + "/blockSizeBoundSamples");
+  loop.silenceFloorDb = parseOptionalNumber(
+      value.at("silenceFloorDb"), std::string(path) + "/silenceFloorDb");
   return loop;
 }
 

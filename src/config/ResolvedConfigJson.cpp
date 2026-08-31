@@ -157,6 +157,9 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
       {"decayMargin", loop.decayMargin},
       {"tailBudgetSamples", loop.tailBudgetSamples},
       {"blockSizeBoundSamples", loop.blockSizeBoundSamples},
+      {"silenceFloorDb",
+       loop.silenceFloorDb.has_value() ? Json(*loop.silenceFloorDb)
+                                        : Json(nullptr)},
   };
 }
 

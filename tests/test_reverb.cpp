@@ -1525,5 +1525,80 @@ int main() {
     return 1;
   }
 
+  // Denormal flush (#54): an explicit threshold flush in the feedback write
+  // path guarantees a sub-normal magnitude never persists in the delay
+  // line, independent of the still-dormant silenceFloorDb seam. A
+  // one-Channel, one-sample-delay fixture with a slow decay (gain close to
+  // but below one) spends thousands of frames in the target range instead
+  // of skipping past it in one step, so the flush's own boundary is
+  // genuinely exercised rather than merely reached at the end.
+  {
+    constexpr std::uint32_t denormalSampleRate = 48000;
+    constexpr double denormalDelayMs = 1000.0 / denormalSampleRate;
+    // Solves to gain ~= 0.99 at the resolved one-sample loop time.
+    constexpr double denormalRt60Sec = 0.01432;
+    const auto denormalConfig = resolvedFeedbackLoopConfig(
+        1,
+        denormalRt60Sec,
+        denormalDelayMs,
+        denormalDelayMs,
+        rvrbotron::dsp::MixMatrixType::householder,
+        rvrbotron::dsp::DelayStrategy::even,
+        denormalSampleRate);
+    const auto& denormalLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            denormalConfig.composition.stages[1]);
+    if (denormalLoopStage.delaysSamples != std::vector<std::uint64_t>{1}) {
+      std::cerr
+          << "Denormal-flush fixture did not resolve to a single-sample "
+             "delay\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::FeedbackLoop denormalLoop(denormalLoopStage);
+    // Comfortably past the frame at which both float and double Sample
+    // reach the smallest normal magnitude at this gain (~8.7k frames for
+    // float, ~70.5k for double).
+    constexpr std::size_t denormalFrames = 200000;
+    std::vector<rvrbotron::dsp::Sample> denormalInput(
+        denormalFrames, rvrbotron::dsp::Sample{0});
+    denormalInput[0] = 1.0F;
+    rvrbotron::dsp::Sample outputFrame{};
+    const auto denormalThreshold = static_cast<double>(
+        std::numeric_limits<rvrbotron::dsp::Sample>::min());
+    bool sawNearThresholdMagnitude = false;
+    beginAllocationCount();
+    for (std::size_t frame = 0; frame < denormalFrames; ++frame) {
+      denormalLoop.processFrame(&denormalInput[frame], &outputFrame);
+      const auto magnitude = std::abs(static_cast<double>(outputFrame));
+      if (magnitude != 0.0 && magnitude < denormalThreshold) {
+        std::cerr << "Feedback Loop let a sub-normal magnitude " << magnitude
+                  << " persist in the feedback path at frame " << frame
+                  << '\n';
+        return 1;
+      }
+      if (magnitude > 0.0 && magnitude < 1000.0 * denormalThreshold) {
+        sawNearThresholdMagnitude = true;
+      }
+    }
+    const auto denormalAllocations = endAllocationCount();
+    if (denormalAllocations != 0) {
+      std::cerr
+          << "Feedback Loop allocated while processing the denormal-flush "
+             "fixture\n";
+      return 1;
+    }
+    if (!sawNearThresholdMagnitude) {
+      std::cerr << "Denormal-flush fixture never decayed near the flush "
+                   "threshold, so the flush was not exercised\n";
+      return 1;
+    }
+    if (outputFrame != rvrbotron::dsp::Sample{0}) {
+      std::cerr << "Denormal-flush fixture did not reach exact zero after "
+                << denormalFrames << " frames\n";
+      return 1;
+    }
+  }
+
   return 0;
 }
