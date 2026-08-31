@@ -75,22 +75,19 @@ def _octave_band_gain(frequencies, low_hz, high_hz):
     return gain
 
 
-def octave_filtered(frames, sample_rate, low_hz, high_hz):
-    """Band-limit every Channel via FFT-domain shaping (the same approach
-    analyze_diffusion.py's twelfth-octave curve uses for a power sum,
-    applied here as a time-domain filter), zero-padded to the next power of
-    two beyond double the frame count so the filter is a linear rather than
-    a circular convolution -- otherwise the filter's own smearing wraps
-    around a finite-length render and inflates the measured decay."""
-    length = frames.shape[0]
-    fft_length = 1
-    while fft_length < 2 * length:
-        fft_length *= 2
-    spectrum = np.fft.rfft(frames, n=fft_length, axis=0)
-    frequencies = np.fft.rfftfreq(fft_length, d=1.0 / sample_rate)
+def _band_energy(spectrum, frequencies, fft_length, length, low_hz, high_hz):
+    """Apply one octave band's raised-cosine gain to an already-computed
+    rFFT spectrum (the same approach analyze_diffusion.py's twelfth-octave
+    curve uses for a power sum, applied here as a time-domain filter) and
+    inverse-transform, returning the per-sample energy summed across
+    Channels. The forward FFT is computed once per render by the caller and
+    reused across every band -- it dominates the cost of this filter, and
+    every band only differs in which bins its gain shape keeps."""
     gain = _octave_band_gain(frequencies, low_hz, high_hz)
-    filtered = np.fft.irfft(spectrum * gain[:, None], n=fft_length, axis=0)
-    return filtered[:length]
+    filtered = np.fft.irfft(spectrum * gain[:, None], n=fft_length, axis=0)[
+        :length
+    ]
+    return np.sum(filtered * filtered, axis=1)
 
 
 def schroeder_decay_curve(energy):
@@ -190,14 +187,25 @@ def decay_envelope_evidence(frames, sample_rate, tail_start_frame):
 
 def decay_evidence(frames, sample_rate, requested_rt60_sec):
     nyquist = sample_rate / 2.0
+    length = frames.shape[0]
+    # Zero-padded to the next power of two beyond double the frame count so
+    # every band's filter is a linear rather than a circular convolution --
+    # otherwise the filter's own smearing wraps around a finite-length
+    # render and inflates the measured decay. Computed once and reused
+    # across every band below, rather than once per band.
+    fft_length = 1
+    while fft_length < 2 * length:
+        fft_length *= 2
+    spectrum = np.fft.rfft(frames, n=fft_length, axis=0)
+    frequencies = np.fft.rfftfreq(fft_length, d=1.0 / sample_rate)
+
     bands = []
     for center in OCTAVE_BAND_CENTERS_HZ:
         low, high = octave_band_edges(center)
         if low >= nyquist:
             continue
         high = min(high, nyquist)
-        filtered = octave_filtered(frames, sample_rate, low, high)
-        energy = np.sum(filtered * filtered, axis=1)
+        energy = _band_energy(spectrum, frequencies, fft_length, length, low, high)
         bands.append(band_evidence(center, low, high, energy, sample_rate))
 
     reference = next(
@@ -321,6 +329,17 @@ def analyze(render_result, source_path):
     ):
         raise ValueError("render metadata does not match output.wav")
 
+    # output.wav must match what render.json itself claims regardless of
+    # silenceFloorDb -- a distinct failure from whether that claimed frame
+    # count actually respects the Tail budget, checked separately below so
+    # each failure names its own accurate cause.
+    if output["frameCount"] != metadata["frames"]:
+        raise ValueError(
+            "render metadata does not match output.wav: render.json claims "
+            f'{metadata["frames"]} frames, output.wav has '
+            f'{output["frameCount"]}'
+        )
+
     # Total drain is inputFrames + tailBudgetFrames (stage 09's automatic
     # drain, which already sums a Diffuser's finite response with the
     # Feedback Loop's Tail budget when both are present), so this analyzer
@@ -332,17 +351,18 @@ def analyze(render_result, source_path):
         # 04-feedback-loop.md): nothing yet drains early, but the check is
         # keyed off the Resolved Configuration so it needs no change once a
         # later milestone enables early termination.
-        if metadata["frames"] > expected_frames or output["frameCount"] != metadata["frames"]:
+        if metadata["frames"] > expected_frames:
             raise ValueError(
-                "render metadata does not stay within the Tail budget upper "
-                f"bound: expected at most {expected_frames} frames"
+                "render metadata exceeds the Tail budget upper bound: "
+                f'{metadata["frames"]} frames > {expected_frames}'
             )
         frame_count_check = "upper-bound"
     else:
-        if metadata["frames"] != expected_frames or output["frameCount"] != expected_frames:
+        if metadata["frames"] != expected_frames:
             raise ValueError(
                 "render metadata does not contain the complete Tail budget "
-                f"response: expected exactly {expected_frames} frames"
+                f"response: expected exactly {expected_frames} frames, got "
+                f'{metadata["frames"]}'
             )
         frame_count_check = "exact"
 

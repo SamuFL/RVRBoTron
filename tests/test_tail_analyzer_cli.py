@@ -4,10 +4,48 @@ import hashlib
 import json
 import math
 import shutil
+import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+def append_zero_tail_frames(path, count):
+    """Grow a canonical WAV's data chunk by `count` all-zero frames,
+    mirroring test_diffusion_analyzer_cli.py's truncate_zero_tail_frame in
+    reverse -- used to construct an output.wav whose frame count matches a
+    deliberately inflated render.json without touching real DSP output."""
+    contents = bytearray(path.read_bytes())
+    if contents[:4] != b"RIFF" or contents[8:12] != b"WAVE":
+        raise AssertionError(f"not a RIFF/WAVE file: {path}")
+
+    block_align = None
+    data_header = None
+    data_offset = None
+    data_size = None
+    offset = 12
+    while offset + 8 <= len(contents):
+        chunk_id = contents[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", contents, offset + 4)[0]
+        chunk_data = offset + 8
+        if chunk_id == b"fmt ":
+            block_align = struct.unpack_from("<H", contents, chunk_data + 12)[0]
+        elif chunk_id == b"data":
+            data_header = offset
+            data_offset = chunk_data
+            data_size = chunk_size
+            break
+        offset = chunk_data + chunk_size + chunk_size % 2
+
+    if None in (block_align, data_header, data_offset, data_size):
+        raise AssertionError(f"missing WAV format or data chunk: {path}")
+
+    zeros = bytes(block_align * count)
+    contents[data_offset + data_size : data_offset + data_size] = zeros
+    struct.pack_into("<I", contents, data_header + 4, data_size + len(zeros))
+    struct.pack_into("<I", contents, 4, len(contents) - 8)
+    path.write_bytes(contents)
 
 
 def run_renderer(renderer, request_path, output, block_size=32):
@@ -352,6 +390,55 @@ def main():
         raise AssertionError(
             f"silenceFloorEnabled was not reported: "
             f"{silence_floor_analysis['completeResponse']}"
+        )
+
+    # The frame-count check splits two distinct failures (review fix): a
+    # render.json that disagrees with output.wav's actual frame count fails
+    # on that mismatch, never blamed on the Tail budget.
+    mismatch_result = workspace / "silence-floor-mismatch-result"
+    shutil.copytree(silence_floor_result, mismatch_result)
+    mismatch_metadata_path = mismatch_result / "render.json"
+    mismatch_metadata = json.loads(mismatch_metadata_path.read_text())
+    mismatch_metadata["frames"] += 1
+    mismatch_metadata_path.write_text(json.dumps(mismatch_metadata))
+    mismatch_analyzed = run_analyzer(tail_analyzer, mismatch_result)
+    if mismatch_analyzed.returncode == 0:
+        raise AssertionError(
+            "tail analyzer accepted a render.json/output.wav frame-count "
+            "mismatch"
+        )
+    if "does not match output.wav" not in mismatch_analyzed.stderr:
+        raise AssertionError(f"unexpected mismatch failure: {mismatch_analyzed.stderr}")
+    if "Tail budget" in mismatch_analyzed.stderr:
+        raise AssertionError(
+            "an output.wav/render.json mismatch was misreported as a Tail "
+            f"budget failure: {mismatch_analyzed.stderr}"
+        )
+
+    # Conversely, a render.json that agrees with output.wav but exceeds the
+    # Tail budget upper bound fails with its own distinct message, not the
+    # output.wav-mismatch one.
+    exceeded_result = workspace / "silence-floor-exceeded-result"
+    shutil.copytree(silence_floor_result, exceeded_result)
+    append_zero_tail_frames(exceeded_result / "output.wav", 1)
+    exceeded_metadata_path = exceeded_result / "render.json"
+    exceeded_metadata = json.loads(exceeded_metadata_path.read_text())
+    exceeded_metadata["frames"] += 1
+    exceeded_metadata_path.write_text(json.dumps(exceeded_metadata))
+    exceeded_analyzed = run_analyzer(tail_analyzer, exceeded_result)
+    if exceeded_analyzed.returncode == 0:
+        raise AssertionError(
+            "tail analyzer accepted a render exceeding the Tail budget "
+            "upper bound"
+        )
+    if "exceeds the Tail budget upper bound" not in exceeded_analyzed.stderr:
+        raise AssertionError(
+            f"unexpected Tail-budget-exceeded failure: {exceeded_analyzed.stderr}"
+        )
+    if "does not match output.wav" in exceeded_analyzed.stderr:
+        raise AssertionError(
+            "a Tail budget overflow was misreported as an output.wav "
+            f"mismatch: {exceeded_analyzed.stderr}"
         )
 
 
