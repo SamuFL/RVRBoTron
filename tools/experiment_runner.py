@@ -133,20 +133,47 @@ class CaseOutcome:
         return {"name": self.name, "status": self.status, "detail": self.detail}
 
 
-def render_case(renderer, source, request_path, output_dir, capture_stages=True):
+def _render(renderer, source, output_dir, config_flag, config_value, extra_flags):
     arguments = [
         renderer,
         "render",
         "--input",
         source,
-        "--config",
-        request_path,
+        config_flag,
+        config_value,
+        *extra_flags,
         "--output",
         output_dir,
     ]
-    if capture_stages:
-        arguments[-2:-2] = ["--capture-stages", "all"]
     return run_command(*arguments)
+
+
+def render_case(
+    renderer, source, request_path, output_dir, capture_stages=True, block_size=None
+):
+    extra_flags = []
+    if capture_stages:
+        extra_flags += ["--capture-stages", "all"]
+    if block_size is not None:
+        extra_flags += ["--block-size", block_size]
+    return _render(
+        renderer, source, output_dir, "--config", request_path, extra_flags
+    )
+
+
+def render_from_resolved(renderer, source, resolved_path, output_dir, block_size=None):
+    """Renders a different source against an already-resolved Configuration
+    rather than a Requested Configuration, guaranteeing byte-identical DSP
+    parameters (delays, gains, matrices) regardless of the two sources'
+    differing content -- the pattern a catalog uses to pair a deterministic
+    impulse with the sample it accompanies. The new source's Channel count
+    must still match the resolved Split's inputChannels exactly; the caller
+    is responsible for picking a source with the right Channel count (see
+    run_tail_sweep.py's matching_impulse)."""
+    extra_flags = [] if block_size is None else ["--block-size", block_size]
+    return _render(
+        renderer, source, output_dir, "--resolved", resolved_path, extra_flags
+    )
 
 
 def benchmark_case(

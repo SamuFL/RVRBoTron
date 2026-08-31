@@ -265,10 +265,19 @@ void runBenchmark(const int argc, char** const argv) {
         "benchmark requires a non-empty Composition",
         "/composition/stages");
   }
+  // Every non-empty Composition starts with Split (see stage 09's valid
+  // shapes), but a Diffuser is optional -- [split, feedback-loop, downmix]
+  // benchmarks a Feedback Loop with no Diffuser at all, so it is searched
+  // for rather than assumed to sit at a fixed index.
   const auto& split =
       std::get<dsp::ResolvedSplit>(config.composition.stages[0]);
-  const auto& diffuser =
-      std::get<dsp::ResolvedDiffuser>(config.composition.stages[1]);
+  const dsp::ResolvedDiffuser* diffuser = nullptr;
+  for (const auto& stage : config.composition.stages) {
+    if (const auto* const candidate = std::get_if<dsp::ResolvedDiffuser>(&stage)) {
+      diffuser = candidate;
+      break;
+    }
+  }
 
   const auto buildType = std::string_view(RVRBOTRON_BUILD_TYPE);
   const auto isDebugBuild = !isOptimizedBuildType(buildType);
@@ -357,8 +366,10 @@ void runBenchmark(const int argc, char** const argv) {
   const auto dspOwnedBytes = reverb.ownedBytes();
 
   nlohmann::json matrixByStep = nlohmann::json::array();
-  for (const auto& step : diffuser.steps) {
-    matrixByStep.push_back(mixMatrixTypeName(step.mix));
+  if (diffuser != nullptr) {
+    for (const auto& step : diffuser->steps) {
+      matrixByStep.push_back(mixMatrixTypeName(step.mix));
+    }
   }
 
   const nlohmann::json report{
@@ -374,7 +385,7 @@ void runBenchmark(const int argc, char** const argv) {
            {"sampleRate", sampleRate},
            {"blockSize", blockSize},
            {"channels", split.channels},
-           {"stepCount", diffuser.steps.size()},
+           {"stepCount", diffuser != nullptr ? diffuser->steps.size() : std::size_t{0}},
            {"matrixByStep", matrixByStep},
        }},
       {"warmupSeconds", arguments.warmupSeconds},

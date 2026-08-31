@@ -404,14 +404,20 @@ keeps the two renders separate for exactly this reason:
 
 ```bash
 build/default/rvrbotron render \
-  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --input tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
   --resolved build/tail-result/resolved.json \
   --output build/tail-impulse-result
 
 python3 tools/analyze_tail.py \
   build/tail-impulse-result \
-  --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+  --source tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
 ```
+
+Rerendering via `--resolved` requires the new source's Channel count to
+match exactly what the first render resolved (the resolved Split's
+`inputChannels`), so the impulse fixture here must be stereo -- matching
+`samples/listening/PianoDry.wav` above -- not the mono fixture used
+elsewhere in this document.
 
 `analysis/tail-v1.json` requires the resolved Composition to be
 `[split, feedback-loop, downmix]` or `[split, diffuser, feedback-loop,
@@ -600,6 +606,52 @@ audio evidence and several minutes of wall time. CI instead runs a small
 tracer catalog (`tests/test_diffusion_catalog_cli.py`) that proves
 materialization, pairing, resumability, and aggregation without executing
 the full sweep.
+
+### Sweep a Listening Sample Across the Tail Axes
+
+`tools/tail_sweep_v1.json` is a versioned axis catalog: one Reference
+Feedback Loop configuration (100-200 ms delays, RT60 2.4 s, Householder
+mixing, per-Channel gain) plus 5 named axes -- delay range, RT60, matrix,
+delay strategy, gain mode -- each swept as 1-2 named values that override
+only that axis from the Reference, never combinatorially. Unlike the
+diffusion catalog, the sample to sweep is a runtime argument rather than
+catalog-embedded, so one curated (Git-LFS) sample is picked per run:
+
+```bash
+python3 tools/run_tail_sweep.py \
+  --catalog tools/tail_sweep_v1.json \
+  --renderer build/release/rvrbotron \
+  --analyzer tools/analyze_tail.py \
+  --sample samples/listening/PianoDry.wav \
+  --mono-impulse tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --stereo-impulse tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
+  --output manual_UATs/tail-sweep
+```
+
+Every sweep point renders both the selected sample and the deterministic
+impulse matching its Channel count (mono or stereo, chosen automatically)
+under an identical Resolved Configuration -- the sample render's
+`resolved.json`, reused via `--resolved` for the impulse render -- because
+Schroeder integration assumes an impulse response and programme material
+would contaminate the decay curve with its own envelope; tail analysis
+therefore runs only against the impulse render. Every point is also
+benchmarked at a canonical block size, and every benchmark aggregates into
+`<output>/<sample>/benchmark-summary.json` and a terminal table ranked
+slowest-to-fastest with deltas from the Reference point -- the same
+aggregation `run_diffusion_catalog.py` produces -- so acoustic preference
+and processing cost are visible together across the whole sweep, not just
+one point at a time. Output is laid out per sample, per axis, and per axis
+value with
+numeric prefixes for auditioning in order:
+`<output>/<sample>/00-reference/`, `<output>/<sample>/01-<axis>/01-<value>/`,
+`02-<value>/`, and so on through every axis. As with the diffusion catalog,
+every point's render, analysis, and benchmark steps are independently
+resumable, and a missing or unpulled-Git-LFS sample is skipped, not failed,
+with an explanatory message. This full run is a local research artifact;
+CI instead runs a millisecond-scale tracer sweep
+(`tests/test_tail_sweep_cli.py`) that proves the axis materialization,
+paired-impulse rendering, and resumability without executing the full
+sweep.
 
 ### Validate a Listening Sample Locally
 
