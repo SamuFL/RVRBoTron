@@ -483,6 +483,46 @@ against the same compact Reference impulse tracer used by
 summary as a build artifact, and runs a final job that downloads every
 summary and compares them by precision.
 
+### Compare Tail Equivalence Across Platforms
+
+Tail measurement's octave-band FFT filtering, Schroeder integration, and
+curve fitting all run in NumPy, so the same workflow applies to
+`analysis/tail-v1.json`:
+
+```bash
+python3 tools/extract_tail_equivalence.py \
+  build/tail-impulse-result \
+  --output build/tail-equivalence.json
+
+python3 tools/compare_tail_equivalence.py \
+  build/tail-equivalence.json other-platform/tail-equivalence.json \
+  --tolerances tools/tail_tolerances_v1.json
+```
+
+The extracted summary keeps non-finite sample count, each octave band's
+T20/T30 RT60 estimate, Alignment score, and Coloration; it drops the full
+per-segment decay-envelope energy series and Coloration's twelfth-octave
+curve. The comparator groups summaries by sample precision, picks one
+baseline platform per group (macOS arm64 when present), and requires the
+octave-band count, whether each band's T20/T30 fit exists at all, and the
+decay-envelope monotonicity flag -- discrete facts about the committed CI
+tracer's decay curve, not continuous measurements -- to match exactly,
+while every measured metric (including each band's own RT60 estimate)
+stays within `tools/tail_tolerances_v1.json`'s committed per-precision
+absolute tolerance; a group with fewer than two platforms is reported as
+skipped, not failed, and a candidate platform missing a metric the
+baseline reports (for example, a differing band count) fails that metric
+explicitly rather than aborting the comparison. CI runs both
+platform-independent steps against the same millisecond-scale Feedback
+Loop tracer used by `tail_analyzer_contract`, uploads each
+platform/precision's compact summary as a build artifact, and runs a final
+job that downloads every summary and compares them by precision.
+
+Per [ADR-0001](docs/adr/0001-cross-platform-reproducibility.md), tolerances
+are only committed after reviewing real evidence from every supported CI
+architecture; see that document for the CI run reviewed and each metric's
+observed delta and headroom.
+
 ### Benchmark a Resolved Configuration
 
 Benchmark evidence is environment-qualified rather than deterministic: it

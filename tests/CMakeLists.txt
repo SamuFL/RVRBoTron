@@ -162,6 +162,19 @@ add_test(
 )
 
 add_test(
+  NAME tail_equivalence_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_tail_equivalence_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/extract_tail_equivalence.py
+    ${CMAKE_SOURCE_DIR}/tools/compare_tail_equivalence.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_tail.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/tail-equivalence-contract
+)
+
+add_test(
   NAME diffusion_equivalence_contract
   COMMAND
     ${Python3_EXECUTABLE}
