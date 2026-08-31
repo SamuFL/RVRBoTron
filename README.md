@@ -15,8 +15,8 @@ Active implementation work is tracked in this repository's GitHub Issues.
 
 Install CMake 3.25 or newer, Ninja, Python 3, and a C++17 compiler. Git LFS is
 also required to download or add the curated listening samples. Rendering and
-`tools/analyze_render.py` need only the standard library; the diffusion
-analyzer additionally needs the packages in `tools/requirements.txt`
+`tools/analyze_render.py` need only the standard library; the diffusion and
+tail analyzers additionally need the packages in `tools/requirements.txt`
 (`pip3 install -r tools/requirements.txt`).
 
 ### Configure, build, and test
@@ -393,6 +393,60 @@ Render Results of the same Resolved Configuration -- typically rendered at
 different `--block-size` values -- for exact decoded equality of `output.wav`
 and every Stage capture, with first-mismatch detail on failure. This mode
 prints its own JSON report and does not publish an artifact.
+
+For a Composition containing a Feedback Loop, add the separate tail
+artifact instead -- the diffusion analyzer's all-pass, feedback-free
+assumptions do not hold once the tail is present, so it is deliberately not
+extended to cover this case. Schroeder backward integration assumes an
+impulse response, so analyze a deterministic impulse render of the same
+Resolved Configuration rather than a musical sample -- issue #59's sweep
+keeps the two renders separate for exactly this reason:
+
+```bash
+build/default/rvrbotron render \
+  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --resolved build/tail-result/resolved.json \
+  --output build/tail-impulse-result
+
+python3 tools/analyze_tail.py \
+  build/tail-impulse-result \
+  --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+```
+
+`analysis/tail-v1.json` requires the resolved Composition to be
+`[split, feedback-loop, downmix]` or `[split, diffuser, feedback-loop,
+downmix]`; any other shape is rejected. It verifies source provenance from
+`render.json` and checks the output frame count against
+`inputFrames + tailBudgetFrames` -- exactly, while the dormant
+`silenceFloorDb` seam is disabled, relaxing to an upper bound once it is
+enabled, keyed off the Resolved Configuration rather than a schema change.
+Measurement reads only `output.wav`; no Stage captures are required.
+
+RT60 is measured per octave band from 63 Hz to 16 kHz by Schroeder backward
+integration of the band-limited stereo output's energy (a raised-cosine
+band shape and zero-padded FFT filtering keep the filter a linear rather
+than a circular convolution, avoiding leakage across a finite-length
+render). T30 (fit over -5 to -35 dB, extrapolated to -60 dB) is the primary
+fit; T20 (-5 to -25 dB) is reported beside it -- the two agree on a linear,
+single-rate decay and diverge under `gainMode: uniform` at a wide delay
+spread, exposing the non-linear, double-sloped decay that mode produces
+rather than averaging it away. The Reference-band (1 kHz) T30 estimate is
+reported against the requested `rt60Sec` with relative error and whether it
+sits within the +/-5% Decay accuracy invariant.
+
+The artifact separately reports the output's non-finite sample count and a
+decay-envelope check: the *raw*, non-Schroeder-integrated broadband output
+energy, coarsely windowed from input EOF onward, verified non-increasing.
+This is deliberately distinct from the per-band Schroeder curves above,
+which are non-increasing by construction regardless of what the render
+does and so cannot themselves catch a genuine buildup.
+
+The artifact also reports, reusing `analyze_diffusion.py`'s own evidence
+functions for direct comparability: an Alignment score (near unity for an
+aligned Diffuser-only render's internal Channels, materially lower once the
+Feedback Loop circulates and unaligns them, measured here on the stereo
+output's left and right positions) and Coloration for the stereo output.
+Publication is append-only and idempotent.
 
 ### Compare Diffusion Equivalence Across Platforms
 
