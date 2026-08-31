@@ -212,7 +212,7 @@ def main():
         raise AssertionError("rejected configuration created a Render Result")
 
     # A --block-size above the resolved Feedback Loop's block-size bound
-    # (48 samples: min(48, 96), see above) is rejected under
+    # (48 frames: min(48, 96), see above) is rejected under
     # invalid_arguments, naming both the requested size and the derived
     # bound (#53); a block size exactly at the bound is accepted.
     oversized_block_result = workspace / "oversized-block-result"

@@ -373,6 +373,9 @@ void processMonoToStereoInChunks(
     std::vector<rvrbotron::dsp::Sample>& left,
     std::vector<rvrbotron::dsp::Sample>& right,
     const std::size_t blockSize) {
+  if (blockSize == 0) {
+    throw std::invalid_argument("blockSize must be positive");
+  }
   const auto frameCount = input.size();
   for (std::size_t offset = 0; offset < frameCount; offset += blockSize) {
     const auto frames = std::min(blockSize, frameCount - offset);

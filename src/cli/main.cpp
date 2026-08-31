@@ -443,7 +443,7 @@ void render(const RenderArguments& arguments) {
         rvrbotron::ErrorCategory::invalidArguments,
         "--block-size " + std::to_string(arguments.blockSize) +
             " exceeds the resolved Feedback Loop's block-size bound of " +
-            std::to_string(*bound) + " samples");
+            std::to_string(*bound) + " frames");
   }
   std::unique_ptr<WavStageCaptureSink> captureSink;
   if (arguments.captureAllStages &&
