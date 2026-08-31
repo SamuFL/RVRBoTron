@@ -151,6 +151,10 @@ def main():
         raise AssertionError(f"unexpected resolved tailBudgetSamples: {loop}")
     if loop["blockSizeBoundSamples"] != 48:
         raise AssertionError(f"unexpected resolved blockSizeBoundSamples: {loop}")
+    if "silenceFloorDb" not in loop or loop["silenceFloorDb"] is not None:
+        raise AssertionError(
+            f"silenceFloorDb was not present and disabled by default: {loop}"
+        )
 
     expected_gains = [10 ** (-3 * (48 / 48000) / 1.0), 10 ** (-3 * (96 / 48000) / 1.0)]
     for actual, expected in zip(loop["gains"], expected_gains):
@@ -184,6 +188,77 @@ def main():
         result / "resolved.json"
     ).read_bytes():
         raise AssertionError("resolved rerender changed resolved.json")
+
+    # An explicitly disabled silence floor (#54) is bit-identical to an
+    # omitted one, so existing evidence stays reproducible once the field
+    # exists in configuration.
+    explicit_disabled_request = json.loads(json.dumps(request))
+    explicit_disabled_request["composition"]["stages"][1]["silenceFloorDb"] = None
+    explicit_disabled_path = workspace / "explicit-disabled-request.json"
+    explicit_disabled_path.write_text(json.dumps(explicit_disabled_request))
+    explicit_disabled_result = workspace / "explicit-disabled-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        explicit_disabled_path,
+        "--output",
+        explicit_disabled_result,
+        "--block-size",
+        "32",
+    )
+    if (explicit_disabled_result / "output.wav").read_bytes() != (
+        result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "an explicit silenceFloorDb: null changed output.wav relative "
+            "to omitting the field"
+        )
+    if (explicit_disabled_result / "resolved.json").read_bytes() != (
+        result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "an explicit silenceFloorDb: null changed resolved.json "
+            "relative to omitting the field"
+        )
+
+    # silenceFloorDb round-trips through a resolved rerender as a plain
+    # numeric value -- the seam is structurally versioned even though
+    # nothing in this milestone yet acts on it while enabled.
+    enabled_resolved = json.loads((result / "resolved.json").read_text())
+    enabled_loop = next(
+        stage
+        for stage in enabled_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    enabled_loop["silenceFloorDb"] = -90.0
+    enabled_resolved_path = workspace / "enabled-resolved.json"
+    enabled_resolved_path.write_text(json.dumps(enabled_resolved))
+    enabled_result = workspace / "enabled-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        enabled_resolved_path,
+        "--output",
+        enabled_result,
+        "--block-size",
+        "32",
+    )
+    enabled_output_resolved = json.loads(
+        (enabled_result / "resolved.json").read_text()
+    )
+    enabled_output_loop = next(
+        stage
+        for stage in enabled_output_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    if enabled_output_loop["silenceFloorDb"] != -90.0:
+        raise AssertionError(
+            f"resolved silenceFloorDb did not round-trip: {enabled_output_loop}"
+        )
 
     # An unreasonable delay range is rejected against the DSP memory budget
     # rather than silently allocating hundreds of megabytes of delay lines.
