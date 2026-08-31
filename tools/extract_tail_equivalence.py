@@ -7,9 +7,9 @@ The extracted artifact is deliberately small and WAV-free, mirroring
 extract_diffusion_equivalence.py: it drops the full decay-envelope
 segment-energy series and Coloration's per-band twelfth-octave curve that
 compare_tail_equivalence.py does not need. Most fields below are also the
-metrics compare_tail_equivalence.py judges Cross-platform equivalence
-against (see docs/adr/0001-cross-platform-reproducibility.md); decay.
-requestedRt60Sec/measuredRt60Sec/relativeError are the exception, kept only
+metrics compare_tail_equivalence.py judges cross-platform equivalence
+against (see docs/adr/0001-cross-platform-reproducibility.md);
+decay.requestedRt60Sec/measuredRt60Sec/relativeError are the exception, kept only
 as human-readable summary context -- measuredRt60Sec is, by construction,
 the same value as the Reference band's own t30Rt60Sec entry in
 decay.bands, so comparing it separately would just re-check that one
