@@ -39,6 +39,11 @@ enum class DownmixStrategy {
   select,
 };
 
+enum class GainMode {
+  perChannel,
+  uniform,
+};
+
 struct ResolvedSplit {
   std::uint32_t inputChannels = 0;
   std::uint32_t channels = 0;
@@ -80,6 +85,14 @@ struct ResolvedFeedbackLoop {
   std::vector<double> delaysMs;
   std::vector<std::uint64_t> bufferSizes;
   double rt60Sec = 0.0;
+  // How `gains` below was solved (see docs/design/reverb/stages/
+  // 04-feedback-loop.md's "Solving RT60 into gain"): `perChannel` derives
+  // each Channel's gain from that Channel's own loop time, so every
+  // Channel decays at the requested rate regardless of delay spread.
+  // `uniform` derives one shared gain from the mean loop time across
+  // Channels instead -- the reference design's approach, kept available
+  // for comparison and deliberately less accurate at a wide delay spread.
+  GainMode gainMode = GainMode::perChannel;
   std::vector<double> gains;
   MixMatrixType mix = MixMatrixType::householder;
   std::vector<double> matrix;
