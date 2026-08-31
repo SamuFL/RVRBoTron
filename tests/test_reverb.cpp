@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1427,8 +1428,11 @@ int main() {
       const auto energyA = windowEnergyAt(decayGuard, decayWindow);
       const auto energyB =
           windowEnergyAt(decayGuard + decaySeparation, decayWindow);
+      if (!(energyA > 0.0) || !(energyB > 0.0) || energyB >= energyA) {
+        return std::optional<double>();
+      }
       const auto dbDrop = 10.0 * std::log10(energyA / energyB);
-      return 60.0 * decayDeltaTSeconds / dbDrop;
+      return std::optional<double>(60.0 * decayDeltaTSeconds / dbDrop);
     };
 
     if (perChannelWideLoop.tailBudgetSamples <
@@ -1437,8 +1441,17 @@ int main() {
           << "gainMode comparison fixture's Tail budget is too short\n";
       return 1;
     }
-    const auto impliedPerChannelWide = measureImpliedRt60(perChannelWideConfig);
-    const auto impliedUniformWide = measureImpliedRt60(uniformWideConfig);
+    const auto impliedPerChannelWideOpt =
+        measureImpliedRt60(perChannelWideConfig);
+    const auto impliedUniformWideOpt = measureImpliedRt60(uniformWideConfig);
+    if (!impliedPerChannelWideOpt.has_value() ||
+        !impliedUniformWideOpt.has_value()) {
+      std::cerr << "gainMode comparison fixture did not decay "
+                   "monotonically between windows\n";
+      return 1;
+    }
+    const auto impliedPerChannelWide = *impliedPerChannelWideOpt;
+    const auto impliedUniformWide = *impliedUniformWideOpt;
     const auto perChannelRelativeError =
         std::abs(impliedPerChannelWide - requestedRt60Sec) /
         requestedRt60Sec;
