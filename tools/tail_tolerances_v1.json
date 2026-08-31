@@ -1,57 +1,57 @@
 {
   "formatVersion": 1,
-  "rationale": "PROVISIONAL: schema-complete placeholders for the tail-equivalence workflow (#58), not yet reviewed against real cross-platform CI evidence. Per docs/adr/0001-cross-platform-reproducibility.md, tolerances are only tightened after reviewing float and double evidence from every supported CI architecture (macOS arm64, macOS Intel, Windows x86_64) for the compact tail CI tracer (tests/test_tail_equivalence_cli.py); each committed value must then state its own observed delta and measured headroom, mirroring diffusion_tolerances_v1.json's issue #37 precedent. These placeholders are deliberately generous so the workflow itself is exercised without masking a real divergence before that review happens.",
+  "rationale": "Reviewed against real cross-platform CI evidence for issue #58 (PR #69, CI run https://github.com/SamuFL/RVRBoTron/actions/runs/33429129103): macOS arm64 clang, macOS Intel clang, and Windows x86_64 MSVC, both float32 and float64 presets, comparing every platform's compact tail-equivalence summary of the same millisecond-scale Feedback Loop tracer (tests/test_tail_equivalence_cli.py) against a macOS arm64 baseline. Observed: nonFiniteSampleCount, alignmentScore, and every Coloration metric reproduced with exactly zero delta on every platform and precision. Only decayRt60Sec (every octave band's T20/T30 RT60 estimate) showed a measurable, non-zero cross-platform delta, at the 1e-16-to-1e-15 scale -- consistent with diffusion_tolerances_v1.json's Coloration entries, since Schroeder integration, octave-band FFT filtering, and the T20/T30 linear regression all run in NumPy float64 regardless of DSP sample precision, so tiny per-platform NumPy/BLAS summation-order differences show through. Each committed value below states its own observed evidence and headroom.",
   "byPrecision": {
     "float32": {
       "nonFiniteSampleCount": {
         "absoluteTolerance": 0,
-        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta, mirroring diffusion's alignmentMinimum/alignmentMean precedent -- a non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation. To be reviewed against real CI evidence."
+        "rationale": "Observed: exactly 0 delta across macOS arm64, macOS Intel, and Windows x86_64 (CI run 33429129103) for the tracer's output.wav. A non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation, confirming the design expectation -- same basis as diffusion's alignmentMinimum/alignmentMean."
       },
       "decayRt60Sec": {
-        "absoluteTolerance": 0.01,
-        "rationale": "PROVISIONAL placeholder covering every octave band's T20/T30 RT60 estimate (seconds). Schroeder integration, octave-band FFT filtering, and linear regression all run in NumPy float64 regardless of DSP sample precision, so cross-platform drift is expected to resemble diffusion's Coloration entries (1e-16-to-1e-15 scale) rather than this placeholder's 0.01s headroom. To be tightened after reviewing real CI evidence."
+        "absoluteTolerance": 1e-9,
+        "rationale": "Observed max delta 2.66e-15 (macOS Intel vs. macOS arm64 baseline, band=250 T30 fit, CI run 33429129103) across all 9 octave bands' T20 and T30 estimates. Committed at 1e-9, roughly 3.8e5x that observed delta: RT60 fits accumulate a Schroeder backward integration and linear regression over tens of thousands of samples, more numerically involved than a single Coloration dB summary, so more headroom is warranted for configurations (longer renders, different band shapes) this tiny tracer does not exercise -- while 1e-9 seconds remains far tighter than any practically meaningful RT60 precision."
       },
       "alignmentScore": {
         "absoluteTolerance": 0.0,
-        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta, mirroring diffusion's alignmentMinimum/alignmentMean precedent -- Alignment is a discrete Jaccard overlap of active-frame sets, not a floating-point accumulation. To be reviewed against real CI evidence."
+        "rationale": "Observed: exactly 0 delta on all three platforms, confirming the design expectation -- Alignment is a discrete Jaccard overlap of active-frame sets, not a floating-point accumulation, same basis as diffusion's alignmentMinimum/alignmentMean."
       },
       "colorationPeakToPeakDb": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder. diffusion_tolerances_v1.json committed 1e-12 here after observing a 2.66e-15 real delta; reusing the same FFT/dB code path, so tail's value is expected to land in the same range once reviewed against real CI evidence."
+        "absoluteTolerance": 1e-12,
+        "rationale": "Observed: exactly 0 delta on all three platforms for this tracer. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationPeakToPeakDb value, since Coloration's FFT/dB math is the identical code path (analyze_diffusion.coloration_evidence, reused directly by analyze_tail.py) with the same latent per-platform NumPy/BLAS summation-order risk diffusion's own CI evidence already measured at the 1e-16-to-1e-15 scale, even though it did not manifest on this particular tracer/run."
       },
       "colorationRmsDb": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder; see colorationPeakToPeakDb. diffusion_tolerances_v1.json committed 1e-13 here after observing a 9.36e-16 real delta."
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed: exactly 0 delta on all three platforms. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationRmsDb value; see colorationPeakToPeakDb."
       },
       "colorationSpectralFlatness": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder; see colorationPeakToPeakDb. diffusion_tolerances_v1.json committed 1e-14 here after observing a 1.11e-16 real delta."
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed: exactly 0 delta on all three platforms. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationSpectralFlatness value; see colorationPeakToPeakDb."
       }
     },
     "float64": {
       "nonFiniteSampleCount": {
         "absoluteTolerance": 0,
-        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta; see the float32 entry. To be reviewed against real CI evidence."
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64 (macOS Intel does not build the double preset), confirming the design expectation; same basis as the float32 entry."
       },
       "decayRt60Sec": {
-        "absoluteTolerance": 0.01,
-        "rationale": "PROVISIONAL placeholder; see the float32 entry. To be tightened after reviewing real CI evidence."
+        "absoluteTolerance": 1e-9,
+        "rationale": "Observed max delta 1.11e-15 (Windows x86_64 vs. macOS arm64 baseline, band=2000 T20 fit, CI run 33429129103) between macOS arm64 and Windows x86_64. Committed at 1e-9, roughly 9e5x that observed delta; same basis as the float32 entry."
       },
       "alignmentScore": {
         "absoluteTolerance": 0.0,
-        "rationale": "PROVISIONAL. Expected to reproduce with exactly zero delta; see the float32 entry. To be reviewed against real CI evidence."
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64, confirming the design expectation; same basis as the float32 entry."
       },
       "colorationPeakToPeakDb": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-12 here after observing a 7.11e-15 real delta."
+        "absoluteTolerance": 1e-12,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationPeakToPeakDb value; see the float32 entry."
       },
       "colorationRmsDb": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-13 here after observing a 4.44e-16 real delta."
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationRmsDb value; see the float32 entry."
       },
       "colorationSpectralFlatness": {
-        "absoluteTolerance": 1e-9,
-        "rationale": "PROVISIONAL placeholder; see the float32 entry. diffusion_tolerances_v1.json committed 1e-14 here after observing a 2.22e-16 real delta."
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64. Committed non-zero, matching diffusion_tolerances_v1.json's own colorationSpectralFlatness value; see the float32 entry."
       }
     }
   }

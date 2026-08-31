@@ -518,10 +518,10 @@ Loop tracer used by `tail_analyzer_contract`, uploads each
 platform/precision's compact summary as a build artifact, and runs a final
 job that downloads every summary and compares them by precision.
 
-`tools/tail_tolerances_v1.json`'s tolerances are currently provisional
-placeholders -- per [ADR-0001](docs/adr/0001-cross-platform-reproducibility.md),
-they are only tightened after reviewing real evidence from every supported
-CI architecture, which this milestone's own CI cycle provides.
+Per [ADR-0001](docs/adr/0001-cross-platform-reproducibility.md), tolerances
+are only committed after reviewing real evidence from every supported CI
+architecture; see that document for the CI run reviewed and each metric's
+observed delta and headroom.
 
 ### Benchmark a Resolved Configuration
 
