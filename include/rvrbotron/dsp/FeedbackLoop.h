@@ -27,11 +27,13 @@ public:
 
   [[nodiscard]] std::size_t channelCount() const noexcept;
   [[nodiscard]] std::uint64_t tailBudgetSamples() const noexcept;
+  [[nodiscard]] std::uint64_t blockSizeBoundSamples() const noexcept;
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   std::size_t channels_;
   std::uint64_t tailBudgetSamples_;
+  std::uint64_t blockSizeBoundSamples_;
 
   std::vector<std::uint64_t> delays_;
   std::vector<std::size_t> delayOffsets_;

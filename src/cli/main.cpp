@@ -114,6 +114,21 @@ std::size_t parseBlockSize(const std::string_view value) {
   return blockSize;
 }
 
+// The Feedback Loop's block-size bound (see CONTEXT.md), if the resolved
+// Composition has one -- there is at most one Feedback Loop per shape (see
+// validateShape in ResolveConfig.cpp), positioned at whichever middle
+// stage index it occupies.
+std::optional<std::uint64_t> feedbackLoopBlockSizeBoundSamples(
+    const rvrbotron::dsp::ResolvedComposition& composition) noexcept {
+  for (const auto& stage : composition.stages) {
+    if (const auto* const loop =
+            std::get_if<rvrbotron::dsp::ResolvedFeedbackLoop>(&stage)) {
+      return loop->blockSizeBoundSamples;
+    }
+  }
+  return std::nullopt;
+}
+
 std::uint64_t parseMemoryBudgetMib(const std::string_view value) {
   std::uint64_t mib = 0;
   const auto result =
@@ -420,6 +435,15 @@ void render(const RenderArguments& arguments) {
     throw rvrbotron::HarnessError(
         rvrbotron::ErrorCategory::invalidArguments,
         "--block-size is too large");
+  }
+  if (const auto bound =
+          feedbackLoopBlockSizeBoundSamples(config.composition);
+      bound.has_value() && arguments.blockSize > *bound) {
+    throw rvrbotron::HarnessError(
+        rvrbotron::ErrorCategory::invalidArguments,
+        "--block-size " + std::to_string(arguments.blockSize) +
+            " exceeds the resolved Feedback Loop's block-size bound of " +
+            std::to_string(*bound) + " frames");
   }
   std::unique_ptr<WavStageCaptureSink> captureSink;
   if (arguments.captureAllStages &&

@@ -87,8 +87,21 @@ def main():
     request_path = workspace / "request.json"
     request_path.write_text(json.dumps(request, indent=2) + "\n")
 
+    # Resolved delays here are 48/96 samples (see below), below the default
+    # 512-frame block size, so a legal --block-size (#53) must be requested
+    # explicitly.
     result = workspace / "result"
-    run_ok(renderer, "--input", fixture, "--config", request_path, "--output", result)
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        request_path,
+        "--output",
+        result,
+        "--block-size",
+        "32",
+    )
 
     channels, sample_rate, bits, samples = read_float_wav(result / "output.wav")
     if (channels, sample_rate, bits) != (2, 48000, sample_bits):
@@ -136,6 +149,8 @@ def main():
         raise AssertionError(f"unexpected resolved rt60Sec/decayMargin: {loop}")
     if loop["tailBudgetSamples"] != expected_tail_budget:
         raise AssertionError(f"unexpected resolved tailBudgetSamples: {loop}")
+    if loop["blockSizeBoundSamples"] != 48:
+        raise AssertionError(f"unexpected resolved blockSizeBoundSamples: {loop}")
 
     expected_gains = [10 ** (-3 * (48 / 48000) / 1.0), 10 ** (-3 * (96 / 48000) / 1.0)]
     for actual, expected in zip(loop["gains"], expected_gains):
@@ -160,6 +175,8 @@ def main():
         result / "resolved.json",
         "--output",
         rerendered,
+        "--block-size",
+        "32",
     )
     if (rerendered / "output.wav").read_bytes() != (result / "output.wav").read_bytes():
         raise AssertionError("resolved rerender changed Feedback Loop output")
@@ -193,6 +210,59 @@ def main():
         )
     if oversized_result.exists():
         raise AssertionError("rejected configuration created a Render Result")
+
+    # A --block-size above the resolved Feedback Loop's block-size bound
+    # (48 frames: min(48, 96), see above) is rejected under
+    # invalid_arguments, naming both the requested size and the derived
+    # bound (#53); a block size exactly at the bound is accepted.
+    oversized_block_result = workspace / "oversized-block-result"
+    oversized_block = run(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        request_path,
+        "--output",
+        oversized_block_result,
+        "--block-size",
+        "49",
+    )
+    if oversized_block.returncode != 7:
+        raise AssertionError(
+            f"expected exit code 7 (invalid_arguments) for a block size "
+            f"above the bound: {oversized_block.returncode}\n"
+            f"{oversized_block.stderr}"
+        )
+    if "invalid_arguments" not in oversized_block.stderr:
+        raise AssertionError(
+            f"oversized block size was not rejected under "
+            f"invalid_arguments: {oversized_block.stderr}"
+        )
+    if "49" not in oversized_block.stderr or "48" not in oversized_block.stderr:
+        raise AssertionError(
+            f"oversized block size rejection did not name both the "
+            f"requested size and the derived bound: "
+            f"{oversized_block.stderr}"
+        )
+    if oversized_block_result.exists():
+        raise AssertionError("rejected block size created a Render Result")
+
+    exact_bound_result = workspace / "exact-bound-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        request_path,
+        "--output",
+        exact_bound_result,
+        "--block-size",
+        "48",
+    )
+    if not (exact_bound_result / "output.wav").exists():
+        raise AssertionError(
+            "a --block-size exactly at the resolved bound was rejected"
+        )
 
 
 if __name__ == "__main__":

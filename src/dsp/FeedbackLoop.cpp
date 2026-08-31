@@ -11,6 +11,7 @@ namespace rvrbotron::dsp {
 FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     : channels_(config.delaysSamples.size()),
       tailBudgetSamples_(config.tailBudgetSamples),
+      blockSizeBoundSamples_(config.blockSizeBoundSamples),
       delays_(config.delaysSamples),
       delayOffsets_(channels_),
       delayPositions_(channels_, 0),
@@ -91,6 +92,10 @@ std::size_t FeedbackLoop::channelCount() const noexcept {
 
 std::uint64_t FeedbackLoop::tailBudgetSamples() const noexcept {
   return tailBudgetSamples_;
+}
+
+std::uint64_t FeedbackLoop::blockSizeBoundSamples() const noexcept {
+  return blockSizeBoundSamples_;
 }
 
 std::size_t FeedbackLoop::ownedBytes() const noexcept {

@@ -362,6 +362,30 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserThenLoopConfig(
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
 }
 
+// Processes a whole mono-in/stereo-out render in chunks no larger than
+// blockSize, so a Feedback Loop fixture with a short resolved delay can
+// still be exercised over many frames without violating the block-size
+// bound (#53): a single oversized process() call would trip its debug
+// assert. input/left/right must already be sized to the same frameCount.
+void processMonoToStereoInChunks(
+    rvrbotron::dsp::Reverb& reverb,
+    const std::vector<rvrbotron::dsp::Sample>& input,
+    std::vector<rvrbotron::dsp::Sample>& left,
+    std::vector<rvrbotron::dsp::Sample>& right,
+    const std::size_t blockSize) {
+  if (blockSize == 0) {
+    throw std::invalid_argument("blockSize must be positive");
+  }
+  const auto frameCount = input.size();
+  for (std::size_t offset = 0; offset < frameCount; offset += blockSize) {
+    const auto frames = std::min(blockSize, frameCount - offset);
+    const rvrbotron::dsp::Sample* offsetInputs[]{input.data() + offset};
+    rvrbotron::dsp::Sample* offsetOutputs[]{
+        left.data() + offset, right.data() + offset};
+    reverb.process(offsetInputs, 1, offsetOutputs, 2, frames);
+  }
+}
+
 bool reverbDiffusionStepIsAllPass(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -1130,6 +1154,34 @@ int main() {
     }
   }
 
+  // Block-size bound (#53): derived as the shortest resolved per-Channel
+  // delay, independently re-derived here rather than trusting the field --
+  // using segmented-random so the minimum is not trivially delayMinSamples,
+  // unlike the even-strategy fixtures used elsewhere in this file.
+  {
+    const auto blockSizeBoundConfig = resolvedFeedbackLoopConfig(
+        4,
+        0.5,
+        5.0,
+        10.0,
+        rvrbotron::dsp::MixMatrixType::householder,
+        rvrbotron::dsp::DelayStrategy::segmentedRandom,
+        48000);
+    const auto& blockSizeBoundLoop =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            blockSizeBoundConfig.composition.stages[1]);
+    const auto expectedBlockSizeBound = *std::min_element(
+        blockSizeBoundLoop.delaysSamples.begin(),
+        blockSizeBoundLoop.delaysSamples.end());
+    if (blockSizeBoundLoop.blockSizeBoundSamples != expectedBlockSizeBound) {
+      std::cerr << "Feedback Loop blockSizeBoundSamples was not the "
+                   "minimum resolved per-Channel delay: "
+                << blockSizeBoundLoop.blockSizeBoundSamples
+                << " != " << expectedBlockSizeBound << '\n';
+      return 1;
+    }
+  }
+
   // Decay accuracy and stability across deliberately unequal delays,
   // through the full Reverb (Split -> Feedback Loop -> select Downmix).
   // Every Channel's own gain is solved to decay at the same dB/second rate
@@ -1151,6 +1203,8 @@ int main() {
     std::cerr << "Feedback Loop decay fixture sample rate is wrong\n";
     return 1;
   }
+  const auto& decayLoopStage = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+      decayConfig.composition.stages[1]);
   rvrbotron::dsp::Reverb decayReverb(decayConfig);
   const auto decayTailFrames =
       static_cast<std::size_t>(decayReverb.tailBudgetFrames());
@@ -1168,12 +1222,12 @@ int main() {
   decayInput[0] = 1.0F;
   std::vector<rvrbotron::dsp::Sample> decayLeft(decayFrameCount);
   std::vector<rvrbotron::dsp::Sample> decayRight(decayFrameCount);
-  const rvrbotron::dsp::Sample* decayInputs[]{decayInput.data()};
-  rvrbotron::dsp::Sample* decayOutputs[]{
-      decayLeft.data(), decayRight.data()};
+  // Processed in chunks no larger than the resolved block-size bound (#53).
+  const auto decayBlockSize =
+      static_cast<std::size_t>(decayLoopStage.blockSizeBoundSamples);
   beginAllocationCount();
-  decayReverb.process(
-      decayInputs, 1, decayOutputs, 2, decayFrameCount);
+  processMonoToStereoInChunks(
+      decayReverb, decayInput, decayLeft, decayRight, decayBlockSize);
   const auto decayAllocations = endAllocationCount();
   if (decayAllocations != 0) {
     std::cerr << "Feedback Loop Reverb allocated while processing\n";
@@ -1217,8 +1271,6 @@ int main() {
   // Feedback Loop DSP class, bypassing select Downmix -- which only reads
   // two of the four Channels and could otherwise mask growth confined to a
   // Channel it never selects.
-  const auto& decayLoopStage = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
-      decayConfig.composition.stages[1]);
   rvrbotron::dsp::FeedbackLoop decayLoop(decayLoopStage);
   std::vector<std::vector<rvrbotron::dsp::Sample>> decayChannelFrames(
       decayChannels,
@@ -1380,13 +1432,16 @@ int main() {
   std::vector<rvrbotron::dsp::Sample> diffuserLoopLeft(diffuserLoopFrameCount);
   std::vector<rvrbotron::dsp::Sample> diffuserLoopRight(
       diffuserLoopFrameCount);
-  const rvrbotron::dsp::Sample* diffuserLoopInputs[]{
-      diffuserLoopInput.data()};
-  rvrbotron::dsp::Sample* diffuserLoopOutputs[]{
-      diffuserLoopLeft.data(), diffuserLoopRight.data()};
+  // Processed in chunks no larger than the resolved block-size bound (#53).
+  const auto diffuserLoopBlockSize =
+      static_cast<std::size_t>(diffuserLoopStage.blockSizeBoundSamples);
   beginAllocationCount();
-  diffuserLoopReverb.process(
-      diffuserLoopInputs, 1, diffuserLoopOutputs, 2, diffuserLoopFrameCount);
+  processMonoToStereoInChunks(
+      diffuserLoopReverb,
+      diffuserLoopInput,
+      diffuserLoopLeft,
+      diffuserLoopRight,
+      diffuserLoopBlockSize);
   const auto diffuserLoopAllocations = endAllocationCount();
   if (diffuserLoopAllocations != 0) {
     std::cerr << "Diffuser-into-loop Reverb allocated while processing\n";
