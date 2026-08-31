@@ -75,6 +75,7 @@ struct FeedbackLoopConfig {
   std::optional<double> rt60Sec;
   std::optional<double> decayMargin;
   std::optional<dsp::MixMatrixType> mix;
+  std::optional<dsp::GainMode> gainMode;
   // Runtime silence-floor seam; omitted/nullopt resolves to disabled (see
   // dsp::ResolvedFeedbackLoop::silenceFloorDb and issue #54).
   std::optional<double> silenceFloorDb;

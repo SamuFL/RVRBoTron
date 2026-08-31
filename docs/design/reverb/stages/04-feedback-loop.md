@@ -39,7 +39,7 @@ For a channel with loop time *L* and target decay *R*:
     dB lost per loop = −60 · L / R
     gain             = 10^(−3L/R)
 
-**Per-channel gain, not one shared gain.** With a shared gain a 100ms channel circulates twice as often as a 200ms one and decays twice as fast; the matrix averages this only partly, so measured RT60 drifts with the delay range. Deriving gain from each channel's own loop time makes all channels decay at the same rate and makes the requested RT60 measurable in the output. `uniform` remains available for comparison — it is what the reference design does.
+**Per-channel gain, not one shared gain.** With a shared gain a 100ms channel circulates twice as often as a 200ms one and decays twice as fast; the matrix averages this only partly, so measured RT60 drifts with the delay range. Deriving gain from each channel's own loop time makes all channels decay at the same rate and makes the requested RT60 measurable in the output. `uniform` remains available for comparison — it is what the reference design does — and solves one shared gain from the *mean* loop time across channels, chosen over an extreme so the resulting RT60 error is symmetric around the requested value rather than biased toward one end of the delay range.
 
 ### Stability
 

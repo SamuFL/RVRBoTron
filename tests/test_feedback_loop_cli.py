@@ -151,6 +151,8 @@ def main():
         raise AssertionError(f"unexpected resolved tailBudgetSamples: {loop}")
     if loop["blockSizeBoundSamples"] != 48:
         raise AssertionError(f"unexpected resolved blockSizeBoundSamples: {loop}")
+    if loop["gainMode"] != "per-channel":
+        raise AssertionError(f"unexpected default resolved gainMode: {loop}")
     if "silenceFloorDb" not in loop or loop["silenceFloorDb"] is not None:
         raise AssertionError(
             f"silenceFloorDb was not present and disabled by default: {loop}"
@@ -337,6 +339,202 @@ def main():
     if not (exact_bound_result / "output.wav").exists():
         raise AssertionError(
             "a --block-size exactly at the resolved bound was rejected"
+        )
+
+    # gainMode: uniform (#56) solves one shared gain from the mean loop
+    # time across Channels, rather than each Channel's own.
+    uniform_request = json.loads(json.dumps(request))
+    uniform_request["composition"]["stages"][1]["gainMode"] = "uniform"
+    uniform_path = workspace / "uniform-request.json"
+    uniform_path.write_text(json.dumps(uniform_request))
+    uniform_result = workspace / "uniform-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        uniform_path,
+        "--output",
+        uniform_result,
+        "--block-size",
+        "32",
+    )
+    uniform_resolved = json.loads((uniform_result / "resolved.json").read_text())
+    uniform_loop = next(
+        stage
+        for stage in uniform_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    if uniform_loop["gainMode"] != "uniform":
+        raise AssertionError(f"gainMode did not resolve to uniform: {uniform_loop}")
+    if len(set(uniform_loop["gains"])) != 1:
+        raise AssertionError(
+            f"gainMode uniform did not solve one shared gain across "
+            f"Channels: {uniform_loop['gains']}"
+        )
+    mean_loop_time_sec = (
+        sum(uniform_loop["delaysSamples"]) / len(uniform_loop["delaysSamples"]) / 48000
+    )
+    expected_uniform_gain = 10 ** (-3 * mean_loop_time_sec / uniform_loop["rt60Sec"])
+    if abs(uniform_loop["gains"][0] - expected_uniform_gain) > 1e-9:
+        raise AssertionError(
+            f"gainMode uniform's shared gain did not match the mean-loop-time "
+            f"solve: {uniform_loop['gains'][0]} != {expected_uniform_gain}"
+        )
+    if uniform_loop["gains"][0] == expected_gains[0]:
+        raise AssertionError(
+            "gainMode uniform's shared gain coincided with gainMode "
+            "per-channel's Channel-0 gain -- fixture does not distinguish "
+            "the two modes"
+        )
+
+    # mix: hadamard, reusing the existing matrix-resolution seam unchanged
+    # (#56). N=2 Hadamard is a known closed form: 1/sqrt(2) * [[1, 1],
+    # [1, -1]].
+    hadamard_request = json.loads(json.dumps(request))
+    hadamard_request["composition"]["stages"][1]["mix"] = "hadamard"
+    hadamard_path = workspace / "hadamard-request.json"
+    hadamard_path.write_text(json.dumps(hadamard_request))
+    hadamard_result = workspace / "hadamard-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        hadamard_path,
+        "--output",
+        hadamard_result,
+        "--block-size",
+        "32",
+    )
+    hadamard_resolved = json.loads((hadamard_result / "resolved.json").read_text())
+    hadamard_loop = next(
+        stage
+        for stage in hadamard_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    hadamard_scale = 0.7071067811865475
+    expected_hadamard_matrix = [
+        [hadamard_scale, hadamard_scale],
+        [hadamard_scale, -hadamard_scale],
+    ]
+    if hadamard_loop["mix"] != "hadamard" or hadamard_loop["matrix"] != (
+        expected_hadamard_matrix
+    ):
+        raise AssertionError(
+            f"unexpected resolved N=2 Hadamard matrix: {hadamard_loop}"
+        )
+
+    # mix: hadamard at a non-power-of-two Channel count is a hard error,
+    # never a silent fallback (#56) -- the same requirement already proven
+    # for the Diffuser, now covered for the Feedback Loop's own mix
+    # resolution.
+    non_power_of_two_request = json.loads(json.dumps(request))
+    non_power_of_two_request["composition"]["stages"][0]["channels"] = 3
+    non_power_of_two_request["composition"]["stages"][1]["mix"] = "hadamard"
+    non_power_of_two_path = workspace / "non-power-of-two-request.json"
+    non_power_of_two_path.write_text(json.dumps(non_power_of_two_request))
+    non_power_of_two_result = workspace / "non-power-of-two-result"
+    non_power_of_two = run(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        non_power_of_two_path,
+        "--output",
+        non_power_of_two_result,
+        "--block-size",
+        "32",
+    )
+    if non_power_of_two.returncode == 0:
+        raise AssertionError(
+            "renderer accepted hadamard at a non-power-of-two Channel count"
+        )
+    if (
+        "hadamard requires a power-of-two Channel count"
+        not in non_power_of_two.stderr
+    ):
+        raise AssertionError(
+            f"hadamard at a non-power-of-two Channel count was not rejected "
+            f"with its own specific reason: {non_power_of_two.stderr}"
+        )
+    if "/composition/stages/1/mix" not in non_power_of_two.stderr:
+        raise AssertionError(
+            f"hadamard rejection did not name the mix field: "
+            f"{non_power_of_two.stderr}"
+        )
+    if non_power_of_two_result.exists():
+        raise AssertionError("rejected configuration created a Render Result")
+
+    # mix: random-orthogonal, delayStrategy: uniform-random, and
+    # gainMode: uniform together (#56) -- every resolved combination is
+    # recorded in the Resolved Configuration and rerenders exactly, not
+    # just the Reference combination exercised above.
+    combined_request = json.loads(json.dumps(request))
+    combined_request["composition"]["stages"][1]["mix"] = "random-orthogonal"
+    combined_request["composition"]["stages"][1]["delayStrategy"] = "uniform-random"
+    combined_request["composition"]["stages"][1]["gainMode"] = "uniform"
+    combined_path = workspace / "combined-request.json"
+    combined_path.write_text(json.dumps(combined_request))
+    combined_result = workspace / "combined-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        combined_path,
+        "--output",
+        combined_result,
+        "--block-size",
+        "32",
+    )
+    combined_resolved = json.loads((combined_result / "resolved.json").read_text())
+    combined_loop = next(
+        stage
+        for stage in combined_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    if (
+        combined_loop["mix"] != "random-orthogonal"
+        or combined_loop["delayStrategy"] != "uniform-random"
+        or combined_loop["gainMode"] != "uniform"
+    ):
+        raise AssertionError(
+            f"combined mix/delayStrategy/gainMode did not resolve as "
+            f"requested: {combined_loop}"
+        )
+    if len(combined_loop["matrix"]) != 2 or any(
+        len(row) != 2 for row in combined_loop["matrix"]
+    ):
+        raise AssertionError(
+            f"unexpected resolved random-orthogonal matrix shape: {combined_loop}"
+        )
+
+    combined_rerendered = workspace / "combined-rerendered"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        combined_result / "resolved.json",
+        "--output",
+        combined_rerendered,
+        "--block-size",
+        "32",
+    )
+    if (combined_rerendered / "output.wav").read_bytes() != (
+        combined_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed output.wav for the combined "
+            "mix/delayStrategy/gainMode configuration"
+        )
+    if (combined_rerendered / "resolved.json").read_bytes() != (
+        combined_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed resolved.json for the combined "
+            "mix/delayStrategy/gainMode configuration"
         )
 
 

@@ -276,7 +276,9 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
         rvrbotron::dsp::MixMatrixType::householder,
     const rvrbotron::dsp::DelayStrategy delayStrategy =
         rvrbotron::dsp::DelayStrategy::even,
-    const std::uint32_t sampleRate = 48000) {
+    const std::uint32_t sampleRate = 48000,
+    const rvrbotron::dsp::GainMode gainMode =
+        rvrbotron::dsp::GainMode::perChannel) {
   rvrbotron::config::SplitConfig split;
   split.channels = channels;
   split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
@@ -288,6 +290,7 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   loop.delayStrategy = delayStrategy;
   loop.rt60Sec = rt60Sec;
   loop.mix = mix;
+  loop.gainMode = gainMode;
 
   rvrbotron::config::DownmixConfig downmix;
   downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
@@ -1338,6 +1341,129 @@ int main() {
               << impliedRt60 << "s vs requested " << requestedRt60Sec
               << "s\n";
     return 1;
+  }
+
+  // gainMode (#56): "uniform" solves one shared gain from the mean loop
+  // time across Channels rather than each Channel's own. A much wider
+  // delay spread than the fixture above -- Householder mixing otherwise
+  // blends the Channels' individual decay rates together enough that a
+  // 2x spread barely shows up in the aggregate two-window measurement --
+  // makes the two modes' accuracy difference unambiguous. Measured the
+  // same way as the accuracy check above: full Reverb, select Downmix,
+  // two-window Schroeder-style energy.
+  {
+    constexpr double gainModeDelayMinMs = 0.5;
+    constexpr double gainModeDelayMaxMs = 20.0;
+    const auto perChannelWideConfig = resolvedFeedbackLoopConfig(
+        decayChannels,
+        requestedRt60Sec,
+        gainModeDelayMinMs,
+        gainModeDelayMaxMs,
+        rvrbotron::dsp::MixMatrixType::householder,
+        rvrbotron::dsp::DelayStrategy::even,
+        decaySampleRate,
+        rvrbotron::dsp::GainMode::perChannel);
+    const auto uniformWideConfig = resolvedFeedbackLoopConfig(
+        decayChannels,
+        requestedRt60Sec,
+        gainModeDelayMinMs,
+        gainModeDelayMaxMs,
+        rvrbotron::dsp::MixMatrixType::householder,
+        rvrbotron::dsp::DelayStrategy::even,
+        decaySampleRate,
+        rvrbotron::dsp::GainMode::uniform);
+    const auto& perChannelWideLoop =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            perChannelWideConfig.composition.stages[1]);
+    const auto& uniformWideLoop =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            uniformWideConfig.composition.stages[1]);
+    if (perChannelWideLoop.gainMode != rvrbotron::dsp::GainMode::perChannel ||
+        uniformWideLoop.gainMode != rvrbotron::dsp::GainMode::uniform) {
+      std::cerr << "gainMode comparison fixtures did not resolve to the "
+                   "expected modes\n";
+      return 1;
+    }
+    if (perChannelWideLoop.delaysSamples != uniformWideLoop.delaysSamples) {
+      std::cerr << "gainMode comparison fixtures' delays were not "
+                   "comparable to each other\n";
+      return 1;
+    }
+    for (const auto gain : uniformWideLoop.gains) {
+      if (gain != uniformWideLoop.gains.front()) {
+        std::cerr << "gainMode uniform did not solve one shared gain "
+                     "across Channels: " << gain
+                  << " != " << uniformWideLoop.gains.front() << '\n';
+        return 1;
+      }
+    }
+
+    const auto measureImpliedRt60 = [&](const rvrbotron::dsp::ResolvedConfig&
+                                             config) {
+      rvrbotron::dsp::Reverb reverb(config);
+      const auto tailFrames =
+          static_cast<std::size_t>(reverb.tailBudgetFrames());
+      const auto frameCount = tailFrames + 1;
+      std::vector<rvrbotron::dsp::Sample> input(
+          frameCount, rvrbotron::dsp::Sample{0});
+      input[0] = 1.0F;
+      std::vector<rvrbotron::dsp::Sample> left(frameCount);
+      std::vector<rvrbotron::dsp::Sample> right(frameCount);
+      const auto& loop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+          config.composition.stages[1]);
+      const auto blockSize =
+          static_cast<std::size_t>(loop.blockSizeBoundSamples);
+      processMonoToStereoInChunks(reverb, input, left, right, blockSize);
+      const auto windowEnergyAt = [&](const std::size_t start,
+                                      const std::size_t length) {
+        double energy = 0.0;
+        for (std::size_t frame = start; frame < start + length; ++frame) {
+          const auto l = static_cast<double>(left[frame]);
+          const auto r = static_cast<double>(right[frame]);
+          energy += l * l + r * r;
+        }
+        return energy;
+      };
+      const auto energyA = windowEnergyAt(decayGuard, decayWindow);
+      const auto energyB =
+          windowEnergyAt(decayGuard + decaySeparation, decayWindow);
+      const auto dbDrop = 10.0 * std::log10(energyA / energyB);
+      return 60.0 * decayDeltaTSeconds / dbDrop;
+    };
+
+    if (perChannelWideLoop.tailBudgetSamples <
+        decayGuard + decaySeparation + decayWindow) {
+      std::cerr
+          << "gainMode comparison fixture's Tail budget is too short\n";
+      return 1;
+    }
+    const auto impliedPerChannelWide = measureImpliedRt60(perChannelWideConfig);
+    const auto impliedUniformWide = measureImpliedRt60(uniformWideConfig);
+    const auto perChannelRelativeError =
+        std::abs(impliedPerChannelWide - requestedRt60Sec) /
+        requestedRt60Sec;
+    const auto uniformRelativeError =
+        std::abs(impliedUniformWide - requestedRt60Sec) / requestedRt60Sec;
+    if (perChannelRelativeError > 0.05) {
+      std::cerr << "gainMode per-channel decay accuracy outside +-5% at "
+                   "this delay spread: implied "
+                << impliedPerChannelWide << "s vs requested "
+                << requestedRt60Sec << "s\n";
+      return 1;
+    }
+    // uniform must be measurably, not marginally, worse -- a wide margin
+    // over per-channel's own error rather than a hardcoded fraction, so
+    // the assertion doesn't depend on recomputing the production gain
+    // formula's exact expected value.
+    if (!(uniformRelativeError > 4.0 * perChannelRelativeError)) {
+      std::cerr << "gainMode uniform was not measurably less accurate than "
+                   "per-channel across a wide delay spread: implied "
+                << impliedUniformWide << "s (uniform) vs "
+                << impliedPerChannelWide << "s (per-channel), both against "
+                   "requested "
+                << requestedRt60Sec << "s\n";
+      return 1;
+    }
   }
 
   // Reverb::ownedBytes() accounts a Feedback Loop's delay-storage capacity

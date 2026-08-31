@@ -306,6 +306,7 @@ build/default/rvrbotron render \
         "rt60Sec": 2.4,
         "decayMargin": 1.5,
         "mix": "householder",
+        "gainMode": "per-channel",
         "silenceFloorDb": null
       },
       {
@@ -323,7 +324,8 @@ build/default/rvrbotron render \
 | `delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | `"even"` demonstrates flutter -- avoid it for a listening preset. |
 | `rt60Sec` | finite number > 0 | `2.4` | Requested decay time at the 1 kHz Reference band; solved into per-Channel gain at configuration. |
 | `decayMargin` | finite number > 0 | `1.5` | Multiplies `rt60Sec` to derive the resolved Tail budget (the upper bound on frames rendered past input EOF); `1.5` places the drain's end near -90 dB. |
-| `mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"householder"` | Mild mixing is the default here, in contrast to the Diffuser's maximal Hadamard default. |
+| `mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"householder"` | Mild mixing is the default here, in contrast to the Diffuser's maximal Hadamard default. `"hadamard"` at a non-power-of-two Channel count is a hard error. |
+| `gainMode` | `"per-channel"` \| `"uniform"` | `"per-channel"` | `"per-channel"` solves each Channel's gain from its own loop time; `"uniform"` solves one shared gain from the mean loop time across Channels instead (the reference design's approach), measurably less accurate at a wide delay spread. |
 | `silenceFloorDb` | finite number, or `null`/omitted | `null` (disabled) | Reserved seam for the eventual plugin's runtime idle behavior; dormant here -- disabled output is bit-identical to a build without the field. |
 
 Each Channel's decay gain is solved independently from that Channel's own

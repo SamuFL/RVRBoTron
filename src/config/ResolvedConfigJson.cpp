@@ -54,6 +54,18 @@ const char* mixMatrixTypeName(const dsp::MixMatrixType mix) {
       "unsupported Diffusion Step mix");
 }
 
+const char* gainModeName(const dsp::GainMode gainMode) {
+  switch (gainMode) {
+  case dsp::GainMode::perChannel:
+    return "per-channel";
+  case dsp::GainMode::uniform:
+    return "uniform";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Feedback Loop gainMode");
+}
+
 const char* polarityName(const dsp::PolarityStrategy polarity) {
   switch (polarity) {
   case dsp::PolarityStrategy::seededRandom:
@@ -151,6 +163,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
       {"delaysMs", loop.delaysMs},
       {"bufferSizes", loop.bufferSizes},
       {"rt60Sec", loop.rt60Sec},
+      {"gainMode", gainModeName(loop.gainMode)},
       {"gains", loop.gains},
       {"mix", mixMatrixTypeName(loop.mix)},
       {"matrix", std::move(matrix)},

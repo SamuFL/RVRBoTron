@@ -587,12 +587,14 @@ dsp::ResolvedDiffuser resolveDiffuser(
 
 // A Feedback Loop has one delay/gain/mix per Channel rather than a chain of
 // indexed steps: delays derive positionally from (seed, Channel index) per
-// ADR-0002, each Channel's decay gain is solved independently from that
-// Channel's own loop time so every Channel decays at the same rate (see
-// docs/design/reverb/stages/04-feedback-loop.md), and the resolved Tail
-// budget is an upper bound derived from rt60Sec and decayMargin -- never
-// zero once rt60Sec/decayMargin/sampleRate are all valid, independent of
-// whether per-Channel delay/gain/matrix derivation itself succeeds.
+// ADR-0002, decay gain is solved per `gainMode` (#56) -- `perChannel` from
+// that Channel's own loop time so every Channel decays at the requested
+// rate regardless of delay spread, `uniform` from one shared gain solved
+// from the mean loop time instead (see docs/design/reverb/stages/
+// 04-feedback-loop.md) -- and the resolved Tail budget is an upper bound
+// derived from rt60Sec and decayMargin -- never zero once
+// rt60Sec/decayMargin/sampleRate are all valid, independent of whether
+// per-Channel delay/gain/matrix derivation itself succeeds.
 dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
     const FeedbackLoopConfig& requested,
     const std::uint32_t channels,
@@ -608,6 +610,7 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   loop.decayMargin =
       requested.decayMargin.value_or(kDefaultFeedbackLoopDecayMargin);
   loop.mix = requested.mix.value_or(dsp::MixMatrixType::householder);
+  loop.gainMode = requested.gainMode.value_or(dsp::GainMode::perChannel);
   loop.delayMinMs =
       requested.delayMinMs.value_or(kDefaultFeedbackLoopDelayMinMs);
   loop.delayMaxMs =
@@ -632,8 +635,7 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   if (!deriveChannelValues || sampleRate == 0 ||
       !(loop.delayMinMs > 0.0) || !std::isfinite(loop.delayMinMs) ||
       !(loop.delayMaxMs >= loop.delayMinMs) ||
-      !std::isfinite(loop.delayMaxMs) ||
-      !isValidChannelCountForMix(loop.mix, channels)) {
+      !std::isfinite(loop.delayMaxMs)) {
     return loop;
   }
 
@@ -655,6 +657,16 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   }
   loop.delayMinSamples = delayMinSamples;
   loop.delayMaxSamples = delayMaxSamples;
+
+  // Checked only after delayMinSamples/delayMaxSamples are already set
+  // above -- consistent with how the Diffuser always resolves
+  // lengthSamples before its own mix-validity check ever runs -- so a
+  // Hadamard request at a non-power-of-two Channel count fails validation
+  // on its own specific check rather than on an unrelated
+  // "delayMinSamples/delayMaxSamples derived from ms" mismatch.
+  if (!isValidChannelCountForMix(loop.mix, channels)) {
+    return loop;
+  }
 
   const auto positions = delayMaxSamples - delayMinSamples + 1;
   const auto matrixElements = matrixElementCount(channels);
@@ -698,10 +710,27 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
       loop.delaysSamples.begin(), loop.delaysSamples.end());
 
   loop.gains.reserve(channels);
-  for (std::uint32_t channel = 0; channel < channels; ++channel) {
-    const auto loopTimeSec =
-        static_cast<double>(loop.delaysSamples[channel]) / sampleRate;
-    loop.gains.push_back(std::pow(10.0, -3.0 * loopTimeSec / loop.rt60Sec));
+  if (loop.gainMode == dsp::GainMode::uniform) {
+    // One shared gain solved from the mean loop time across Channels
+    // (docs/design/reverb/stages/04-feedback-loop.md's "Solving RT60 into
+    // gain"): the mean is deliberate rather than, say, the extremes, so
+    // the resulting per-Channel RT60 error is symmetric around the
+    // requested value rather than biased toward one end of the spread.
+    double meanLoopTimeSec = 0.0;
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      meanLoopTimeSec +=
+          static_cast<double>(loop.delaysSamples[channel]) / sampleRate;
+    }
+    meanLoopTimeSec /= channels;
+    const auto sharedGain =
+        std::pow(10.0, -3.0 * meanLoopTimeSec / loop.rt60Sec);
+    loop.gains.assign(channels, sharedGain);
+  } else {
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto loopTimeSec =
+          static_cast<double>(loop.delaysSamples[channel]) / sampleRate;
+      loop.gains.push_back(std::pow(10.0, -3.0 * loopTimeSec / loop.rt60Sec));
+    }
   }
 
   switch (loop.mix) {
@@ -1346,6 +1375,18 @@ void validateFeedbackLoopStage(
         "expected value greater than zero");
   }
 
+  if (feedbackLoop.gainMode != dsp::GainMode::perChannel &&
+      feedbackLoop.gainMode != dsp::GainMode::uniform) {
+    fail(path + "/gainMode", "expected per-channel or uniform");
+  }
+  double meanLoopTimeSec = 0.0;
+  if (feedbackLoop.gainMode == dsp::GainMode::uniform) {
+    for (const auto delay : feedbackLoop.delaysSamples) {
+      meanLoopTimeSec += static_cast<double>(delay) / resolved.sampleRate;
+    }
+    meanLoopTimeSec /= channels;
+  }
+
   auto sortedDelays = feedbackLoop.delaysSamples;
   std::sort(sortedDelays.begin(), sortedDelays.end());
   if (feedbackLoop.delayStrategy != dsp::DelayStrategy::uniformRandom &&
@@ -1401,8 +1442,13 @@ void validateFeedbackLoopStage(
     }
     const auto loopTimeSec =
         static_cast<double>(delay) / resolved.sampleRate;
-    const auto expectedGain =
-        std::pow(10.0, -3.0 * loopTimeSec / feedbackLoop.rt60Sec);
+    const auto expectedGain = std::pow(
+        10.0,
+        -3.0 *
+            (feedbackLoop.gainMode == dsp::GainMode::uniform
+                 ? meanLoopTimeSec
+                 : loopTimeSec) /
+            feedbackLoop.rt60Sec);
     if (!(feedbackLoop.gains[channel] > 0.0) ||
         !(feedbackLoop.gains[channel] < 1.0) ||
         !std::isfinite(feedbackLoop.gains[channel])) {

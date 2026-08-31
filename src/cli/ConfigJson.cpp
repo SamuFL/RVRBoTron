@@ -216,6 +216,19 @@ dsp::MixMatrixType parseMix(
   fail(path, "expected hadamard, householder, or random-orthogonal");
 }
 
+dsp::GainMode parseGainMode(
+    const Json& value,
+    const std::string_view path) {
+  const auto name = parseString(value, path);
+  if (name == "per-channel") {
+    return dsp::GainMode::perChannel;
+  }
+  if (name == "uniform") {
+    return dsp::GainMode::uniform;
+  }
+  fail(path, "expected per-channel or uniform");
+}
+
 dsp::PolarityStrategy parsePolarity(
     const Json& value,
     const std::string_view path) {
@@ -413,6 +426,7 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
        "rt60Sec",
        "decayMargin",
        "mix",
+       "gainMode",
        "silenceFloorDb"});
   config::FeedbackLoopConfig loop;
   if (value.contains("delayMinMs")) {
@@ -437,6 +451,10 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
   }
   if (value.contains("mix")) {
     loop.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
+  }
+  if (value.contains("gainMode")) {
+    loop.gainMode = parseGainMode(
+        value.at("gainMode"), std::string(path) + "/gainMode");
   }
   if (value.contains("silenceFloorDb") &&
       !value.at("silenceFloorDb").is_null()) {
@@ -690,6 +708,7 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
        "delaysMs",
        "bufferSizes",
        "rt60Sec",
+       "gainMode",
        "gains",
        "mix",
        "matrix",
@@ -708,6 +727,7 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
         "delaysMs",
         "bufferSizes",
         "rt60Sec",
+        "gainMode",
         "gains",
         "mix",
         "matrix",
@@ -749,6 +769,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
       value.at("bufferSizes"), std::string(path) + "/bufferSizes");
   loop.rt60Sec =
       parseNumber(value.at("rt60Sec"), std::string(path) + "/rt60Sec");
+  loop.gainMode = parseGainMode(
+      value.at("gainMode"), std::string(path) + "/gainMode");
   loop.gains =
       parseNumberArray(value.at("gains"), std::string(path) + "/gains");
   loop.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
