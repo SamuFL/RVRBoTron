@@ -37,7 +37,7 @@ Configuration is processed in four phases, in this order:
 
 1. **Parse** — read JSON into `ReverbConfig`. Structural errors only.
 2. **Default** — fill omitted fields. Every field has a documented default; nothing is implicit.
-3. **Derive** — compute everything the DSP actually needs: step lengths from the distribution, per-channel delay times from the seed, per-channel decay gains from RT60, shelf gains from damping ratios, downmix compensation, tap times, buffer sizes including modulation headroom.
+3. **Derive** — compute everything the DSP actually needs: step lengths from the distribution, per-channel delay times from the seed, per-channel decay gains from RT60, shelf gains and first-order coefficients from damping ratios, float32/float64 contraction evidence, the slowest resolved decay, downmix compensation, tap times, buffer sizes including modulation headroom.
 4. **Validate** — check both parameters and derived values, then construct.
 
 **Validation runs after derivation, not before.** Some rules can be checked from parameters directly (Hadamard requires a power-of-two N); others require solving first (damping stability depends on the computed shelf response). Splitting validation across two phases would mean two places to look when something is rejected.
@@ -67,7 +67,7 @@ When included stage fields are omitted, they resolve from the Reference configur
 | Rule | Source |
 |---|---|
 | Matrix must be valid for N | Overview |
-| Damping shelf must keep \|H(ω)\| < 1 for every channel | Stage 5 |
+| Damping must preserve the 1 kHz RT60 contract and remain conservatively contractive after float32 and float64 quantisation | Stage 5 |
 | Summing downmix strategies are rejected on aligned input | Stage 8 |
 | Tap indices must reference existing diffusion steps | Stage 7 |
 | Delay buffers must cover nominal delay + modulation depth + interpolation margin | Stage 6 |
@@ -96,7 +96,9 @@ The positional derivation algorithm is part of the configuration-version contrac
 
 ## resolved.json
 
-Every render emits its fully resolved configuration beside the audio: input and output Channel counts, actual step lengths, per-channel delay times in samples and milliseconds, resolved permutations and polarity, every matrix coefficient, buffer sizes, and the config format version. Coefficients are serialized as binary64-round-trippable JSON numbers so one Resolved Configuration gives float and double DSP the same structure.
+Every render emits its fully resolved configuration beside the audio: input and output Channel counts, actual step lengths, per-channel delay times in samples and milliseconds, resolved permutations and polarity, every matrix coefficient, Damping ratios and corners, per-Channel shelf gains and coefficients, the 1 kHz response result, per-precision contraction bounds and margins, shelf-state settling evidence, the slowest resolved decay, buffer sizes, and the config format version. Coefficients are serialized as binary64-round-trippable JSON numbers so one Resolved Configuration gives float and double DSP the same structure.
+
+Damping is an optional object within the resolved Feedback Loop. Its absence means disabled, so existing format-version-1 Requested and Resolved Configurations retain their meaning. This additive capability does not introduce a new configuration format version.
 
 Two reasons. Analysis needs to know what was built rather than what was requested — a doubling distribution over four steps is not something to recompute by hand when reading a plot weeks later. And a resolved configuration re-renders identically, which makes any past experiment reproducible without the original request file.
 

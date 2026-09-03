@@ -105,6 +105,8 @@ FeedbackLoop
 
 **`silenceFloorDb` is the designed-in seam for runtime idle behavior, dormant here.** A plugin host has no input EOF and no drain to authorize; what it needs instead is a way to decide a tail has gone quiet enough to stop processing. `silenceFloorDb`, carried in the Resolved Configuration, is that seam: disabled (the default, `null`) leaves the write-path flush at its numerical floor, so a render is bit-identical to a build without the field at all. A future milestone may raise the flush to this audible threshold and let a drain terminate early once every Channel is below it — at that point the field starts changing rendered samples, which is exactly why it lives in the *Resolved* Configuration rather than as an implementation constant: a value that can change output belongs in the versioned, reproducible record, not hidden inside the DSP.
 
+**Damping can extend the Tail budget.** Without Damping, the existing `rt60Sec × decayMargin` budget remains unchanged, including under the deliberately less-accurate `uniform` gain mode. With Damping, resolution uses the slower of the conservative feedback-decay bound and the shelves' own state-settling time. The existing `decayMargin` multiplies that resolved slowest RT60, preserving its meaning while preventing boosted bands or very low shelf corners from being truncated.
+
 ---
 
 ## Invariants

@@ -36,6 +36,10 @@ _Avoid_: Buildup, flutter
 Frequency-dependent decay created by filtering on every circulation through the Feedback Loop.
 _Avoid_: Output EQ
 
+**Two-shelf damping**:
+The current Damping model: one low shelf and one high shelf shape decay around the 1 kHz Reference band using low- and high-band decay ratios.
+_Avoid_: Three-band damping, multiband damping
+
 **Modulation**:
 Seeded movement of delay times that smears fixed resonances.
 _Avoid_: Chorus
