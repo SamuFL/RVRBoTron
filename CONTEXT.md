@@ -28,6 +28,10 @@ _Avoid_: Feedback diffuser
 The circulating delay network that gives the reverb tail its size and decay.
 _Avoid_: Diffuser
 
+**Loop overlap**:
+The span by which the Diffuser's `totalMs` exceeds the Feedback Loop's `delayMinMs`, during which fresh Diffuser output overwrites feedback-loop delay-line content before it has meaningfully decayed, heard as constructive energy buildup rather than clean decay.
+_Avoid_: Buildup, flutter
+
 **Damping**:
 Frequency-dependent decay created by filtering on every circulation through the Feedback Loop.
 _Avoid_: Output EQ
