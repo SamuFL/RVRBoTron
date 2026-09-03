@@ -239,9 +239,16 @@ def _point_evidence(point_dir):
     failed point never produced, rather than raising."""
     analysis_path = point_dir / "impulse" / "analysis" / "tail-v1.json"
     benchmark_path = point_dir / "benchmark.json"
-    analysis = json.loads(analysis_path.read_text()) if analysis_path.exists() else None
-    benchmark = json.loads(benchmark_path.read_text()) if benchmark_path.exists() else None
-    return analysis, benchmark
+
+    def load_json(path):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+    return load_json(analysis_path), load_json(benchmark_path)
 
 
 def _yes_no(value):
