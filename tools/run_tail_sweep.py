@@ -281,6 +281,7 @@ def _decay_section_html(analysis):
 <tr><th>Requested RT60</th><th>Measured RT60 (1 kHz)</th><th>Relative error</th>
 <th>Within +/-5%</th><th>Alignment score</th><th>Decay monotonic</th></tr>
 <tr><td>{decay['requestedRt60Sec']:.3f} s</td><td>{measured_word}</td>
+<td>{error_word}</td>
 <td>{_yes_no(decay["withinAccuracyInvariant"])}</td>
 <td>{analysis['alignment']['score']:.3f}</td>
 <td>{_yes_no(analysis['decayEnvelope']['monotonic'])}</td></tr>
