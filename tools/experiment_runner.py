@@ -258,6 +258,21 @@ def build_benchmark_summary(outcomes, reference_name, block_size):
     }
 
 
+def format_ranked_entry(entry):
+    """One ranked benchmark row's (case, median us, p95 us, worst us, ratio
+    to Reference), shared by every rendering of build_benchmark_summary's
+    output -- the terminal table below and run_tail_sweep.py's HTML
+    report -- so the field selection and microsecond conversion live in one
+    place rather than being re-derived per presentation."""
+    return (
+        entry["case"],
+        entry["medianBlockSeconds"] * 1e6,
+        entry["p95BlockSeconds"] * 1e6,
+        entry["worstBlockSeconds"] * 1e6,
+        entry["ratioToReferenceMedian"],
+    )
+
+
 def print_human_table(summary):
     if summary is None:
         print("No Reference benchmark available; skipping ranked table.")
@@ -267,10 +282,8 @@ def print_human_table(summary):
         f'{"worst (us)":>12} {"vs reference":>14}'
     )
     for entry in summary["rankedBySlowestMedian"]:
+        case, median_us, p95_us, worst_us, ratio = format_ranked_entry(entry)
         print(
-            f'{entry["case"]:<28} '
-            f'{entry["medianBlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["p95BlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["worstBlockSeconds"] * 1e6:>12.2f} '
-            f'{entry["ratioToReferenceMedian"]:>13.2f}x'
+            f'{case:<28} {median_us:>12.2f} {p95_us:>12.2f} {worst_us:>12.2f} '
+            f'{ratio:>13.2f}x'
         )

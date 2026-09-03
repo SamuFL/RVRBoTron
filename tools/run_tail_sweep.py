@@ -17,6 +17,15 @@ Output is laid out per sample, per axis, and per axis value, with numeric
 prefixes so a folder plays back in sweep order: <output>/<sample>/
 00-reference/, 01-<axis>/01-<value>/, 01-<axis>/02-<value>/, and so on.
 
+Every run also (re)generates <output>/<sample>/listening-report.html: one
+self-contained page presenting every point's renders (playable in place,
+via relative paths -- no external resource requests), measured decay
+against the requested RT60, and benchmark cost, so a tuning session is
+consumable without reading terminal scrollback or opening a dozen JSON
+files. Regeneration is unconditional and reads only already-published
+evidence, so rerunning a fully resumed sweep refreshes the report without
+re-rendering anything.
+
 Materialisation, command execution, render/benchmark invocation, and
 per-step resumability are tail-agnostic and live in experiment_runner; this
 module supplies only what is specific to the tail sweep: its axis-catalog
@@ -25,6 +34,7 @@ layout each point's steps produce.
 """
 
 import argparse
+import html
 import json
 import sys
 import wave
@@ -35,6 +45,7 @@ from experiment_runner import (
     CaseOutcome,
     benchmark_case,
     build_benchmark_summary,
+    format_ranked_entry,
     materialize,
     print_human_table,
     render_case,
@@ -222,6 +233,166 @@ def run_sweep_point(
     )
 
 
+def _point_evidence(point_dir):
+    """Best-effort read of a point's already-published tail analysis and
+    benchmark evidence for the listening report -- None for whatever a
+    failed point never produced, rather than raising."""
+    analysis_path = point_dir / "impulse" / "analysis" / "tail-v1.json"
+    benchmark_path = point_dir / "benchmark.json"
+
+    def load_json(path):
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+    return load_json(analysis_path), load_json(benchmark_path)
+
+
+def _yes_no(value):
+    """True/False/None -> "yes"/"no"/"n/a" -- decayEnvelope.monotonic is
+    None when a point's tail is too short to segment (see analyze_tail.py's
+    decay_envelope_evidence), and collapsing that into "no" would falsely
+    read as a measured non-monotonic decay rather than an unmeasured one."""
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
+
+
+def _decay_section_html(analysis):
+    decay = analysis["decay"]
+    measured = decay["measuredRt60Sec"]
+    measured_word = f'{measured:.3f} s' if measured is not None else "n/a"
+    error_word = (
+        f'{decay["relativeError"] * 100:.2f}%'
+        if decay["relativeError"] is not None
+        else "n/a"
+    )
+    band_rows = "".join(
+        "<tr><td>{:.0f} Hz</td><td>{}</td></tr>".format(
+            band["centerHz"],
+            f'{band["t30"]["rt60Sec"]:.3f} s' if band["t30"] else "n/a",
+        )
+        for band in decay["bands"]
+    )
+    return f"""<table>
+<tr><th>Requested RT60</th><th>Measured RT60 (1 kHz)</th><th>Relative error</th>
+<th>Within +/-5%</th><th>Alignment score</th><th>Decay monotonic</th></tr>
+<tr><td>{decay['requestedRt60Sec']:.3f} s</td><td>{measured_word}</td>
+<td>{error_word}</td>
+<td>{_yes_no(decay["withinAccuracyInvariant"])}</td>
+<td>{analysis['alignment']['score']:.3f}</td>
+<td>{_yes_no(analysis['decayEnvelope']['monotonic'])}</td></tr>
+</table>
+<details><summary>Per-band T30 RT60</summary>
+<table><tr><th>Band</th><th>T30 RT60</th></tr>{band_rows}</table></details>"""
+
+
+def _benchmark_section_html(benchmark):
+    return f"""<table>
+<tr><th>Median block time</th><th>p95</th><th>Worst</th></tr>
+<tr><td>{benchmark['medianBlockSeconds'] * 1e6:.2f} us</td>
+<td>{benchmark['p95BlockSeconds'] * 1e6:.2f} us</td>
+<td>{benchmark['worstBlockSeconds'] * 1e6:.2f} us</td></tr>
+</table>"""
+
+
+def _point_section_html(name, directory, point_dir, outcome):
+    heading = html.escape(name)
+    if outcome.status == "failed":
+        return (
+            f"<h2>{heading}</h2>\n"
+            f'<p class="status-failed">FAILED: {html.escape(outcome.detail or "")}</p>'
+        )
+
+    analysis, benchmark = _point_evidence(point_dir)
+    decay_html = (
+        _decay_section_html(analysis)
+        if analysis is not None
+        else "<p>Tail analysis unavailable.</p>"
+    )
+    benchmark_html = (
+        _benchmark_section_html(benchmark)
+        if benchmark is not None
+        else "<p>Benchmark unavailable.</p>"
+    )
+    sample_audio = html.escape(f"{directory}/sample/output.wav")
+    impulse_audio = html.escape(f"{directory}/impulse/output.wav")
+    return f"""<h2>{heading} <span class="status-{outcome.status}">[{outcome.status}]</span></h2>
+<p class="meta">Sample render</p>
+<audio controls src="{sample_audio}"></audio>
+<p class="meta">Impulse render (used for tail analysis)</p>
+<audio controls src="{impulse_audio}"></audio>
+{decay_html}
+{benchmark_html}"""
+
+
+def _benchmark_summary_html(summary):
+    if summary is None:
+        return "<p>No benchmark summary available.</p>"
+    rows = "".join(
+        "<tr><td>{}</td><td>{:.2f} us</td><td>{:.2f} us</td><td>{:.2f} us</td>"
+        "<td>{:.2f}x</td></tr>".format(
+            html.escape(case), median_us, p95_us, worst_us, ratio
+        )
+        for case, median_us, p95_us, worst_us, ratio in (
+            format_ranked_entry(entry) for entry in summary["rankedBySlowestMedian"]
+        )
+    )
+    return f"""<table>
+<tr><th>Point</th><th>Median</th><th>p95</th><th>Worst</th><th>vs Reference</th></tr>
+{rows}
+</table>"""
+
+
+_REPORT_STYLE = """
+body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 960px; }
+h1 { font-size: 1.4rem; }
+h2 { font-size: 1.1rem; margin-top: 2.5rem; border-bottom: 1px solid #ccc; padding-bottom: .25rem; }
+table { border-collapse: collapse; margin: .5rem 0 1rem; }
+th, td { border: 1px solid #ccc; padding: .25rem .5rem; text-align: right; font-variant-numeric: tabular-nums; }
+th { text-align: center; background: #f2f2f2; }
+td:first-child, th:first-child { text-align: left; }
+audio { width: 100%; margin: .25rem 0 .75rem; }
+.status-failed { color: #b00020; font-weight: bold; }
+.status-completed, .status-resumed { color: #1a7a1a; }
+.meta { color: #555; font-size: .9rem; margin-bottom: 0; }
+"""
+
+
+def generate_report(sample_root, sample_name, points, summary):
+    """Writes one self-contained listening-report.html presenting every
+    point's renders, measured decay, and benchmark cost -- no external
+    resource requests, no JavaScript, and no dependency on anything but the
+    evidence this sweep already published to sample_root. Unconditional and
+    read-only against already-published evidence, so rerunning a fully
+    resumed sweep regenerates the report without re-rendering anything."""
+    sections = "\n".join(
+        _point_section_html(name, directory, point_dir, outcome)
+        for name, directory, point_dir, outcome in points
+    )
+    document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tail sweep: {html.escape(sample_name)}</title>
+<style>{_REPORT_STYLE}</style>
+</head>
+<body>
+<h1>Tail sweep: {html.escape(sample_name)}</h1>
+<h2>Benchmark comparison</h2>
+{_benchmark_summary_html(summary)}
+{sections}
+</body>
+</html>
+"""
+    report_path = sample_root / "listening-report.html"
+    report_path.write_text(document)
+    return report_path
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description=(
@@ -281,6 +452,7 @@ def main():
     sample_root.mkdir(parents=True, exist_ok=True)
 
     outcomes = []
+    points = []
     for name, directory, overrides in sweep_points(catalog):
         point_dir = sample_root / directory
         try:
@@ -300,6 +472,7 @@ def main():
         except CatalogError as error:
             outcome = CaseOutcome(name, "failed", str(error))
         outcomes.append(outcome)
+        points.append((name, directory, point_dir, outcome))
         print(f'[{outcome.status}] {outcome.name}' + (
             f': {outcome.detail}' if outcome.detail else ''
         ))
@@ -319,8 +492,8 @@ def main():
         print()
         print(summary_path)
 
-    report_path = sample_root / "sweep-report.json"
-    report_path.write_text(
+    status_report_path = sample_root / "sweep-report.json"
+    status_report_path.write_text(
         json.dumps(
             {
                 "formatVersion": 1,
@@ -333,7 +506,16 @@ def main():
         + "\n"
     )
     print()
-    print(report_path)
+    print(status_report_path)
+
+    # Unconditional and read-only against already-published evidence, so a
+    # rerun of a fully resumed sweep regenerates the report without
+    # re-rendering anything.
+    listening_report_path = generate_report(
+        sample_root, arguments.sample.name, points, summary
+    )
+    print()
+    print(listening_report_path)
 
     failures = [outcome for outcome in outcomes if outcome.status == "failed"]
     if failures:

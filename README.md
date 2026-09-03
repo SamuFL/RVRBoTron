@@ -641,8 +641,7 @@ slowest-to-fastest with deltas from the Reference point -- the same
 aggregation `run_diffusion_catalog.py` produces -- so acoustic preference
 and processing cost are visible together across the whole sweep, not just
 one point at a time. Output is laid out per sample, per axis, and per axis
-value with
-numeric prefixes for auditioning in order:
+value with numeric prefixes for auditioning in order:
 `<output>/<sample>/00-reference/`, `<output>/<sample>/01-<axis>/01-<value>/`,
 `02-<value>/`, and so on through every axis. As with the diffusion catalog,
 every point's render, analysis, and benchmark steps are independently
@@ -652,6 +651,18 @@ CI instead runs a millisecond-scale tracer sweep
 (`tests/test_tail_sweep_cli.py`) that proves the axis materialization,
 paired-impulse rendering, and resumability without executing the full
 sweep.
+
+Every run also (re)generates `<output>/<sample>/listening-report.html`: one
+self-contained page presenting every point's renders (playable in place
+via relative `<audio>` paths -- no external resource requests, no
+JavaScript), its measured decay against the requested RT60 (with a
+per-band T30 breakdown behind a `<details>` toggle), and its benchmark
+cost, alongside the same ranked cross-point comparison as the terminal
+table -- so a tuning session is consumable by opening one file in a
+browser, without reading terminal scrollback or opening a dozen JSON
+files. Regeneration is unconditional and reads only already-published
+evidence, so rerunning a fully resumed sweep refreshes the report without
+re-rendering anything.
 
 ### Validate a Listening Sample Locally
 
