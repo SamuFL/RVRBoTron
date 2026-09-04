@@ -126,19 +126,20 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
                   "Feedback Loop requires finite resolved Damping "
                   "coefficients");
             }
+            const auto sampleA1 = static_cast<Sample>(coefficientA);
             // A one-pole section's own state is stable only while its pole
             // magnitude |a1| stays below one (#77); resolution never emits
             // such a value for this stage's canonical shelf coefficients,
             // so a violation here means deliberately unstable or corrupted
             // resolved data, rejected before it can ever process a sample.
-            if (!(std::abs(coefficientA) < 1.0)) {
+            if (!(std::abs(sampleA1) < Sample{1})) {
               throw std::invalid_argument(
                   "Feedback Loop requires a stable resolved Damping shelf "
                   "pole (|a1| < 1)");
             }
             targetB0.push_back(static_cast<Sample>(coefficient0));
             targetB1.push_back(static_cast<Sample>(coefficient1));
-            targetA1.push_back(static_cast<Sample>(coefficientA));
+            targetA1.push_back(sampleA1);
           }
           prevInput.assign(channels_, Sample{0});
           prevOutput.assign(channels_, Sample{0});
