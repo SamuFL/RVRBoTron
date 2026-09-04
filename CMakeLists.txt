@@ -52,6 +52,7 @@ if(RVRBOTRON_SAMPLE_DOUBLE)
 endif()
 
 add_library(rvrbotron_config
+  src/config/DampingResolution.cpp
   src/config/MixMatrixResolution.cpp
   src/config/PositionalRandom.cpp
   src/config/ResolveConfig.cpp

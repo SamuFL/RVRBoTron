@@ -327,6 +327,24 @@ build/default/rvrbotron render \
 | `mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"householder"` | Mild mixing is the default here, in contrast to the Diffuser's maximal Hadamard default. `"hadamard"` at a non-power-of-two Channel count is a hard error. |
 | `gainMode` | `"per-channel"` \| `"uniform"` | `"per-channel"` | `"per-channel"` solves each Channel's gain from its own loop time; `"uniform"` solves one shared gain from the mean loop time across Channels instead (the reference design's approach), measurably less accurate at a wide delay spread. |
 | `silenceFloorDb` | finite number, or `null`/omitted | `null` (disabled) | Reserved seam for the eventual plugin's runtime idle behavior; dormant here -- disabled output is bit-identical to a build without the field. |
+| `damping` | object, or omitted | omitted (disabled) | The first audible Damping tracer: a per-Channel high shelf applied after decay gain and before mixing, on every circulation. Omitted preserves undamped output; an included empty object (`{}`) resolves the research baseline below. See the field table underneath. |
+
+Omitting `damping` entirely preserves existing undamped output, and an
+existing `resolved.json` written before Damping existed loads back as
+disabled. An included `damping` object resolves any missing nested field to
+the baseline shown here:
+
+| `damping` field | Values | Default | Notes |
+| --- | --- | --- | --- |
+| `highRatio` | finite number > 0, up to `1.0` | `0.5` | Decay time above `highHz`, relative to `rt60Sec` (`0.5` = half). Boosting above `1.0` is not supported yet -- a conservative stability certificate arrives in a later slice. |
+| `highHz` | finite number, strictly between `0` and Nyquist | `4000` | Half-gain shelf corner: the response is halfway (in dB) between unity and the shelf plateau at this frequency. |
+| `lowRatio` | must currently be `1.0` | `1.0` | Recorded for schema stability; low-frequency cleanup is not implemented until a later slice, so any other value is rejected rather than silently ignored. |
+| `lowHz` | finite number, strictly between `0` and Nyquist | `200` | Recorded for schema stability; inert while `lowRatio` is `1.0`. |
+
+A ratio of `1.0` bypasses the high shelf entirely, so an explicit unity
+`damping` renders bit-identically to `damping` omitted. Resolved per-Channel
+high-shelf gain and canonical prewarped coefficients are recorded in
+`resolved.json`.
 
 Each Channel's decay gain is solved independently from that Channel's own
 loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate

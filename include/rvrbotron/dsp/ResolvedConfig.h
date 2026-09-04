@@ -74,6 +74,27 @@ struct ResolvedDiffuser {
   std::vector<ResolvedDiffusionStep> steps;
 };
 
+// Resolved first-audible Damping tracer (see docs/design/reverb/stages/
+// 05-damping.md): requested low/high decay ratios and shelf corners, plus
+// each Channel's resolved high-shelf plateau gain and canonical prewarped
+// one-pole coefficients. `lowRatio`/`lowHz` are recorded now so the
+// Requested/Resolved schema is stable, but the low shelf itself is not yet
+// applied to audio -- resolution and validation restrict `lowRatio` to 1.0
+// until a later slice (#76) joins it to the high shelf.
+struct ResolvedDamping {
+  double highRatio = 0.5;
+  double highHz = 4000.0;
+  double lowRatio = 1.0;
+  double lowHz = 200.0;
+  // Per-Channel resolved high-shelf plateau gain (linear) and canonical
+  // prewarped first-order digital coefficients:
+  // y[n] = b0*x[n] + b1*x[n-1] - a1*y[n-1].
+  std::vector<double> highShelfGains;
+  std::vector<double> highShelfB0;
+  std::vector<double> highShelfB1;
+  std::vector<double> highShelfA1;
+};
+
 struct ResolvedFeedbackLoop {
   std::uint32_t channels = 0;
   std::uint64_t delayMinSamples = 0;
@@ -114,6 +135,11 @@ struct ResolvedFeedbackLoop {
   // a versioned Resolved Configuration value rather than an implementation
   // detail.
   std::optional<double> silenceFloorDb;
+  // The first-audible Damping tracer (see docs/design/reverb/stages/
+  // 05-damping.md and issue #75). Disabled (nullopt) by default: omission
+  // preserves undamped output, and existing format-version-1 Resolved
+  // Configurations without this field load as disabled.
+  std::optional<ResolvedDamping> damping;
 };
 
 struct ResolvedDownmix {
