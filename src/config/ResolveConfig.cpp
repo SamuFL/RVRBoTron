@@ -601,12 +601,23 @@ std::uint64_t resolveTailBudgetSamples(
   }
   const auto exactSamples =
       static_cast<long double>(rt60Sec) * decayMargin * sampleRate;
-  if (!std::isfinite(exactSamples) ||
-      exactSamples >= static_cast<long double>(
-                          std::numeric_limits<std::uint64_t>::max())) {
+  if (!std::isfinite(exactSamples)) {
     return 0;
   }
-  return static_cast<std::uint64_t>(std::ceil(exactSamples));
+  const auto ceiledSamples = std::ceil(exactSamples);
+  // 2^64, not uint64_t::max(), as the exclusive upper bound: uint64_t::max()
+  // (2^64 - 1) is not exactly representable in a `long double` narrower than
+  // 64 mantissa bits -- as on this codebase's macOS/ARM64 build, where
+  // `long double` is `double` -- so comparing against it directly rejects
+  // (or, with the wrong relational operator, admits) the wrong boundary
+  // depending on platform. 2^64 is an exact power of two and therefore
+  // exactly representable at any precision, making this comparison correct
+  // on every supported platform: ceiledSamples strictly below it always
+  // fits in a uint64_t.
+  if (ceiledSamples >= 0x1p64L) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(ceiledSamples);
 }
 
 // A Feedback Loop has one delay/gain/mix per Channel rather than a chain of
