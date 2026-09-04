@@ -743,7 +743,12 @@ dsp::ResolvedDamping parseResolvedDamping(
        "lowShelfA1",
        "expectedLowRt60Sec",
        "expectedReferenceRt60Sec",
-       "expectedHighRt60Sec"});
+       "expectedHighRt60Sec",
+       "contractionBoundFloat32",
+       "contractionMarginFloat32",
+       "contractionBoundFloat64",
+       "contractionMarginFloat64",
+       "slowestResolvedRt60Sec"});
   for (const auto field :
        {"highRatio",
         "highHz",
@@ -759,7 +764,12 @@ dsp::ResolvedDamping parseResolvedDamping(
         "lowShelfA1",
         "expectedLowRt60Sec",
         "expectedReferenceRt60Sec",
-        "expectedHighRt60Sec"}) {
+        "expectedHighRt60Sec",
+        "contractionBoundFloat32",
+        "contractionMarginFloat32",
+        "contractionBoundFloat64",
+        "contractionMarginFloat64",
+        "slowestResolvedRt60Sec"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedDamping damping;
@@ -796,6 +806,21 @@ dsp::ResolvedDamping parseResolvedDamping(
   damping.expectedHighRt60Sec = parseNumberArray(
       value.at("expectedHighRt60Sec"),
       std::string(path) + "/expectedHighRt60Sec");
+  damping.contractionBoundFloat32 = parseNumberArray(
+      value.at("contractionBoundFloat32"),
+      std::string(path) + "/contractionBoundFloat32");
+  damping.contractionMarginFloat32 = parseNumberArray(
+      value.at("contractionMarginFloat32"),
+      std::string(path) + "/contractionMarginFloat32");
+  damping.contractionBoundFloat64 = parseNumberArray(
+      value.at("contractionBoundFloat64"),
+      std::string(path) + "/contractionBoundFloat64");
+  damping.contractionMarginFloat64 = parseNumberArray(
+      value.at("contractionMarginFloat64"),
+      std::string(path) + "/contractionMarginFloat64");
+  damping.slowestResolvedRt60Sec = parseNumber(
+      value.at("slowestResolvedRt60Sec"),
+      std::string(path) + "/slowestResolvedRt60Sec");
   return damping;
 }
 

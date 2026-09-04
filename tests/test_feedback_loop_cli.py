@@ -624,11 +624,26 @@ def main():
             )
         return expected_gain, coefficients
 
+    # Exact powers of two: the IEEE 754 machine epsilon for each supported
+    # sample precision (see rvrbotron::config::resolveMatrixContractionBound).
+    eps_float32 = 2.0**-23
+    eps_float64 = 2.0**-52
+
+    def settling_time_sec(a1, sample_rate=48000):
+        if a1 == 0.0:
+            return 0.0
+        samples = 60.0 / (-20.0 * math.log10(abs(a1)))
+        return samples / sample_rate
+
     def check_damping_evidence(loop, damping):
-        for channel in range(len(loop["gains"])):
+        channels = len(loop["gains"])
+        matrix_bound_32 = 1.0 + math.sqrt(channels) * eps_float32
+        matrix_bound_64 = 1.0 + math.sqrt(channels) * eps_float64
+        expected_slowest = loop["rt60Sec"]
+        for channel in range(channels):
             channel_gain = loop["gains"][channel]
             loop_time_sec = loop["delaysSamples"][channel] / 48000
-            _high_gain, high_coefficients = check_shelf(
+            high_gain, high_coefficients = check_shelf(
                 damping,
                 channel,
                 channel_gain,
@@ -637,7 +652,7 @@ def main():
                 "highShelf",
                 True,
             )
-            _low_gain, low_coefficients = check_shelf(
+            low_gain, low_coefficients = check_shelf(
                 damping,
                 channel,
                 channel_gain,
@@ -652,10 +667,19 @@ def main():
                 low_coefficients, 1000.0, 48000
             ) * shelf_magnitude(high_coefficients, 1000.0, 48000)
             reference_loss_db = loss_db + 20.0 * math.log10(reference_magnitude)
+            expected_low_rt60 = damping["lowRatio"] * implied_undamped_rt60
+            expected_high_rt60 = damping["highRatio"] * implied_undamped_rt60
+            shelf_factor = max(1.0, low_gain) * max(1.0, high_gain)
+            expected_bound_32 = channel_gain * shelf_factor * matrix_bound_32
+            expected_bound_64 = channel_gain * shelf_factor * matrix_bound_64
             expected = {
-                "expectedLowRt60Sec": damping["lowRatio"] * implied_undamped_rt60,
-                "expectedHighRt60Sec": damping["highRatio"] * implied_undamped_rt60,
+                "expectedLowRt60Sec": expected_low_rt60,
+                "expectedHighRt60Sec": expected_high_rt60,
                 "expectedReferenceRt60Sec": -60.0 * loop_time_sec / reference_loss_db,
+                "contractionBoundFloat32": expected_bound_32,
+                "contractionMarginFloat32": 1.0 - expected_bound_32,
+                "contractionBoundFloat64": expected_bound_64,
+                "contractionMarginFloat64": 1.0 - expected_bound_64,
             }
             for key, expected_value in expected.items():
                 actual_value = damping[key][channel]
@@ -666,6 +690,32 @@ def main():
                         f"{key} mismatch on channel {channel}: "
                         f"{actual_value} != {expected_value} ({damping})"
                     )
+            if not (damping["contractionBoundFloat32"][channel] < 1.0) or not (
+                damping["contractionBoundFloat64"][channel] < 1.0
+            ):
+                raise AssertionError(
+                    f"channel {channel} was accepted with a contraction "
+                    f"bound not strictly below unity: {damping}"
+                )
+            if damping["highRatio"] > 1.0:
+                expected_slowest = max(expected_slowest, expected_high_rt60)
+                expected_slowest = max(
+                    expected_slowest, settling_time_sec(high_coefficients[2])
+                )
+            if damping["lowRatio"] > 1.0:
+                expected_slowest = max(expected_slowest, expected_low_rt60)
+                expected_slowest = max(
+                    expected_slowest, settling_time_sec(low_coefficients[2])
+                )
+        if abs(damping["slowestResolvedRt60Sec"] - expected_slowest) > 1e-6 * max(
+            1.0, expected_slowest
+        ):
+            raise AssertionError(
+                f"slowestResolvedRt60Sec mismatch: "
+                f"{damping['slowestResolvedRt60Sec']} != {expected_slowest} "
+                f"({damping})"
+            )
+        return expected_slowest
 
     def render_damping(name, damping_fields, expect_ok=True):
         req = json.loads(json.dumps(request))
@@ -862,23 +912,146 @@ def main():
             f"{uniform_high}"
         )
 
-    # A boost request above 1.0 is rejected with a parameter-specific
-    # explanation, never clamped, for both shelves -- safe boosting arrives
-    # in a later slice (#77).
-    for field in ("highRatio", "lowRatio"):
-        boost, boost_result = render_damping(
-            f"boost-{field}", {field: 1.5}, expect_ok=False
+    # Safe boosting (#77): a ratio above 1.0 is accepted when the
+    # conservative contraction certificate passes, with resolved evidence
+    # (per-Channel contraction bound/margin at both float32 and float64,
+    # and the slowest resolved RT60) recorded and internally consistent.
+    safe_boost_result = render_damping("safe-boost", {"highRatio": 1.5})
+    safe_boost_loop, safe_boost_damping = loop_and_damping(safe_boost_result)
+    expected_slowest = check_damping_evidence(safe_boost_loop, safe_boost_damping)
+    if expected_slowest <= safe_boost_loop["rt60Sec"]:
+        raise AssertionError(
+            "test fixture did not actually exercise a boosted Tail budget: "
+            f"{expected_slowest} vs rt60Sec={safe_boost_loop['rt60Sec']}"
         )
-        if boost.returncode == 0:
-            raise AssertionError(f"renderer accepted a {field} boost above 1.0")
-        if f"/composition/stages/1/damping/{field}" not in boost.stderr:
-            raise AssertionError(
-                f"boost rejection did not name the {field} field: {boost.stderr}"
-            )
-        if boost_result.exists():
-            raise AssertionError(
-                "rejected boost configuration created a Render Result"
-            )
+
+    # The Tail budget equals the slowest resolved RT60 times decayMargin,
+    # rounded up to frames; render metadata agrees, and the renderer
+    # writes the complete authorized response.
+    expected_tail_budget_samples = math.ceil(
+        expected_slowest * safe_boost_loop["decayMargin"] * 48000
+    )
+    if safe_boost_loop["tailBudgetSamples"] != expected_tail_budget_samples:
+        raise AssertionError(
+            f"boosted tailBudgetSamples did not match the slowest resolved "
+            f"RT60 solve: {safe_boost_loop['tailBudgetSamples']} != "
+            f"{expected_tail_budget_samples}"
+        )
+    safe_boost_metadata = json.loads(
+        (safe_boost_result / "render.json").read_text()
+    )
+    if safe_boost_metadata["tailBudgetFrames"] != expected_tail_budget_samples:
+        raise AssertionError(
+            f"render metadata did not agree with the extended Tail budget: "
+            f"{safe_boost_metadata}"
+        )
+    if (
+        safe_boost_metadata["frames"]
+        != safe_boost_metadata["inputFrames"]
+        + safe_boost_metadata["tailBudgetFrames"]
+    ):
+        raise AssertionError(
+            f"renderer did not drain the complete authorized response: "
+            f"{safe_boost_metadata}"
+        )
+    check_exact_rerender("safe-boost", safe_boost_result)
+
+    # A long deterministic burst response (the boosted tail above) contains
+    # no non-finite samples and has a negative late-energy trend, without
+    # requiring every local energy window to decrease -- local modal
+    # beating does not fail this evidence.
+    _burst_channels, _burst_rate, _burst_bits, burst_samples = read_float_wav(
+        safe_boost_result / "output.wav"
+    )
+    if not all(math.isfinite(sample) for sample in burst_samples):
+        raise AssertionError("boosted burst response contained a non-finite sample")
+    tail_samples = burst_samples[len(burst_samples) // 4 :]
+    window_count = 10
+    window_size = max(1, len(tail_samples) // window_count)
+    window_energies = [
+        math.sqrt(
+            sum(s * s for s in tail_samples[i * window_size : (i + 1) * window_size])
+            / window_size
+        )
+        for i in range(window_count)
+    ]
+    if window_energies[-1] >= max(window_energies) * 0.1:
+        raise AssertionError(
+            f"boosted burst response did not show a negative late-energy "
+            f"trend: {window_energies}"
+        )
+
+    # A nearby request beyond the conservative bound is rejected with an
+    # explanation naming the Damping object, the responsible Channel, and
+    # the contraction bound, while a safely contractive one right below it
+    # is accepted -- both shelves boosted together at the same ratio
+    # (found empirically for this fixture: exactly ratio 2.0 already
+    # fails, so 1.8/2.2 straddle it with comfortable margin either side).
+    boundary_accept_result = render_damping(
+        "boundary-accept", {"highRatio": 1.8, "lowRatio": 1.8}
+    )
+    boundary_accept_loop, boundary_accept_damping = loop_and_damping(
+        boundary_accept_result
+    )
+    check_damping_evidence(boundary_accept_loop, boundary_accept_damping)
+    check_exact_rerender("boundary-accept", boundary_accept_result)
+
+    boundary_reject, boundary_reject_result = render_damping(
+        "boundary-reject", {"highRatio": 2.2, "lowRatio": 2.2}, expect_ok=False
+    )
+    if boundary_reject.returncode == 0:
+        raise AssertionError(
+            "renderer accepted a boost combination beyond the conservative "
+            "contraction bound"
+        )
+    if (
+        "/composition/stages/1/damping" not in boundary_reject.stderr
+        or "contraction" not in boundary_reject.stderr
+    ):
+        raise AssertionError(
+            f"boost-beyond-bound rejection did not name the Damping object "
+            f"and the contraction bound: {boundary_reject.stderr}"
+        )
+    if boundary_reject_result.exists():
+        raise AssertionError(
+            "rejected boost-beyond-bound configuration created a Render "
+            "Result"
+        )
+
+    # Deliberately corrupted resolved Damping data (an impossible |a1| >= 1
+    # shelf pole) is rejected before processing, not merely producing
+    # unstable or garbage output.
+    corrupted_resolved = json.loads(
+        (safe_boost_result / "resolved.json").read_text()
+    )
+    corrupted_loop = next(
+        stage
+        for stage in corrupted_resolved["composition"]["stages"]
+        if stage["type"] == "feedback-loop"
+    )
+    corrupted_loop["damping"]["highShelfA1"][0] = 1.5
+    corrupted_path = workspace / "damping-corrupted-resolved.json"
+    corrupted_path.write_text(json.dumps(corrupted_resolved))
+    corrupted_result = workspace / "damping-corrupted-result"
+    corrupted_run = run(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        corrupted_path,
+        "--output",
+        corrupted_result,
+    )
+    if corrupted_run.returncode == 0:
+        raise AssertionError(
+            "renderer accepted a corrupted (|a1| >= 1) resolved Damping "
+            "coefficient"
+        )
+    if corrupted_result.exists():
+        raise AssertionError(
+            "rejected corrupted resolved Damping configuration created a "
+            "Render Result"
+        )
 
     # Both ratios must be finite and greater than zero.
     for field in ("highRatio", "lowRatio"):

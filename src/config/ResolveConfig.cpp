@@ -586,6 +586,29 @@ dsp::ResolvedDiffuser resolveDiffuser(
   return diffuser;
 }
 
+// The Tail budget: an RT60 (either rt60Sec alone, or -- with boosted
+// Damping, #77 -- the slower of rt60Sec, each boosted shelf's own
+// conservative feedback-decay estimate, and its state-settling time)
+// multiplied by decayMargin, rounded up to frames. Zero when any input is
+// non-finite/non-positive, or the exact product doesn't fit a uint64_t.
+std::uint64_t resolveTailBudgetSamples(
+    const double rt60Sec,
+    const double decayMargin,
+    const std::uint32_t sampleRate) noexcept {
+  if (sampleRate == 0 || !(rt60Sec > 0.0) || !std::isfinite(rt60Sec) ||
+      !(decayMargin > 0.0) || !std::isfinite(decayMargin)) {
+    return 0;
+  }
+  const auto exactSamples =
+      static_cast<long double>(rt60Sec) * decayMargin * sampleRate;
+  if (!std::isfinite(exactSamples) ||
+      exactSamples >= static_cast<long double>(
+                          std::numeric_limits<std::uint64_t>::max())) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(std::ceil(exactSamples));
+}
+
 // A Feedback Loop has one delay/gain/mix per Channel rather than a chain of
 // indexed steps: delays derive positionally from (seed, Channel index) per
 // ADR-0002, decay gain is solved per `gainMode` (#56) -- `perChannel` from
@@ -620,18 +643,8 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   // back to since "disabled" is the Reference configuration itself (#54).
   loop.silenceFloorDb = requested.silenceFloorDb;
 
-  if (sampleRate != 0 && loop.rt60Sec > 0.0 &&
-      std::isfinite(loop.rt60Sec) && loop.decayMargin > 0.0 &&
-      std::isfinite(loop.decayMargin)) {
-    const auto exactSamples = static_cast<long double>(loop.rt60Sec) *
-        loop.decayMargin * sampleRate;
-    if (std::isfinite(exactSamples) &&
-        exactSamples < static_cast<long double>(
-                           std::numeric_limits<std::uint64_t>::max())) {
-      loop.tailBudgetSamples =
-          static_cast<std::uint64_t>(std::ceil(exactSamples));
-    }
-  }
+  loop.tailBudgetSamples =
+      resolveTailBudgetSamples(loop.rt60Sec, loop.decayMargin, sampleRate);
 
   if (!deriveChannelValues || sampleRate == 0 ||
       !(loop.delayMinMs > 0.0) || !std::isfinite(loop.delayMinMs) ||
@@ -784,6 +797,22 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
       damping.expectedLowRt60Sec.reserve(channels);
       damping.expectedReferenceRt60Sec.reserve(channels);
       damping.expectedHighRt60Sec.reserve(channels);
+      damping.contractionBoundFloat32.reserve(channels);
+      damping.contractionMarginFloat32.reserve(channels);
+      damping.contractionBoundFloat64.reserve(channels);
+      damping.contractionMarginFloat64.reserve(channels);
+      // Computed once, shared by every Channel's certificate (see
+      // resolveMatrixContractionBound): the mixing matrix is common to the
+      // whole Feedback Loop, not per-Channel.
+      const auto matrixBoundFloat32 = resolveMatrixContractionBound(
+          channels, std::numeric_limits<float>::epsilon());
+      const auto matrixBoundFloat64 = resolveMatrixContractionBound(
+          channels, std::numeric_limits<double>::epsilon());
+      // Only a boosted shelf (ratio > 1.0) can push decay slower than
+      // rt60Sec; an attenuating or bypassed shelf never lengthens it, so
+      // undamped and attenuation-only Tail budgets stay exactly rt60Sec *
+      // decayMargin (see ResolvedDamping's declaration).
+      auto slowestResolvedRt60Sec = loop.rt60Sec;
       for (std::uint32_t channel = 0; channel < channels; ++channel) {
         const auto channelGain = loop.gains[channel];
         const auto lossDb = 20.0 * std::log10(channelGain);
@@ -825,7 +854,34 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
             lossDb + 20.0 * std::log10(referenceMagnitude);
         damping.expectedReferenceRt60Sec.push_back(
             -60.0 * loopTimeSec / referenceLossDb);
+
+        const auto boundFloat32 = resolveChannelContractionBound(
+            channelGain, lowGain, highGain, matrixBoundFloat32);
+        const auto boundFloat64 = resolveChannelContractionBound(
+            channelGain, lowGain, highGain, matrixBoundFloat64);
+        damping.contractionBoundFloat32.push_back(boundFloat32);
+        damping.contractionMarginFloat32.push_back(1.0 - boundFloat32);
+        damping.contractionBoundFloat64.push_back(boundFloat64);
+        damping.contractionMarginFloat64.push_back(1.0 - boundFloat64);
+
+        if (damping.highRatio > 1.0) {
+          slowestResolvedRt60Sec = std::max(
+              slowestResolvedRt60Sec, damping.expectedHighRt60Sec.back());
+          slowestResolvedRt60Sec = std::max(
+              slowestResolvedRt60Sec,
+              resolveShelfSettlingTimeSec(highCoefficients.a1, sampleRate));
+        }
+        if (damping.lowRatio > 1.0) {
+          slowestResolvedRt60Sec = std::max(
+              slowestResolvedRt60Sec, damping.expectedLowRt60Sec.back());
+          slowestResolvedRt60Sec = std::max(
+              slowestResolvedRt60Sec,
+              resolveShelfSettlingTimeSec(lowCoefficients.a1, sampleRate));
+        }
       }
+      damping.slowestResolvedRt60Sec = slowestResolvedRt60Sec;
+      loop.tailBudgetSamples = resolveTailBudgetSamples(
+          slowestResolvedRt60Sec, loop.decayMargin, sampleRate);
     }
     loop.damping = std::move(damping);
   }
@@ -1391,17 +1447,18 @@ void validateFeedbackLoopStage(
       !std::isfinite(*feedbackLoop.silenceFloorDb)) {
     fail(path + "/silenceFloorDb", "expected a finite value when present");
   }
-  const auto tailBudgetExact = static_cast<long double>(
-                                   feedbackLoop.rt60Sec) *
-      feedbackLoop.decayMargin * resolved.sampleRate;
-  const auto expectedTailBudget =
-      std::isfinite(tailBudgetExact) &&
-              tailBudgetExact < static_cast<long double>(
-                                    std::numeric_limits<
-                                        std::uint64_t>::max())
-          ? static_cast<std::uint64_t>(std::ceil(tailBudgetExact))
-          : std::numeric_limits<std::uint64_t>::max();
-  if (feedbackLoop.tailBudgetSamples != expectedTailBudget) {
+  // With Damping disabled, this is the exact, authoritative check: the
+  // Tail budget is derived from rt60Sec and decayMargin alone. With
+  // Damping enabled, the budget instead follows the slowest resolved RT60
+  // (rt60Sec, or slower when a shelf boosts) -- checked exactly once every
+  // Channel's resolved gain and shelf coefficients are validated, further
+  // below.
+  if (!feedbackLoop.damping.has_value() &&
+      feedbackLoop.tailBudgetSamples !=
+          resolveTailBudgetSamples(
+              feedbackLoop.rt60Sec,
+              feedbackLoop.decayMargin,
+              resolved.sampleRate)) {
     fail(
         path + "/tailBudgetSamples",
         "expected value derived from rt60Sec and decayMargin");
@@ -1560,15 +1617,6 @@ void validateFeedbackLoopStage(
           dampingPath + "/highRatio",
           "expected finite value greater than zero");
     }
-    // Safe boosting (highRatio > 1.0) is proven by a conservative
-    // contraction certificate arriving in a later slice (#77); this slice
-    // only supports neutral or attenuating high ratios.
-    if (damping.highRatio > 1.0) {
-      fail(
-          dampingPath + "/highRatio",
-          "boosting above 1.0 is not supported yet -- safe boosting "
-          "arrives in a later slice");
-    }
     if (!std::isfinite(damping.highHz) || !(damping.highHz > 0.0) ||
         !(damping.highHz < resolved.sampleRate / 2.0)) {
       fail(
@@ -1579,15 +1627,6 @@ void validateFeedbackLoopStage(
       fail(
           dampingPath + "/lowRatio",
           "expected finite value greater than zero");
-    }
-    // Safe boosting (lowRatio > 1.0) is deferred to the same later slice
-    // (#77) as highRatio boosting, for the same conservative-certificate
-    // reason.
-    if (damping.lowRatio > 1.0) {
-      fail(
-          dampingPath + "/lowRatio",
-          "boosting above 1.0 is not supported yet -- safe boosting "
-          "arrives in a later slice");
     }
     if (!std::isfinite(damping.lowHz) || !(damping.lowHz > 0.0) ||
         !(damping.lowHz < resolved.sampleRate / 2.0)) {
@@ -1622,6 +1661,16 @@ void validateFeedbackLoopStage(
         "/expectedReferenceRt60Sec");
     requireDampingChannelValues(
         damping.expectedHighRt60Sec.size(), "/expectedHighRt60Sec");
+    requireDampingChannelValues(
+        damping.contractionBoundFloat32.size(), "/contractionBoundFloat32");
+    requireDampingChannelValues(
+        damping.contractionMarginFloat32.size(),
+        "/contractionMarginFloat32");
+    requireDampingChannelValues(
+        damping.contractionBoundFloat64.size(), "/contractionBoundFloat64");
+    requireDampingChannelValues(
+        damping.contractionMarginFloat64.size(),
+        "/contractionMarginFloat64");
 
     // A relative tolerance, not a tight fixed epsilon: the gain
     // (log10/pow), the coefficients (tan/sqrt/pow), and the expected decay
@@ -1674,6 +1723,11 @@ void validateFeedbackLoopStage(
       }
       return expectedCoefficients;
     };
+    const auto matrixBoundFloat32 = resolveMatrixContractionBound(
+        channels, std::numeric_limits<float>::epsilon());
+    const auto matrixBoundFloat64 = resolveMatrixContractionBound(
+        channels, std::numeric_limits<double>::epsilon());
+    auto expectedSlowestResolvedRt60Sec = feedbackLoop.rt60Sec;
     for (std::uint32_t channel = 0; channel < channels; ++channel) {
       const auto channelGain = feedbackLoop.gains[channel];
       const auto highCoefficients = checkShelf(
@@ -1753,6 +1807,102 @@ void validateFeedbackLoopStage(
       // actual implied decay, which is what a later analysis/report layer
       // (not resolution) flags when it lands more than 10% from
       // `rt60Sec`.
+
+      const auto expectedBoundFloat32 = resolveChannelContractionBound(
+          channelGain,
+          damping.lowShelfGains[channel],
+          damping.highShelfGains[channel],
+          matrixBoundFloat32);
+      const auto expectedBoundFloat64 = resolveChannelContractionBound(
+          channelGain,
+          damping.lowShelfGains[channel],
+          damping.highShelfGains[channel],
+          matrixBoundFloat64);
+      const auto checkContraction =
+          [&](const double resolvedBound,
+              const double resolvedMargin,
+              const double expectedBound,
+              const std::string_view field) {
+            const auto expectedMargin = 1.0 - expectedBound;
+            if (!std::isfinite(resolvedBound) ||
+                std::abs(resolvedBound - expectedBound) >
+                    relativeTolerance(expectedBound) ||
+                !std::isfinite(resolvedMargin) ||
+                std::abs(resolvedMargin - expectedMargin) >
+                    relativeTolerance(expectedMargin)) {
+              fail(
+                  dampingPath + std::string(field),
+                  "expected the conservative one-circulation contraction "
+                  "bound and margin solved from the resolved gains and "
+                  "mixing matrix");
+            }
+          };
+      checkContraction(
+          damping.contractionBoundFloat32[channel],
+          damping.contractionMarginFloat32[channel],
+          expectedBoundFloat32,
+          "/contractionBoundFloat32");
+      checkContraction(
+          damping.contractionBoundFloat64[channel],
+          damping.contractionMarginFloat64[channel],
+          expectedBoundFloat64,
+          "/contractionBoundFloat64");
+      // The accept/reject gate for boosting (#77): a conservative
+      // structural proof, not a frequency grid or complete FDN pole solve
+      // (see docs/design/reverb/stages/05-damping.md's "Stability"). Every
+      // Channel's bound must remain strictly below unity at both realized
+      // precisions; this may conservatively reject an overlapping
+      // boost-and-cut combination that an exact modal analysis could prove
+      // safe (see ADR-0004) -- an accepted trade-off for a cheap,
+      // deterministic proof.
+      if (!(damping.contractionBoundFloat32[channel] < 1.0) ||
+          !(damping.contractionBoundFloat64[channel] < 1.0)) {
+        fail(
+            dampingPath,
+            "Channel " + std::to_string(channel) +
+                "'s conservative one-circulation contraction bound is not "
+                "strictly below unity at both float32 and float64 "
+                "precision -- reduce highRatio/lowRatio or move a shelf "
+                "corner farther from the reference band");
+      }
+
+      if (damping.highRatio > 1.0) {
+        expectedSlowestResolvedRt60Sec = std::max(
+            expectedSlowestResolvedRt60Sec, expectedHighRt60Sec);
+        expectedSlowestResolvedRt60Sec = std::max(
+            expectedSlowestResolvedRt60Sec,
+            resolveShelfSettlingTimeSec(
+                highCoefficients.a1, resolved.sampleRate));
+      }
+      if (damping.lowRatio > 1.0) {
+        expectedSlowestResolvedRt60Sec = std::max(
+            expectedSlowestResolvedRt60Sec, expectedLowRt60Sec);
+        expectedSlowestResolvedRt60Sec = std::max(
+            expectedSlowestResolvedRt60Sec,
+            resolveShelfSettlingTimeSec(
+                lowCoefficients.a1, resolved.sampleRate));
+      }
+    }
+
+    const auto resolvedSlowestRt60Sec = damping.slowestResolvedRt60Sec;
+    if (!std::isfinite(resolvedSlowestRt60Sec) ||
+        std::abs(resolvedSlowestRt60Sec - expectedSlowestResolvedRt60Sec) >
+            relativeTolerance(expectedSlowestResolvedRt60Sec)) {
+      fail(
+          dampingPath + "/slowestResolvedRt60Sec",
+          "expected the slower of rt60Sec, each boosted shelf's own "
+          "conservative feedback-decay estimate, and its state-settling "
+          "time");
+    }
+    const auto expectedTailBudgetSamples = resolveTailBudgetSamples(
+        expectedSlowestResolvedRt60Sec,
+        feedbackLoop.decayMargin,
+        resolved.sampleRate);
+    if (feedbackLoop.tailBudgetSamples != expectedTailBudgetSamples) {
+      fail(
+          path + "/tailBudgetSamples",
+          "expected value derived from the slowest resolved RT60 and "
+          "decayMargin");
     }
   }
 }
