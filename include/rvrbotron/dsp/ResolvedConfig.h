@@ -78,8 +78,9 @@ struct ResolvedDiffuser {
 // requested low/high decay ratios and shelf corners, plus each Channel's
 // resolved low- and high-shelf plateau gains, canonical prewarped one-pole
 // coefficients, and expected frequency-dependent decay. Both shelves accept
-// ratios from zero exclusive through 1.0 inclusive (safe boosting above 1.0
-// arrives in a later slice, #77).
+// ratios from zero exclusive through 1.0 inclusive unconditionally, and
+// above 1.0 (safe boosting, #77) when the conservative contraction
+// certificate below passes.
 struct ResolvedDamping {
   double highRatio = 0.5;
   double highHz = 4000.0;
@@ -108,6 +109,24 @@ struct ResolvedDamping {
   std::vector<double> expectedLowRt60Sec;
   std::vector<double> expectedReferenceRt60Sec;
   std::vector<double> expectedHighRt60Sec;
+  // Two-shelf boost safety (#77): the conservative one-circulation
+  // contraction bound per Channel, at both realized sample precisions
+  // (see docs/design/reverb/stages/05-damping.md's "Stability" and
+  // rvrbotron::config::resolveChannelContractionBound). Strictly below
+  // 1.0 for every Channel, at both precisions, certifies eventual
+  // contraction; `contractionMargin*` is `1.0 - contractionBound*`.
+  std::vector<double> contractionBoundFloat32;
+  std::vector<double> contractionMarginFloat32;
+  std::vector<double> contractionBoundFloat64;
+  std::vector<double> contractionMarginFloat64;
+  // The slower of `rt60Sec`, each boosted shelf's own conservative
+  // feedback-decay estimate (expectedLow/HighRt60Sec, for whichever ratio
+  // exceeds 1.0), and each boosted shelf's own state-settling time (see
+  // rvrbotron::config::resolveShelfSettlingTimeSec); feeds the Tail budget
+  // in place of `rt60Sec` alone. Equals `rt60Sec` exactly when neither
+  // ratio exceeds 1.0, preserving undamped and attenuation-only Tail
+  // budgets unchanged.
+  double slowestResolvedRt60Sec = 0.0;
 };
 
 struct ResolvedFeedbackLoop {

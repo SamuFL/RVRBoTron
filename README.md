@@ -336,9 +336,9 @@ the baseline shown here:
 
 | `damping` field | Values | Default | Notes |
 | --- | --- | --- | --- |
-| `highRatio` | finite number > 0, up to `1.0` | `0.5` | Decay time above `highHz`, relative to `rt60Sec` (`0.5` = half). Boosting above `1.0` is not supported yet -- a conservative stability certificate arrives in a later slice. |
+| `highRatio` | finite number > 0 | `0.5` | Decay time above `highHz`, relative to `rt60Sec` (`0.5` = half, `2.0` = double). Above `1.0` is a boost, accepted only when the conservative one-circulation contraction certificate passes for every Channel at both float32 and float64 precision. |
 | `highHz` | finite number, strictly between `0` and Nyquist | `4000` | Half-gain shelf corner: the response is halfway (in dB) between unity and the shelf plateau at this frequency. |
-| `lowRatio` | finite number > 0, up to `1.0` | `1.0` | Decay time below `lowHz`, relative to `rt60Sec`. Same boost restriction as `highRatio`. |
+| `lowRatio` | finite number > 0 | `1.0` | Decay time below `lowHz`, relative to `rt60Sec`. Same boost certificate as `highRatio`. |
 | `lowHz` | finite number, strictly between `0` and Nyquist | `200` | Half-gain shelf corner for the low shelf. May sit on either side of `highHz`, including a crossed or overlapping layout -- there is no required corner order. |
 
 A ratio of `1.0` bypasses that shelf entirely (independently of the other
@@ -349,6 +349,20 @@ recorded in `resolved.json`. A corner/ratio combination whose solved 1 kHz
 response lands far from `rt60Sec` is not rejected -- see
 [ADR-0004](docs/adr/0004-validate-structure-not-acoustics.md) -- the
 resolved evidence records the actual implied decay either way.
+
+A boosted ratio (above `1.0`) is proven safe by a cheap conservative
+structural bound rather than a frequency grid or complete FDN pole solve:
+resolution bounds one circulation from the decay gain, each monotonic
+shelf's maximum plateau magnitude, and the realized mixing matrix's
+quantization error, for both float32 and float64 coefficients. Every
+Channel's bound must land strictly below unity at both precisions or the
+request is rejected, never clamped; the bound, margin, and precision are
+recorded per Channel in `resolved.json`. This conservative certificate may
+reject an overlapping boost-and-cut combination an exact modal analysis
+could prove safe -- an accepted trade-off for a cheap, deterministic proof.
+When a shelf boosts, the Tail budget follows the slower of `rt60Sec`, that
+shelf's own conservative feedback-decay estimate, and its state-settling
+time, so the renderer always drains the complete authorized response.
 
 Each Channel's decay gain is solved independently from that Channel's own
 loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate

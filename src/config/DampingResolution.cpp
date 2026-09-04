@@ -1,5 +1,6 @@
 #include "rvrbotron/config/DampingResolution.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace rvrbotron::config {
@@ -72,6 +73,29 @@ double shelfMagnitudeAtFrequency(
   const auto denominatorMagnitudeSquared =
       denominatorReal * denominatorReal + denominatorImag * denominatorImag;
   return std::sqrt(numeratorMagnitudeSquared / denominatorMagnitudeSquared);
+}
+
+double resolveMatrixContractionBound(
+    const std::uint32_t channels, const double epsilon) noexcept {
+  return 1.0 + std::sqrt(static_cast<double>(channels)) * epsilon;
+}
+
+double resolveChannelContractionBound(
+    const double channelGain,
+    const double lowShelfGain,
+    const double highShelfGain,
+    const double matrixBound) noexcept {
+  return channelGain * std::max(1.0, lowShelfGain) *
+      std::max(1.0, highShelfGain) * matrixBound;
+}
+
+double resolveShelfSettlingTimeSec(
+    const double a1, const double sampleRateHz) noexcept {
+  if (a1 == 0.0) {
+    return 0.0;
+  }
+  const auto samples = 60.0 / (-20.0 * std::log10(std::abs(a1)));
+  return samples / sampleRateHz;
 }
 
 } // namespace rvrbotron::config

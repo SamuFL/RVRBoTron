@@ -196,6 +196,11 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"expectedLowRt60Sec", damping.expectedLowRt60Sec},
         {"expectedReferenceRt60Sec", damping.expectedReferenceRt60Sec},
         {"expectedHighRt60Sec", damping.expectedHighRt60Sec},
+        {"contractionBoundFloat32", damping.contractionBoundFloat32},
+        {"contractionMarginFloat32", damping.contractionMarginFloat32},
+        {"contractionBoundFloat64", damping.contractionBoundFloat64},
+        {"contractionMarginFloat64", damping.contractionMarginFloat64},
+        {"slowestResolvedRt60Sec", damping.slowestResolvedRt60Sec},
     };
   }
   return document;
