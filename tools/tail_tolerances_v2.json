@@ -1,0 +1,98 @@
+{
+  "formatVersion": 1,
+  "rationale": "PLACEHOLDER pending a real cross-platform CI run for issue #78 (see tail_tolerances_v1.json for the established methodology: compare every platform's compact tail-v2-equivalence summary of the same millisecond-scale Damping tracer against a macOS arm64 baseline, then commit each metric's own observed max delta with explicit headroom). These starting values conservatively reuse tail_tolerances_v1.json's own committed tolerances for the metric categories carried over unchanged (nonFiniteSampleCount, alignmentScore, the three Coloration metrics) and extend decayRt60Sec's category to the new predicted-target/range and eventual-contraction metrics, all of which chain the same NumPy float64 FFT/regression math regardless of DSP sample precision. Must be replaced with real observed-evidence rationale, citing an actual CI run URL, before this is treated as committed evidence rather than a placeholder.",
+  "byPrecision": {
+    "float32": {
+      "nonFiniteSampleCount": {
+        "absoluteTolerance": 0,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry: a non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation."
+      },
+      "decayRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry pending real evidence: RT60 fits accumulate a Schroeder backward integration and linear regression over tens of thousands of samples."
+      },
+      "predictedTargetRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER: the predicted target chains the same per-Channel shelf-magnitude evaluation (cos/sin/log10) as resolved.json's own expectedReferenceRt60Sec, computed in Python float64 regardless of DSP sample precision -- same order of numerical involvement as decayRt60Sec, so the same starting tolerance."
+      },
+      "predictedRangeLowRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER: the per-Channel minimum of the same predicted-RT60 computation as predictedTargetRt60Sec; same basis."
+      },
+      "predictedRangeHighRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER: the per-Channel maximum of the same predicted-RT60 computation as predictedTargetRt60Sec; same basis."
+      },
+      "decayRelativeError": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER: a ratio of two decayRt60Sec-scale quantities (measured vs. requested), so the same starting tolerance as decayRt60Sec itself."
+      },
+      "eventualContractionSlopeDbPerSegment": {
+        "absoluteTolerance": 1e-6,
+        "rationale": "PLACEHOLDER: a linear-regression slope over per-segment log-energy (10*log10 of a squared-sample sum), one more numerical step than Coloration's own dB summary metrics -- started an order of magnitude looser than colorationRmsDb pending real evidence."
+      },
+      "alignmentScore": {
+        "absoluteTolerance": 0.0,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry: a discrete Jaccard overlap of active-frame sets, not a floating-point accumulation."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry: identical code path (analyze_diffusion.coloration_evidence), reused unchanged by both tail-v1 and tail-v2."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see colorationPeakToPeakDb."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see colorationPeakToPeakDb."
+      }
+    },
+    "float64": {
+      "nonFiniteSampleCount": {
+        "absoluteTolerance": 0,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see the float32 entry."
+      },
+      "decayRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry pending real evidence; see the float32 entry."
+      },
+      "predictedTargetRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER; see the float32 entry."
+      },
+      "predictedRangeLowRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER; see the float32 entry."
+      },
+      "predictedRangeHighRt60Sec": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER; see the float32 entry."
+      },
+      "decayRelativeError": {
+        "absoluteTolerance": 1e-9,
+        "rationale": "PLACEHOLDER; see the float32 entry."
+      },
+      "eventualContractionSlopeDbPerSegment": {
+        "absoluteTolerance": 1e-6,
+        "rationale": "PLACEHOLDER; see the float32 entry."
+      },
+      "alignmentScore": {
+        "absoluteTolerance": 0.0,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see the float32 entry."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see the float32 entry."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see the float32 entry."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "PLACEHOLDER, reused from tail_tolerances_v1.json's identical entry; see the float32 entry."
+      }
+    }
+  }
+}
