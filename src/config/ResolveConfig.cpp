@@ -1570,7 +1570,13 @@ void validateFeedbackLoopStage(
     requireDampingChannelValues(damping.highShelfB1.size(), "/highShelfB1");
     requireDampingChannelValues(damping.highShelfA1.size(), "/highShelfA1");
 
-    const auto gainTolerance = 4.0 * std::numeric_limits<double>::epsilon();
+    // A relative tolerance, not a tight fixed epsilon: both the gain
+    // (log10/pow) and the coefficients (tan/sqrt/pow) chain transcendental
+    // functions, so a resolved.json produced on another platform (see
+    // ADR-0001) may differ by a few ULPs once rerendered here.
+    const auto relativeTolerance = [](const double expected) noexcept {
+      return 1e-9 * std::max(1.0, std::abs(expected));
+    };
     for (std::uint32_t channel = 0; channel < channels; ++channel) {
       const auto expectedGain =
           resolveHighShelfGain(feedbackLoop.gains[channel], damping.highRatio);
@@ -1581,7 +1587,7 @@ void validateFeedbackLoopStage(
             "expected finite gain greater than zero");
       }
       if (std::abs(damping.highShelfGains[channel] - expectedGain) >
-          gainTolerance) {
+          relativeTolerance(expectedGain)) {
         fail(
             dampingPath + "/highShelfGains",
             "expected gain solved from that Channel's own decay gain and "
@@ -1589,22 +1595,15 @@ void validateFeedbackLoopStage(
       }
       const auto expectedCoefficients = resolveHighShelfCoefficients(
           expectedGain, damping.highHz, resolved.sampleRate);
-      // A modest relative tolerance, not the tighter fixed epsilon used for
-      // gains above: these coefficients chain tan/sqrt/pow, so a resolved.
-      // json produced on another platform (see ADR-0001) may differ by a
-      // few ULPs once rerendered here.
-      const auto coefficientTolerance = [](const double expected) noexcept {
-        return 1e-9 * std::max(1.0, std::abs(expected));
-      };
       if (!std::isfinite(damping.highShelfB0[channel]) ||
           !std::isfinite(damping.highShelfB1[channel]) ||
           !std::isfinite(damping.highShelfA1[channel]) ||
           std::abs(damping.highShelfB0[channel] - expectedCoefficients.b0) >
-              coefficientTolerance(expectedCoefficients.b0) ||
+              relativeTolerance(expectedCoefficients.b0) ||
           std::abs(damping.highShelfB1[channel] - expectedCoefficients.b1) >
-              coefficientTolerance(expectedCoefficients.b1) ||
+              relativeTolerance(expectedCoefficients.b1) ||
           std::abs(damping.highShelfA1[channel] - expectedCoefficients.a1) >
-              coefficientTolerance(expectedCoefficients.a1)) {
+              relativeTolerance(expectedCoefficients.a1)) {
         fail(
             dampingPath,
             "expected high-shelf coefficients solved from the resolved "
