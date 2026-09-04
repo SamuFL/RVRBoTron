@@ -46,7 +46,9 @@ The ratios describe the low- and high-frequency shelf plateaus relative to the u
 
 A ratio above 1.0 means slower decay in that band, requiring a shelf that boosts. Stability uses a cheap conservative structural proof rather than a frequency grid or complete FDN pole solve. For both float32 and float64 realised coefficients, resolution bounds one circulation from the quantised matrix error, decay gain, and each monotonic shelf's maximum plateau magnitude. Every Channel's bound must remain strictly below unity. This may reject an overlapping boost-and-cut combination that an exact modal analysis could prove safe; safe rejection is preferred to a more complex or sampled stability claim.
 
-The 1 kHz center response must also imply an RT60 within ±5% of `rt60Sec`. Shelf corners may otherwise appear anywhere strictly between 0 Hz and Nyquist, including overlapping or crossed layouts. The response contract, rather than a conventional corner order, decides validity. Every rejection names the responsible Damping parameter and reason; values are never clamped.
+Shelf corners may appear anywhere strictly between 0 Hz and Nyquist, including overlapping or crossed layouts; there is no conventional corner order to enforce. Every rejection names the responsible Damping parameter and reason; values are never clamped.
+
+The 1 kHz center response is solved and recorded (`expectedReferenceRt60Sec`) but its distance from `rt60Sec` is not itself a rejection reason (see ADR-0004): a gentle one-pole shelf's transition band is wide by design, so even the research-baseline default (`highRatio` 0.5 at 4 kHz) leaks enough into 1 kHz to imply an RT60 more than 5% from `rt60Sec`, at any loop time or `rt60Sec` scale -- a real, verified property of the filter, not a bug (ADR-0004 documents the three-way check that confirmed this). The render is stable and does exactly what was requested either way, so nothing here is unsafe or silently substituted; a future analysis or report layer flags a deviation past 10% as significant rather than resolution rejecting it.
 
 ### Filter choice
 
@@ -112,7 +114,7 @@ Damping allocates its per-Channel state at configuration and nothing while audio
 ## Invariants
 
 - **Identity at unity.** Both ratios at 1.0 give output bit-identical to damping disabled. The cheapest test in the project, and it catches most shelf-solving errors.
-- **Reference accuracy.** The solved 1 kHz center implies RT60 within ±5% of `rt60Sec`, and the rendered 1 kHz octave-band T30 measures within ±5%.
+- **Reference accuracy is reported, not enforced.** Resolution records the solved 1 kHz center's implied RT60 and the rendered octave-band T30 measures it; a deviation past 10% from `rt60Sec` is flagged as significant in analysis and reports, but no Damping request is rejected for missing the Reference band alone (see ADR-0004) -- a gentle one-pole shelf's wide transition band makes even the research-baseline default land a few percent off.
 - **Ratio accuracy.** Tail analysis derives each Channel's expected octave-band decay from its loop time, gain, and shelf response. Under `per-channel` gain mode, measured RT60 follows the narrow common target within ±10%; under `uniform`, it falls within the predicted per-Channel range plus the same tolerance.
 - **Stability.** The conservative one-circulation bound is strictly below unity after both float32 and float64 coefficient quantisation.
 - **No self-oscillation.** A long burst response remains finite and has no sustained or growing late-energy trend. Local increases from modal beating are permitted.

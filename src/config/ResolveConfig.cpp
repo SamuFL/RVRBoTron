@@ -763,26 +763,68 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
         requested.damping->lowRatio.value_or(kDefaultDampingLowRatio);
     damping.lowHz = requested.damping->lowHz.value_or(kDefaultDampingLowHz);
 
-    // Per-Channel high-shelf gain and coefficients are only solvable once
-    // every Channel's own decay gain is known (see resolveHighShelfGain);
-    // finiteness/range validation of highRatio/highHz runs regardless, in
-    // validateFeedbackLoopStage below.
+    // Per-Channel shelf gains, coefficients, and expected decay are only
+    // solvable once every Channel's own decay gain is known (see
+    // resolveShelfGain); finiteness/range validation of the four requested
+    // fields runs regardless, in validateFeedbackLoopStage below.
     if (std::isfinite(damping.highRatio) && damping.highRatio > 0.0 &&
         std::isfinite(damping.highHz) && damping.highHz > 0.0 &&
-        damping.highHz < sampleRate / 2.0) {
+        damping.highHz < sampleRate / 2.0 &&
+        std::isfinite(damping.lowRatio) && damping.lowRatio > 0.0 &&
+        std::isfinite(damping.lowHz) && damping.lowHz > 0.0 &&
+        damping.lowHz < sampleRate / 2.0) {
       damping.highShelfGains.reserve(channels);
       damping.highShelfB0.reserve(channels);
       damping.highShelfB1.reserve(channels);
       damping.highShelfA1.reserve(channels);
+      damping.lowShelfGains.reserve(channels);
+      damping.lowShelfB0.reserve(channels);
+      damping.lowShelfB1.reserve(channels);
+      damping.lowShelfA1.reserve(channels);
+      damping.expectedLowRt60Sec.reserve(channels);
+      damping.expectedReferenceRt60Sec.reserve(channels);
+      damping.expectedHighRt60Sec.reserve(channels);
       for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        const auto shelfGain =
-            resolveHighShelfGain(loop.gains[channel], damping.highRatio);
-        damping.highShelfGains.push_back(shelfGain);
-        const auto coefficients = resolveHighShelfCoefficients(
-            shelfGain, damping.highHz, sampleRate);
-        damping.highShelfB0.push_back(coefficients.b0);
-        damping.highShelfB1.push_back(coefficients.b1);
-        damping.highShelfA1.push_back(coefficients.a1);
+        const auto channelGain = loop.gains[channel];
+        const auto lossDb = 20.0 * std::log10(channelGain);
+        const auto loopTimeSec =
+            static_cast<double>(loop.delaysSamples[channel]) / sampleRate;
+
+        const auto highGain = resolveShelfGain(channelGain, damping.highRatio);
+        damping.highShelfGains.push_back(highGain);
+        const auto highCoefficients = resolveHighShelfCoefficients(
+            highGain, damping.highHz, sampleRate);
+        damping.highShelfB0.push_back(highCoefficients.b0);
+        damping.highShelfB1.push_back(highCoefficients.b1);
+        damping.highShelfA1.push_back(highCoefficients.a1);
+
+        const auto lowGain = resolveShelfGain(channelGain, damping.lowRatio);
+        damping.lowShelfGains.push_back(lowGain);
+        const auto lowCoefficients = resolveLowShelfCoefficients(
+            lowGain, damping.lowHz, sampleRate);
+        damping.lowShelfB0.push_back(lowCoefficients.b0);
+        damping.lowShelfB1.push_back(lowCoefficients.b1);
+        damping.lowShelfA1.push_back(lowCoefficients.a1);
+
+        // Each shelf's isolated asymptotic prediction: ratio times this
+        // Channel's own implied undamped RT60 (see ResolvedDamping's
+        // declaration) -- not a coupled solve, matching the design's
+        // documented decision not to compensate for shelf interaction.
+        const auto impliedUndampedRt60Sec = -60.0 * loopTimeSec / lossDb;
+        damping.expectedLowRt60Sec.push_back(
+            damping.lowRatio * impliedUndampedRt60Sec);
+        damping.expectedHighRt60Sec.push_back(
+            damping.highRatio * impliedUndampedRt60Sec);
+
+        // The Reference band uses both shelves' actual combined response
+        // at 1 kHz, since a nearby corner can shift it away from unity.
+        const auto referenceMagnitude =
+            shelfMagnitudeAtFrequency(lowCoefficients, 1000.0, sampleRate) *
+            shelfMagnitudeAtFrequency(highCoefficients, 1000.0, sampleRate);
+        const auto referenceLossDb =
+            lossDb + 20.0 * std::log10(referenceMagnitude);
+        damping.expectedReferenceRt60Sec.push_back(
+            -60.0 * loopTimeSec / referenceLossDb);
       }
     }
     loop.damping = std::move(damping);
@@ -1538,15 +1580,14 @@ void validateFeedbackLoopStage(
           dampingPath + "/lowRatio",
           "expected finite value greater than zero");
     }
-    // The low shelf itself is not applied to audio until a later slice
-    // (#76); lowRatio is recorded now for schema stability but restricted
-    // to the identity value so rendered audio never silently diverges from
-    // a low-frequency experiment it cannot yet honour.
-    if (damping.lowRatio != 1.0) {
+    // Safe boosting (lowRatio > 1.0) is deferred to the same later slice
+    // (#77) as highRatio boosting, for the same conservative-certificate
+    // reason.
+    if (damping.lowRatio > 1.0) {
       fail(
           dampingPath + "/lowRatio",
-          "low-frequency damping is not supported yet -- lowRatio must "
-          "remain 1.0 until a later slice");
+          "boosting above 1.0 is not supported yet -- safe boosting "
+          "arrives in a later slice");
     }
     if (!std::isfinite(damping.lowHz) || !(damping.lowHz > 0.0) ||
         !(damping.lowHz < resolved.sampleRate / 2.0)) {
@@ -1569,46 +1610,149 @@ void validateFeedbackLoopStage(
     requireDampingChannelValues(damping.highShelfB0.size(), "/highShelfB0");
     requireDampingChannelValues(damping.highShelfB1.size(), "/highShelfB1");
     requireDampingChannelValues(damping.highShelfA1.size(), "/highShelfA1");
+    requireDampingChannelValues(
+        damping.lowShelfGains.size(), "/lowShelfGains");
+    requireDampingChannelValues(damping.lowShelfB0.size(), "/lowShelfB0");
+    requireDampingChannelValues(damping.lowShelfB1.size(), "/lowShelfB1");
+    requireDampingChannelValues(damping.lowShelfA1.size(), "/lowShelfA1");
+    requireDampingChannelValues(
+        damping.expectedLowRt60Sec.size(), "/expectedLowRt60Sec");
+    requireDampingChannelValues(
+        damping.expectedReferenceRt60Sec.size(),
+        "/expectedReferenceRt60Sec");
+    requireDampingChannelValues(
+        damping.expectedHighRt60Sec.size(), "/expectedHighRt60Sec");
 
-    // A relative tolerance, not a tight fixed epsilon: both the gain
-    // (log10/pow) and the coefficients (tan/sqrt/pow) chain transcendental
-    // functions, so a resolved.json produced on another platform (see
-    // ADR-0001) may differ by a few ULPs once rerendered here.
+    // A relative tolerance, not a tight fixed epsilon: the gain
+    // (log10/pow), the coefficients (tan/sqrt/pow), and the expected decay
+    // (those plus cos/sin) all chain transcendental functions, so a
+    // resolved.json produced on another platform (see ADR-0001) may differ
+    // by a few ULPs once rerendered here.
     const auto relativeTolerance = [](const double expected) noexcept {
       return 1e-9 * std::max(1.0, std::abs(expected));
     };
-    for (std::uint32_t channel = 0; channel < channels; ++channel) {
-      const auto expectedGain =
-          resolveHighShelfGain(feedbackLoop.gains[channel], damping.highRatio);
-      if (!std::isfinite(damping.highShelfGains[channel]) ||
-          !(damping.highShelfGains[channel] > 0.0)) {
+    const auto checkShelf =
+        [&](const double resolvedGain,
+            const double resolvedB0,
+            const double resolvedB1,
+            const double resolvedA1,
+            const double channelGain,
+            const double ratio,
+            const double cornerHz,
+            const bool isHighShelf,
+            const std::string_view gainsField) -> ShelfCoefficients {
+      const auto expectedGain = resolveShelfGain(channelGain, ratio);
+      if (!std::isfinite(resolvedGain) || !(resolvedGain > 0.0)) {
         fail(
-            dampingPath + "/highShelfGains",
+            dampingPath + std::string(gainsField),
             "expected finite gain greater than zero");
       }
-      if (std::abs(damping.highShelfGains[channel] - expectedGain) >
+      if (std::abs(resolvedGain - expectedGain) >
           relativeTolerance(expectedGain)) {
         fail(
-            dampingPath + "/highShelfGains",
+            dampingPath + std::string(gainsField),
             "expected gain solved from that Channel's own decay gain and "
-            "highRatio");
+            "ratio");
       }
-      const auto expectedCoefficients = resolveHighShelfCoefficients(
-          expectedGain, damping.highHz, resolved.sampleRate);
-      if (!std::isfinite(damping.highShelfB0[channel]) ||
-          !std::isfinite(damping.highShelfB1[channel]) ||
-          !std::isfinite(damping.highShelfA1[channel]) ||
-          std::abs(damping.highShelfB0[channel] - expectedCoefficients.b0) >
+      const auto expectedCoefficients = isHighShelf
+          ? resolveHighShelfCoefficients(
+                expectedGain, cornerHz, resolved.sampleRate)
+          : resolveLowShelfCoefficients(
+                expectedGain, cornerHz, resolved.sampleRate);
+      if (!std::isfinite(resolvedB0) || !std::isfinite(resolvedB1) ||
+          !std::isfinite(resolvedA1) ||
+          std::abs(resolvedB0 - expectedCoefficients.b0) >
               relativeTolerance(expectedCoefficients.b0) ||
-          std::abs(damping.highShelfB1[channel] - expectedCoefficients.b1) >
+          std::abs(resolvedB1 - expectedCoefficients.b1) >
               relativeTolerance(expectedCoefficients.b1) ||
-          std::abs(damping.highShelfA1[channel] - expectedCoefficients.a1) >
+          std::abs(resolvedA1 - expectedCoefficients.a1) >
               relativeTolerance(expectedCoefficients.a1)) {
         fail(
             dampingPath,
-            "expected high-shelf coefficients solved from the resolved "
-            "gain, highHz, and sampleRate");
+            "expected shelf coefficients solved from the resolved gain, "
+            "corner, and sampleRate");
       }
+      return expectedCoefficients;
+    };
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto channelGain = feedbackLoop.gains[channel];
+      const auto highCoefficients = checkShelf(
+          damping.highShelfGains[channel],
+          damping.highShelfB0[channel],
+          damping.highShelfB1[channel],
+          damping.highShelfA1[channel],
+          channelGain,
+          damping.highRatio,
+          damping.highHz,
+          /*isHighShelf=*/true,
+          "/highShelfGains");
+      const auto lowCoefficients = checkShelf(
+          damping.lowShelfGains[channel],
+          damping.lowShelfB0[channel],
+          damping.lowShelfB1[channel],
+          damping.lowShelfA1[channel],
+          channelGain,
+          damping.lowRatio,
+          damping.lowHz,
+          /*isHighShelf=*/false,
+          "/lowShelfGains");
+
+      const auto lossDb = 20.0 * std::log10(channelGain);
+      const auto loopTimeSec =
+          static_cast<double>(feedbackLoop.delaysSamples[channel]) /
+          resolved.sampleRate;
+      const auto impliedUndampedRt60Sec = -60.0 * loopTimeSec / lossDb;
+      const auto expectedLowRt60Sec =
+          damping.lowRatio * impliedUndampedRt60Sec;
+      const auto expectedHighRt60Sec =
+          damping.highRatio * impliedUndampedRt60Sec;
+      const auto referenceMagnitude =
+          shelfMagnitudeAtFrequency(
+              lowCoefficients, 1000.0, resolved.sampleRate) *
+          shelfMagnitudeAtFrequency(
+              highCoefficients, 1000.0, resolved.sampleRate);
+      const auto referenceLossDb =
+          lossDb + 20.0 * std::log10(referenceMagnitude);
+      const auto expectedReferenceRt60Sec =
+          -60.0 * loopTimeSec / referenceLossDb;
+
+      if (!std::isfinite(damping.expectedLowRt60Sec[channel]) ||
+          std::abs(damping.expectedLowRt60Sec[channel] - expectedLowRt60Sec) >
+              relativeTolerance(expectedLowRt60Sec)) {
+        fail(
+            dampingPath + "/expectedLowRt60Sec",
+            "expected lowRatio times that Channel's own implied undamped "
+            "RT60");
+      }
+      if (!std::isfinite(damping.expectedHighRt60Sec[channel]) ||
+          std::abs(
+              damping.expectedHighRt60Sec[channel] - expectedHighRt60Sec) >
+              relativeTolerance(expectedHighRt60Sec)) {
+        fail(
+            dampingPath + "/expectedHighRt60Sec",
+            "expected highRatio times that Channel's own implied undamped "
+            "RT60");
+      }
+      if (!std::isfinite(damping.expectedReferenceRt60Sec[channel]) ||
+          std::abs(
+              damping.expectedReferenceRt60Sec[channel] -
+              expectedReferenceRt60Sec) >
+              relativeTolerance(expectedReferenceRt60Sec)) {
+        fail(
+            dampingPath + "/expectedReferenceRt60Sec",
+            "expected the RT60 implied by both shelves' combined response "
+            "at 1 kHz");
+      }
+
+      // The Reference band's distance from `rt60Sec` is not itself a
+      // rejection reason (see ADR-0004, docs/adr/0004-validate-structure-
+      // not-acoustics.md): a gentle one-pole shelf's transition band is
+      // wide by design, so even the research-baseline default leaks
+      // noticeably into 1 kHz -- a real, verified property of the filter,
+      // not a bug. `expectedReferenceRt60Sec` above already records the
+      // actual implied decay, which is what a later analysis/report layer
+      // (not resolution) flags when it lands more than 10% from
+      // `rt60Sec`.
     }
   }
 }

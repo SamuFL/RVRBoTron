@@ -83,36 +83,78 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     if (damping.highShelfGains.size() != channels_ ||
         damping.highShelfB0.size() != channels_ ||
         damping.highShelfB1.size() != channels_ ||
-        damping.highShelfA1.size() != channels_) {
+        damping.highShelfA1.size() != channels_ ||
+        damping.lowShelfGains.size() != channels_ ||
+        damping.lowShelfB0.size() != channels_ ||
+        damping.lowShelfB1.size() != channels_ ||
+        damping.lowShelfA1.size() != channels_) {
       throw std::invalid_argument(
           "Feedback Loop requires one resolved Damping coefficient set per "
           "Channel");
     }
-    // A unity high ratio is bypassed rather than processed (see
+    // A unity ratio bypasses its own section rather than processing it (see
     // docs/design/reverb/stages/05-damping.md's invariants): the
     // coefficients below do not simplify to identity under floating-point
     // rounding, so skipping the arithmetic entirely is what makes an
-    // explicit unity Damping bit-identical to Damping disabled.
+    // explicit unity Damping bit-identical to Damping disabled -- and each
+    // section's bypass is independent, so a unity high ratio alongside an
+    // active low ratio only skips the high shelf.
+    const auto loadShelf =
+        [this](
+            const std::vector<double>& gains,
+            const std::vector<double>& b0,
+            const std::vector<double>& b1,
+            const std::vector<double>& a1,
+            std::vector<Sample>& targetB0,
+            std::vector<Sample>& targetB1,
+            std::vector<Sample>& targetA1,
+            std::vector<Sample>& prevInput,
+            std::vector<Sample>& prevOutput) {
+          targetB0.reserve(channels_);
+          targetB1.reserve(channels_);
+          targetA1.reserve(channels_);
+          for (std::size_t channel = 0; channel < channels_; ++channel) {
+            const auto gain = gains[channel];
+            const auto coefficient0 = b0[channel];
+            const auto coefficient1 = b1[channel];
+            const auto coefficientA = a1[channel];
+            if (!std::isfinite(gain) || !(gain > 0.0) ||
+                !std::isfinite(coefficient0) ||
+                !std::isfinite(coefficient1) ||
+                !std::isfinite(coefficientA)) {
+              throw std::invalid_argument(
+                  "Feedback Loop requires finite resolved Damping "
+                  "coefficients");
+            }
+            targetB0.push_back(static_cast<Sample>(coefficient0));
+            targetB1.push_back(static_cast<Sample>(coefficient1));
+            targetA1.push_back(static_cast<Sample>(coefficientA));
+          }
+          prevInput.assign(channels_, Sample{0});
+          prevOutput.assign(channels_, Sample{0});
+        };
     highShelfBypassed_ = damping.highRatio == 1.0;
-    highShelfB0_.reserve(channels_);
-    highShelfB1_.reserve(channels_);
-    highShelfA1_.reserve(channels_);
-    for (std::size_t channel = 0; channel < channels_; ++channel) {
-      const auto gain = damping.highShelfGains[channel];
-      const auto b0 = damping.highShelfB0[channel];
-      const auto b1 = damping.highShelfB1[channel];
-      const auto a1 = damping.highShelfA1[channel];
-      if (!std::isfinite(gain) || !(gain > 0.0) || !std::isfinite(b0) ||
-          !std::isfinite(b1) || !std::isfinite(a1)) {
-        throw std::invalid_argument(
-            "Feedback Loop requires finite resolved Damping coefficients");
-      }
-      highShelfB0_.push_back(static_cast<Sample>(b0));
-      highShelfB1_.push_back(static_cast<Sample>(b1));
-      highShelfA1_.push_back(static_cast<Sample>(a1));
-    }
-    highShelfPrevInput_.assign(channels_, Sample{0});
-    highShelfPrevOutput_.assign(channels_, Sample{0});
+    loadShelf(
+        damping.highShelfGains,
+        damping.highShelfB0,
+        damping.highShelfB1,
+        damping.highShelfA1,
+        highShelfB0_,
+        highShelfB1_,
+        highShelfA1_,
+        highShelfPrevInput_,
+        highShelfPrevOutput_);
+    lowShelfBypassed_ = damping.lowRatio == 1.0;
+    loadShelf(
+        damping.lowShelfGains,
+        damping.lowShelfB0,
+        damping.lowShelfB1,
+        damping.lowShelfA1,
+        lowShelfB0_,
+        lowShelfB1_,
+        lowShelfA1_,
+        lowShelfPrevInput_,
+        lowShelfPrevOutput_);
   }
 }
 
@@ -131,9 +173,12 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
     fedBack_[channel] = delayed * gains_[channel];
   }
 
-  // Damping runs after decay gain and before mixing, on every circulation
-  // (see docs/design/reverb/stages/05-damping.md's "Structural note").
-  if (dampingEnabled_ && !highShelfBypassed_) {
+  // Two-shelf Damping runs after decay gain and before mixing, on every
+  // circulation, high shelf then low shelf (see docs/design/reverb/stages/
+  // 05-damping.md's "Structural note"); each section is skipped
+  // independently when bypassed (unity ratio, or Damping disabled --
+  // `highShelfBypassed_`/`lowShelfBypassed_` default true).
+  if (!highShelfBypassed_) {
     for (std::size_t channel = 0; channel < channels_; ++channel) {
       const auto input = fedBack_[channel];
       const auto output = highShelfB0_[channel] * input +
@@ -141,6 +186,17 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
           highShelfA1_[channel] * highShelfPrevOutput_[channel];
       highShelfPrevInput_[channel] = input;
       highShelfPrevOutput_[channel] = output;
+      fedBack_[channel] = output;
+    }
+  }
+  if (!lowShelfBypassed_) {
+    for (std::size_t channel = 0; channel < channels_; ++channel) {
+      const auto input = fedBack_[channel];
+      const auto output = lowShelfB0_[channel] * input +
+          lowShelfB1_[channel] * lowShelfPrevInput_[channel] -
+          lowShelfA1_[channel] * lowShelfPrevOutput_[channel];
+      lowShelfPrevInput_[channel] = input;
+      lowShelfPrevOutput_[channel] = output;
       fedBack_[channel] = output;
     }
   }
@@ -181,7 +237,11 @@ std::size_t FeedbackLoop::ownedBytes() const noexcept {
          ownedVectorBytes(highShelfB0_) + ownedVectorBytes(highShelfB1_) +
          ownedVectorBytes(highShelfA1_) +
          ownedVectorBytes(highShelfPrevInput_) +
-         ownedVectorBytes(highShelfPrevOutput_);
+         ownedVectorBytes(highShelfPrevOutput_) +
+         ownedVectorBytes(lowShelfB0_) + ownedVectorBytes(lowShelfB1_) +
+         ownedVectorBytes(lowShelfA1_) +
+         ownedVectorBytes(lowShelfPrevInput_) +
+         ownedVectorBytes(lowShelfPrevOutput_);
 }
 
 } // namespace rvrbotron::dsp

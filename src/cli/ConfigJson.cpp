@@ -736,7 +736,14 @@ dsp::ResolvedDamping parseResolvedDamping(
        "highShelfGains",
        "highShelfB0",
        "highShelfB1",
-       "highShelfA1"});
+       "highShelfA1",
+       "lowShelfGains",
+       "lowShelfB0",
+       "lowShelfB1",
+       "lowShelfA1",
+       "expectedLowRt60Sec",
+       "expectedReferenceRt60Sec",
+       "expectedHighRt60Sec"});
   for (const auto field :
        {"highRatio",
         "highHz",
@@ -745,7 +752,14 @@ dsp::ResolvedDamping parseResolvedDamping(
         "highShelfGains",
         "highShelfB0",
         "highShelfB1",
-        "highShelfA1"}) {
+        "highShelfA1",
+        "lowShelfGains",
+        "lowShelfB0",
+        "lowShelfB1",
+        "lowShelfA1",
+        "expectedLowRt60Sec",
+        "expectedReferenceRt60Sec",
+        "expectedHighRt60Sec"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedDamping damping;
@@ -765,6 +779,23 @@ dsp::ResolvedDamping parseResolvedDamping(
       value.at("highShelfB1"), std::string(path) + "/highShelfB1");
   damping.highShelfA1 = parseNumberArray(
       value.at("highShelfA1"), std::string(path) + "/highShelfA1");
+  damping.lowShelfGains = parseNumberArray(
+      value.at("lowShelfGains"), std::string(path) + "/lowShelfGains");
+  damping.lowShelfB0 = parseNumberArray(
+      value.at("lowShelfB0"), std::string(path) + "/lowShelfB0");
+  damping.lowShelfB1 = parseNumberArray(
+      value.at("lowShelfB1"), std::string(path) + "/lowShelfB1");
+  damping.lowShelfA1 = parseNumberArray(
+      value.at("lowShelfA1"), std::string(path) + "/lowShelfA1");
+  damping.expectedLowRt60Sec = parseNumberArray(
+      value.at("expectedLowRt60Sec"),
+      std::string(path) + "/expectedLowRt60Sec");
+  damping.expectedReferenceRt60Sec = parseNumberArray(
+      value.at("expectedReferenceRt60Sec"),
+      std::string(path) + "/expectedReferenceRt60Sec");
+  damping.expectedHighRt60Sec = parseNumberArray(
+      value.at("expectedHighRt60Sec"),
+      std::string(path) + "/expectedHighRt60Sec");
   return damping;
 }
 

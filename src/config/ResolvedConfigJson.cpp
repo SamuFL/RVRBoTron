@@ -189,6 +189,13 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"highShelfB0", damping.highShelfB0},
         {"highShelfB1", damping.highShelfB1},
         {"highShelfA1", damping.highShelfA1},
+        {"lowShelfGains", damping.lowShelfGains},
+        {"lowShelfB0", damping.lowShelfB0},
+        {"lowShelfB1", damping.lowShelfB1},
+        {"lowShelfA1", damping.lowShelfA1},
+        {"expectedLowRt60Sec", damping.expectedLowRt60Sec},
+        {"expectedReferenceRt60Sec", damping.expectedReferenceRt60Sec},
+        {"expectedHighRt60Sec", damping.expectedHighRt60Sec},
     };
   }
   return document;

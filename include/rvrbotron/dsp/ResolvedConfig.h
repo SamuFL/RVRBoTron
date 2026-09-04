@@ -74,25 +74,40 @@ struct ResolvedDiffuser {
   std::vector<ResolvedDiffusionStep> steps;
 };
 
-// Resolved first-audible Damping tracer (see docs/design/reverb/stages/
-// 05-damping.md): requested low/high decay ratios and shelf corners, plus
-// each Channel's resolved high-shelf plateau gain and canonical prewarped
-// one-pole coefficients. `lowRatio`/`lowHz` are recorded now so the
-// Requested/Resolved schema is stable, but the low shelf itself is not yet
-// applied to audio -- resolution and validation restrict `lowRatio` to 1.0
-// until a later slice (#76) joins it to the high shelf.
+// Resolved Two-shelf Damping (see docs/design/reverb/stages/05-damping.md):
+// requested low/high decay ratios and shelf corners, plus each Channel's
+// resolved low- and high-shelf plateau gains, canonical prewarped one-pole
+// coefficients, and expected frequency-dependent decay. Both shelves accept
+// ratios from zero exclusive through 1.0 inclusive (safe boosting above 1.0
+// arrives in a later slice, #77).
 struct ResolvedDamping {
   double highRatio = 0.5;
   double highHz = 4000.0;
   double lowRatio = 1.0;
   double lowHz = 200.0;
-  // Per-Channel resolved high-shelf plateau gain (linear) and canonical
+  // Per-Channel resolved shelf plateau gain (linear) and canonical
   // prewarped first-order digital coefficients:
   // y[n] = b0*x[n] + b1*x[n-1] - a1*y[n-1].
   std::vector<double> highShelfGains;
   std::vector<double> highShelfB0;
   std::vector<double> highShelfB1;
   std::vector<double> highShelfA1;
+  std::vector<double> lowShelfGains;
+  std::vector<double> lowShelfB0;
+  std::vector<double> lowShelfB1;
+  std::vector<double> lowShelfA1;
+  // Per-Channel expected decay (seconds), derived from that Channel's own
+  // loop time and resolved decay gain rather than measured: the low- and
+  // high-band values are each shelf's isolated asymptotic prediction
+  // (ratio times that Channel's own implied undamped RT60); the reference
+  // value is the RT60 implied by both shelves' actual combined response at
+  // 1 kHz, which is also what Reference-band validation checks against
+  // `rt60Sec`. Under `perChannel` gain mode these converge to one narrow
+  // common target per band; under `uniform` they range across Channels
+  // (see docs/design/reverb/stages/04-feedback-loop.md's gain modes).
+  std::vector<double> expectedLowRt60Sec;
+  std::vector<double> expectedReferenceRt60Sec;
+  std::vector<double> expectedHighRt60Sec;
 };
 
 struct ResolvedFeedbackLoop {
