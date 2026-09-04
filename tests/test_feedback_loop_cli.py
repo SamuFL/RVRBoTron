@@ -537,11 +537,11 @@ def main():
             "mix/delayStrategy/gainMode configuration"
         )
 
-    # --- Damping (#75): the first audible Damping tracer ------------------
+    # --- Damping (#75/#76): the Two-shelf damping path ---------------------
 
-    def expected_high_shelf_gain(channel_gain, high_ratio):
+    def expected_shelf_gain(channel_gain, ratio):
         loss_db = 20.0 * math.log10(channel_gain)
-        shelf_db = loss_db * (1.0 / high_ratio - 1.0)
+        shelf_db = loss_db * (1.0 / ratio - 1.0)
         return 10.0 ** (shelf_db / 20.0)
 
     def expected_high_shelf_coefficients(gain, corner_hz, sample_rate):
@@ -554,284 +554,394 @@ def main():
         a1 = (pole - k) / denominator
         return b0, b1, a1
 
+    def expected_low_shelf_coefficients(gain, corner_hz, sample_rate):
+        warped = 2.0 * sample_rate * math.tan(math.pi * corner_hz / sample_rate)
+        k = 2.0 * sample_rate
+        pole = warped / math.sqrt(gain)
+        denominator = k + pole
+        b0 = (k + gain * pole) / denominator
+        b1 = (gain * pole - k) / denominator
+        a1 = (pole - k) / denominator
+        return b0, b1, a1
+
+    def shelf_magnitude(coefficients, frequency_hz, sample_rate):
+        b0, b1, a1 = coefficients
+        omega = 2.0 * math.pi * frequency_hz / sample_rate
+        cos_omega, sin_omega = math.cos(omega), math.sin(omega)
+        numerator_real, numerator_imag = b0 + b1 * cos_omega, -b1 * sin_omega
+        denominator_real, denominator_imag = 1.0 + a1 * cos_omega, -a1 * sin_omega
+        return math.sqrt(
+            (numerator_real**2 + numerator_imag**2)
+            / (denominator_real**2 + denominator_imag**2)
+        )
+
+    def check_shelf(damping, channel, channel_gain, ratio, corner_hz, prefix, high):
+        expected_gain = expected_shelf_gain(channel_gain, ratio)
+        actual_gain = damping[f"{prefix}Gains"][channel]
+        if abs(actual_gain - expected_gain) > 1e-9 * max(1.0, expected_gain):
+            raise AssertionError(
+                f"{prefix} gain mismatch on channel {channel}: "
+                f"{actual_gain} != {expected_gain}"
+            )
+        coefficients = (
+            expected_high_shelf_coefficients(expected_gain, corner_hz, 48000)
+            if high
+            else expected_low_shelf_coefficients(expected_gain, corner_hz, 48000)
+        )
+        expected_b0, expected_b1, expected_a1 = coefficients
+        actual = (
+            damping[f"{prefix}B0"][channel],
+            damping[f"{prefix}B1"][channel],
+            damping[f"{prefix}A1"][channel],
+        )
+        if (
+            abs(actual[0] - expected_b0) > 1e-9 * max(1.0, abs(expected_b0))
+            or abs(actual[1] - expected_b1) > 1e-9 * max(1.0, abs(expected_b1))
+            or abs(actual[2] - expected_a1) > 1e-9 * max(1.0, abs(expected_a1))
+        ):
+            raise AssertionError(
+                f"{prefix} coefficient mismatch on channel {channel}: "
+                f"{actual} != {coefficients}"
+            )
+        # Half-gain-in-dB corner convention: |H(j*wc)|^2 == gain exactly at
+        # the prewarped corner. High: H(s) = (gain*s+p)/(s+p), p = wc*sqrt(
+        # gain). Low (mirrored): H(s) = (s+gain*p)/(s+p), p = wc/sqrt(gain).
+        warped = 2 * 48000 * math.tan(math.pi * corner_hz / 48000)
+        if high:
+            pole = warped * math.sqrt(expected_gain)
+            magnitude_squared = (pole**2 + (expected_gain * warped) ** 2) / (
+                pole**2 + warped**2
+            )
+        else:
+            pole = warped / math.sqrt(expected_gain)
+            magnitude_squared = (warped**2 + (expected_gain * pole) ** 2) / (
+                warped**2 + pole**2
+            )
+        if abs(magnitude_squared - expected_gain) > 1e-9 * max(1.0, expected_gain):
+            raise AssertionError(
+                f"{prefix} did not land at half-gain-in-dB at its corner: "
+                f"|H|^2={magnitude_squared} != gain={expected_gain}"
+            )
+        return expected_gain, coefficients
+
+    def check_damping_evidence(loop, damping):
+        for channel in range(len(loop["gains"])):
+            channel_gain = loop["gains"][channel]
+            loop_time_sec = loop["delaysSamples"][channel] / 48000
+            _high_gain, high_coefficients = check_shelf(
+                damping,
+                channel,
+                channel_gain,
+                damping["highRatio"],
+                damping["highHz"],
+                "highShelf",
+                True,
+            )
+            _low_gain, low_coefficients = check_shelf(
+                damping,
+                channel,
+                channel_gain,
+                damping["lowRatio"],
+                damping["lowHz"],
+                "lowShelf",
+                False,
+            )
+            loss_db = 20.0 * math.log10(channel_gain)
+            implied_undamped_rt60 = -60.0 * loop_time_sec / loss_db
+            reference_magnitude = shelf_magnitude(
+                low_coefficients, 1000.0, 48000
+            ) * shelf_magnitude(high_coefficients, 1000.0, 48000)
+            reference_loss_db = loss_db + 20.0 * math.log10(reference_magnitude)
+            expected = {
+                "expectedLowRt60Sec": damping["lowRatio"] * implied_undamped_rt60,
+                "expectedHighRt60Sec": damping["highRatio"] * implied_undamped_rt60,
+                "expectedReferenceRt60Sec": -60.0 * loop_time_sec / reference_loss_db,
+            }
+            for key, expected_value in expected.items():
+                actual_value = damping[key][channel]
+                if abs(actual_value - expected_value) > 1e-6 * max(
+                    1.0, abs(expected_value)
+                ):
+                    raise AssertionError(
+                        f"{key} mismatch on channel {channel}: "
+                        f"{actual_value} != {expected_value} ({damping})"
+                    )
+
+    def render_damping(name, damping_fields, expect_ok=True):
+        req = json.loads(json.dumps(request))
+        req["composition"]["stages"][1]["damping"] = damping_fields
+        path = workspace / f"damping-{name}-request.json"
+        path.write_text(json.dumps(req))
+        result_dir = workspace / f"damping-{name}-result"
+        if expect_ok:
+            run_ok(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                path,
+                "--output",
+                result_dir,
+                "--block-size",
+                "32",
+            )
+            return result_dir
+        return run(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            path,
+            "--output",
+            result_dir,
+        ), result_dir
+
+    def loop_and_damping(result_dir):
+        resolved = json.loads((result_dir / "resolved.json").read_text())
+        loop = next(
+            stage
+            for stage in resolved["composition"]["stages"]
+            if stage["type"] == "feedback-loop"
+        )
+        return loop, loop.get("damping")
+
     # Omission preserves existing undamped output: `result` above already
     # carries the undamped render, and its resolved.json carries no
     # "damping" key at all.
-    baseline_loop = next(
-        stage
-        for stage in json.loads((result / "resolved.json").read_text())[
-            "composition"
-        ]["stages"]
-        if stage["type"] == "feedback-loop"
-    )
-    if "damping" in baseline_loop:
+    baseline_loop, baseline_damping = loop_and_damping(result)
+    if baseline_damping is not None:
         raise AssertionError(
             f"an omitted Damping object appeared in resolved.json: {baseline_loop}"
         )
 
     # An included empty Damping object resolves the research baseline and
-    # changes the render.
-    damped_request = json.loads(json.dumps(request))
-    damped_request["composition"]["stages"][1]["damping"] = {}
-    damped_path = workspace / "damping-default-request.json"
-    damped_path.write_text(json.dumps(damped_request))
-    damped_result = workspace / "damping-default-result"
-    run_ok(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        damped_path,
-        "--output",
-        damped_result,
-        "--block-size",
-        "32",
-    )
-    if (damped_result / "output.wav").read_bytes() == (
+    # changes the render; its resolved evidence (both shelves, every
+    # per-Channel expected decay) matches the ratio/coefficient solve.
+    default_result = render_damping("default", {})
+    if (default_result / "output.wav").read_bytes() == (
         result / "output.wav"
     ).read_bytes():
         raise AssertionError(
             "an included empty Damping object did not change output.wav"
         )
-
-    damped_resolved = json.loads((damped_result / "resolved.json").read_text())
-    damped_loop = next(
-        stage
-        for stage in damped_resolved["composition"]["stages"]
-        if stage["type"] == "feedback-loop"
-    )
-    damping = damped_loop.get("damping")
-    if damping is None:
-        raise AssertionError(
-            f"an included empty Damping object did not resolve: {damped_loop}"
-        )
+    default_loop, default_damping = loop_and_damping(default_result)
+    if default_damping is None:
+        raise AssertionError("an included empty Damping object did not resolve")
     if (
-        damping["highRatio"],
-        damping["highHz"],
-        damping["lowRatio"],
-        damping["lowHz"],
+        default_damping["highRatio"],
+        default_damping["highHz"],
+        default_damping["lowRatio"],
+        default_damping["lowHz"],
     ) != (0.5, 4000.0, 1.0, 200.0):
         raise AssertionError(
             f"empty Damping object did not resolve the research baseline: "
-            f"{damping}"
+            f"{default_damping}"
         )
+    check_damping_evidence(default_loop, default_damping)
 
-    for channel in range(2):
-        channel_gain = damped_loop["gains"][channel]
-        expected_gain = expected_high_shelf_gain(channel_gain, damping["highRatio"])
-        if abs(damping["highShelfGains"][channel] - expected_gain) > 1e-9:
-            raise AssertionError(
-                f"resolved high-shelf gain did not match the ratio solve: "
-                f"{damping['highShelfGains']} != expected {expected_gain}"
-            )
-        expected_b0, expected_b1, expected_a1 = expected_high_shelf_coefficients(
-            expected_gain, damping["highHz"], 48000
+    # Resolved rerendering reproduces audio and resolved evidence exactly
+    # for high-only (the baseline default above already covers this), and
+    # for low-only and combined Two-shelf damping below.
+    def check_exact_rerender(name, result_dir):
+        rerendered = workspace / f"damping-{name}-rerendered"
+        run_ok(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            result_dir / "resolved.json",
+            "--output",
+            rerendered,
+            "--block-size",
+            "32",
         )
-        if (
-            abs(damping["highShelfB0"][channel] - expected_b0) > 1e-9
-            or abs(damping["highShelfB1"][channel] - expected_b1) > 1e-9
-            or abs(damping["highShelfA1"][channel] - expected_a1) > 1e-9
-        ):
-            raise AssertionError(
-                f"resolved high-shelf coefficients did not match the "
-                f"canonical prewarped one-pole solve for channel {channel}: "
-                f"{damping}"
-            )
-        # Half-gain-in-dB corner convention: |H(j*wc)|^2 == gain exactly at
-        # the prewarped corner, for the analog prototype
-        # H(s) = (gain*s + p) / (s + p), p = wc*sqrt(gain).
-        warped = 2 * 48000 * math.tan(math.pi * damping["highHz"] / 48000)
-        pole = warped * math.sqrt(expected_gain)
-        magnitude_squared = (pole**2 + (expected_gain * warped) ** 2) / (
-            pole**2 + warped**2
-        )
-        if abs(magnitude_squared - expected_gain) > 1e-9 * max(1.0, expected_gain):
-            raise AssertionError(
-                f"high shelf did not land at half-gain-in-dB at its corner: "
-                f"|H|^2={magnitude_squared} != gain={expected_gain}"
-            )
+        if (rerendered / "output.wav").read_bytes() != (
+            result_dir / "output.wav"
+        ).read_bytes():
+            raise AssertionError(f"resolved rerender changed {name} output.wav")
+        if (rerendered / "resolved.json").read_bytes() != (
+            result_dir / "resolved.json"
+        ).read_bytes():
+            raise AssertionError(f"resolved rerender changed {name} resolved.json")
 
-    # Resolved rerendering reproduces audio and resolved evidence exactly.
-    damped_rerendered = workspace / "damping-default-rerendered"
-    run_ok(
-        renderer,
-        "--input",
-        fixture,
-        "--resolved",
-        damped_result / "resolved.json",
-        "--output",
-        damped_rerendered,
-        "--block-size",
-        "32",
+    check_exact_rerender("high-only", default_result)
+
+    # Low-only damping (#76): the low shelf now actually shapes the tail.
+    low_only_result = render_damping(
+        "low-only", {"highRatio": 1.0, "lowRatio": 0.6, "lowHz": 300}
     )
-    if (damped_rerendered / "output.wav").read_bytes() != (
-        damped_result / "output.wav"
-    ).read_bytes():
-        raise AssertionError("resolved rerender changed Damping output.wav")
-    if (damped_rerendered / "resolved.json").read_bytes() != (
-        damped_result / "resolved.json"
-    ).read_bytes():
-        raise AssertionError("resolved rerender changed Damping resolved.json")
+    low_only_loop, low_only_damping = loop_and_damping(low_only_result)
+    check_damping_evidence(low_only_loop, low_only_damping)
+    check_exact_rerender("low-only", low_only_result)
 
-    # Explicit unity ratios render bit-identically to Damping disabled.
-    unity_request = json.loads(json.dumps(request))
-    unity_request["composition"]["stages"][1]["damping"] = {
-        "highRatio": 1.0,
-        "highHz": 4000,
-        "lowRatio": 1.0,
-        "lowHz": 200,
+    # Combined Two-shelf damping: both sections active simultaneously.
+    combined_result = render_damping(
+        "combined", {"highRatio": 0.5, "highHz": 4000, "lowRatio": 0.6, "lowHz": 300}
+    )
+    combined_loop, combined_damping = loop_and_damping(combined_result)
+    check_damping_evidence(combined_loop, combined_damping)
+    check_exact_rerender("combined", combined_result)
+
+    # Deterministic impulse evidence distinguishes low-frequency cleanup,
+    # high-frequency darkening, the combination, and the undamped Reference
+    # case from one another -- four pairwise-distinct renders.
+    renders = {
+        "undamped": (result / "output.wav").read_bytes(),
+        "high-only": (default_result / "output.wav").read_bytes(),
+        "low-only": (low_only_result / "output.wav").read_bytes(),
+        "combined": (combined_result / "output.wav").read_bytes(),
     }
-    unity_path = workspace / "damping-unity-request.json"
-    unity_path.write_text(json.dumps(unity_request))
-    unity_result = workspace / "damping-unity-result"
-    run_ok(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        unity_path,
-        "--output",
-        unity_result,
-        "--block-size",
-        "32",
+    names = list(renders)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if renders[names[i]] == renders[names[j]]:
+                raise AssertionError(
+                    f"{names[i]} and {names[j]} renders were not distinguishable"
+                )
+
+    # Crossed/overlapping corner layouts (lowHz above highHz) are permitted
+    # -- the response contract, not a conventional corner order, decides
+    # validity.
+    crossed_result = render_damping(
+        "crossed", {"highRatio": 0.6, "highHz": 2000, "lowRatio": 0.6, "lowHz": 8000}
+    )
+    crossed_loop, crossed_damping = loop_and_damping(crossed_result)
+    check_damping_evidence(crossed_loop, crossed_damping)
+
+    # Explicit unity ratios for both shelves render bit-identically to
+    # Damping disabled, and each section's bypass is independent: a unity
+    # high ratio alongside an active low ratio only skips the high shelf
+    # (low-only above already differs from undamped; high-only already
+    # differs from undamped; here both-unity must match undamped exactly).
+    unity_result = render_damping(
+        "unity",
+        {"highRatio": 1.0, "highHz": 4000, "lowRatio": 1.0, "lowHz": 200},
     )
     if (unity_result / "output.wav").read_bytes() != (result / "output.wav").read_bytes():
         raise AssertionError(
-            "an explicit unity Damping ratio did not render bit-identically "
-            "to Damping disabled"
+            "explicit unity ratios for both shelves did not render "
+            "bit-identically to Damping disabled"
+        )
+
+    # gainMode narrow-common-target vs. per-Channel range (#76): under
+    # per-channel gain mode (used throughout above), every Channel's own
+    # expected decay converges on the same target since gain is solved from
+    # that Channel's own loop time. Under uniform gain mode, the shared gain
+    # combined with each Channel's own (unequal) loop time spreads expected
+    # decay into a real per-Channel range instead.
+    per_channel_low = default_damping["expectedHighRt60Sec"]
+    if abs(per_channel_low[0] - per_channel_low[1]) > 1e-6:
+        raise AssertionError(
+            f"gainMode per-channel did not converge on a narrow common "
+            f"expected-decay target across Channels: {per_channel_low}"
+        )
+    uniform_request = json.loads(json.dumps(request))
+    uniform_request["composition"]["stages"][1]["gainMode"] = "uniform"
+    uniform_request["composition"]["stages"][1]["damping"] = {}
+    uniform_path = workspace / "damping-uniform-gain-mode-request.json"
+    uniform_path.write_text(json.dumps(uniform_request))
+    uniform_result = workspace / "damping-uniform-gain-mode-result"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        uniform_path,
+        "--output",
+        uniform_result,
+        "--block-size",
+        "32",
+    )
+    uniform_loop, uniform_damping = loop_and_damping(uniform_result)
+    check_damping_evidence(uniform_loop, uniform_damping)
+    uniform_high = uniform_damping["expectedHighRt60Sec"]
+    if abs(uniform_high[0] - uniform_high[1]) < 1e-3:
+        raise AssertionError(
+            f"gainMode uniform did not spread expected decay into a "
+            f"per-Channel range across Channels of unequal loop time: "
+            f"{uniform_high}"
         )
 
     # A boost request above 1.0 is rejected with a parameter-specific
-    # explanation, never clamped -- safe boosting arrives in a later slice
-    # (#77).
-    boost_request = json.loads(json.dumps(request))
-    boost_request["composition"]["stages"][1]["damping"] = {"highRatio": 1.5}
-    boost_path = workspace / "damping-boost-request.json"
-    boost_path.write_text(json.dumps(boost_request))
-    boost_result = workspace / "damping-boost-result"
-    boost = run(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        boost_path,
-        "--output",
-        boost_result,
-    )
-    if boost.returncode == 0:
-        raise AssertionError("renderer accepted a highRatio boost above 1.0")
-    if "/composition/stages/1/damping/highRatio" not in boost.stderr:
-        raise AssertionError(
-            f"boost rejection did not name the highRatio field: {boost.stderr}"
+    # explanation, never clamped, for both shelves -- safe boosting arrives
+    # in a later slice (#77).
+    for field in ("highRatio", "lowRatio"):
+        boost, boost_result = render_damping(
+            f"boost-{field}", {field: 1.5}, expect_ok=False
         )
-    if boost_result.exists():
-        raise AssertionError("rejected boost configuration created a Render Result")
-
-    # highRatio must be finite and greater than zero.
-    for invalid_ratio, label in ((0.0, "zero"), (-0.5, "negative")):
-        invalid_ratio_request = json.loads(json.dumps(request))
-        invalid_ratio_request["composition"]["stages"][1]["damping"] = {
-            "highRatio": invalid_ratio
-        }
-        invalid_ratio_path = (
-            workspace / f"damping-invalid-highratio-{label}-request.json"
-        )
-        invalid_ratio_path.write_text(json.dumps(invalid_ratio_request))
-        invalid_ratio_result = workspace / f"damping-invalid-highratio-{label}-result"
-        invalid_ratio_run = run(
-            renderer,
-            "--input",
-            fixture,
-            "--config",
-            invalid_ratio_path,
-            "--output",
-            invalid_ratio_result,
-        )
-        if invalid_ratio_run.returncode == 0:
-            raise AssertionError(f"renderer accepted a {label} highRatio")
-        if "/composition/stages/1/damping/highRatio" not in invalid_ratio_run.stderr:
+        if boost.returncode == 0:
+            raise AssertionError(f"renderer accepted a {field} boost above 1.0")
+        if f"/composition/stages/1/damping/{field}" not in boost.stderr:
             raise AssertionError(
-                f"{label} highRatio rejection did not name the field: "
-                f"{invalid_ratio_run.stderr}"
+                f"boost rejection did not name the {field} field: {boost.stderr}"
+            )
+        if boost_result.exists():
+            raise AssertionError(
+                "rejected boost configuration created a Render Result"
             )
 
-    # lowRatio departing from 1.0 is rejected: low-frequency cleanup is not
-    # implemented until a later slice (#76), and rendered audio must never
-    # differ silently from the requested experiment.
-    low_ratio_request = json.loads(json.dumps(request))
-    low_ratio_request["composition"]["stages"][1]["damping"] = {"lowRatio": 0.5}
-    low_ratio_path = workspace / "damping-lowratio-request.json"
-    low_ratio_path.write_text(json.dumps(low_ratio_request))
-    low_ratio_result = workspace / "damping-lowratio-result"
-    low_ratio_run = run(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        low_ratio_path,
-        "--output",
-        low_ratio_result,
-    )
-    if low_ratio_run.returncode == 0:
-        raise AssertionError("renderer accepted a lowRatio other than 1.0")
-    if "/composition/stages/1/damping/lowRatio" not in low_ratio_run.stderr:
-        raise AssertionError(
-            f"lowRatio rejection did not name the field: {low_ratio_run.stderr}"
-        )
-
-    # highHz (and, by the same check, lowHz) must be strictly between 0 Hz
-    # and Nyquist.
-    for invalid_hz, label in (
-        (0.0, "zero"),
-        (24000.0, "at-nyquist"),
-        (30000.0, "above-nyquist"),
-    ):
-        invalid_hz_request = json.loads(json.dumps(request))
-        invalid_hz_request["composition"]["stages"][1]["damping"] = {
-            "highHz": invalid_hz
-        }
-        invalid_hz_path = workspace / f"damping-invalid-highhz-{label}-request.json"
-        invalid_hz_path.write_text(json.dumps(invalid_hz_request))
-        invalid_hz_result = workspace / f"damping-invalid-highhz-{label}-result"
-        invalid_hz_run = run(
-            renderer,
-            "--input",
-            fixture,
-            "--config",
-            invalid_hz_path,
-            "--output",
-            invalid_hz_result,
-        )
-        if invalid_hz_run.returncode == 0:
-            raise AssertionError(f"renderer accepted a {label} highHz")
-        if "/composition/stages/1/damping/highHz" not in invalid_hz_run.stderr:
-            raise AssertionError(
-                f"{label} highHz rejection did not name the field: "
-                f"{invalid_hz_run.stderr}"
+    # Both ratios must be finite and greater than zero.
+    for field in ("highRatio", "lowRatio"):
+        for invalid_ratio, label in ((0.0, "zero"), (-0.5, "negative")):
+            invalid_run, _ = render_damping(
+                f"invalid-{field}-{label}", {field: invalid_ratio}, expect_ok=False
             )
+            if invalid_run.returncode == 0:
+                raise AssertionError(f"renderer accepted a {label} {field}")
+            if f"/composition/stages/1/damping/{field}" not in invalid_run.stderr:
+                raise AssertionError(
+                    f"{label} {field} rejection did not name the field: "
+                    f"{invalid_run.stderr}"
+                )
+
+    # Both corners must be strictly between 0 Hz and Nyquist.
+    for field in ("highHz", "lowHz"):
+        for invalid_hz, label in (
+            (0.0, "zero"),
+            (24000.0, "at-nyquist"),
+            (30000.0, "above-nyquist"),
+        ):
+            invalid_run, _ = render_damping(
+                f"invalid-{field}-{label}", {field: invalid_hz}, expect_ok=False
+            )
+            if invalid_run.returncode == 0:
+                raise AssertionError(f"renderer accepted a {label} {field}")
+            if f"/composition/stages/1/damping/{field}" not in invalid_run.stderr:
+                raise AssertionError(
+                    f"{label} {field} rejection did not name the field: "
+                    f"{invalid_run.stderr}"
+                )
+
+    # A Reference-band deviation (a corner/ratio combination whose solved
+    # 1 kHz response implies an RT60 far from rt60Sec) is not rejected --
+    # see ADR-0004: the render is stable and does exactly what was
+    # requested, so only the resolved evidence's own internal consistency
+    # is checked, not its distance from rt60Sec. A corner placed on top of
+    # the Reference band with a large ratio is exactly such a case.
+    on_reference_result = render_damping(
+        "on-reference", {"highRatio": 0.2, "highHz": 1000}
+    )
+    on_reference_loop, on_reference_damping = loop_and_damping(on_reference_result)
+    check_damping_evidence(on_reference_loop, on_reference_damping)
+    reference_rt60 = on_reference_damping["expectedReferenceRt60Sec"][0]
+    if abs(reference_rt60 - on_reference_loop["rt60Sec"]) < 0.05 * on_reference_loop[
+        "rt60Sec"
+    ]:
+        raise AssertionError(
+            "test fixture did not actually exercise a Reference-band "
+            f"deviation: {reference_rt60} vs rt60Sec="
+            f"{on_reference_loop['rt60Sec']}"
+        )
 
     # Unknown fields inside the Damping object are rejected, matching every
     # other configuration object in this schema.
-    unknown_field_request = json.loads(json.dumps(request))
-    unknown_field_request["composition"]["stages"][1]["damping"] = {"bogus": 1}
-    unknown_field_path = workspace / "damping-unknown-field-request.json"
-    unknown_field_path.write_text(json.dumps(unknown_field_request))
-    unknown_field_result = workspace / "damping-unknown-field-result"
-    unknown_field_run = run(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        unknown_field_path,
-        "--output",
-        unknown_field_result,
-    )
-    if unknown_field_run.returncode == 0:
+    unknown_run, _ = render_damping("unknown-field", {"bogus": 1}, expect_ok=False)
+    if unknown_run.returncode == 0:
         raise AssertionError("renderer accepted an unknown Damping field")
-    if "/composition/stages/1/damping/bogus" not in unknown_field_run.stderr:
+    if "/composition/stages/1/damping/bogus" not in unknown_run.stderr:
         raise AssertionError(
             f"unknown Damping field rejection did not name it: "
-            f"{unknown_field_run.stderr}"
+            f"{unknown_run.stderr}"
         )
 
 

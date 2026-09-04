@@ -45,12 +45,13 @@ private:
 
   std::vector<Sample> fedBack_;
 
-  // The first-audible Damping tracer (see docs/design/reverb/stages/
-  // 05-damping.md and issue #75): a per-Channel high shelf applied after
-  // decay gain and before mixing, on every circulation. Disabled when the
-  // Resolved Configuration carries no Damping. `highShelfBypassed_` skips
-  // the filter's arithmetic and state entirely at a unity high ratio, so
-  // output stays bit-identical to Damping disabled rather than merely
+  // Two-shelf Damping (see docs/design/reverb/stages/05-damping.md and
+  // issues #75/#76): independent per-Channel high and low shelves applied,
+  // in that order, after decay gain and before mixing, on every
+  // circulation. Disabled when the Resolved Configuration carries no
+  // Damping. Each `*Bypassed_` flag skips its own section's arithmetic and
+  // state entirely at a unity ratio, so output stays bit-identical to
+  // Damping disabled (or to the other section alone) rather than merely
   // relying on the coefficients simplifying to identity under rounding.
   bool dampingEnabled_ = false;
   bool highShelfBypassed_ = true;
@@ -59,6 +60,12 @@ private:
   std::vector<Sample> highShelfA1_;
   std::vector<Sample> highShelfPrevInput_;
   std::vector<Sample> highShelfPrevOutput_;
+  bool lowShelfBypassed_ = true;
+  std::vector<Sample> lowShelfB0_;
+  std::vector<Sample> lowShelfB1_;
+  std::vector<Sample> lowShelfA1_;
+  std::vector<Sample> lowShelfPrevInput_;
+  std::vector<Sample> lowShelfPrevOutput_;
 };
 
 } // namespace rvrbotron::dsp
