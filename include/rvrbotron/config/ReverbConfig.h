@@ -68,6 +68,21 @@ constexpr double kDefaultFeedbackLoopRt60Sec = 2.4;
 // design (see docs/adr and issue #51); sweepable per render.
 constexpr double kDefaultFeedbackLoopDecayMargin = 1.5;
 
+// Research-baseline defaults for an included-but-empty Damping object (see
+// docs/design/reverb/stages/05-damping.md): half decay time above 4 kHz,
+// unchanged decay below 200 Hz.
+constexpr double kDefaultDampingHighRatio = 0.5;
+constexpr double kDefaultDampingHighHz = 4000.0;
+constexpr double kDefaultDampingLowRatio = 1.0;
+constexpr double kDefaultDampingLowHz = 200.0;
+
+struct DampingConfig {
+  std::optional<double> highRatio;
+  std::optional<double> highHz;
+  std::optional<double> lowRatio;
+  std::optional<double> lowHz;
+};
+
 struct FeedbackLoopConfig {
   std::optional<double> delayMinMs;
   std::optional<double> delayMaxMs;
@@ -79,6 +94,10 @@ struct FeedbackLoopConfig {
   // Runtime silence-floor seam; omitted/nullopt resolves to disabled (see
   // dsp::ResolvedFeedbackLoop::silenceFloorDb and issue #54).
   std::optional<double> silenceFloorDb;
+  // Omitted (nullopt) disables Damping and preserves existing undamped
+  // output; an included empty object resolves to the research baseline
+  // (see DampingConfig and issue #75).
+  std::optional<DampingConfig> damping;
 };
 
 using StageConfig = std::

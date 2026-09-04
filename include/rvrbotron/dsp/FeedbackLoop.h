@@ -44,6 +44,21 @@ private:
   std::unique_ptr<MixMatrix> mix_;
 
   std::vector<Sample> fedBack_;
+
+  // The first-audible Damping tracer (see docs/design/reverb/stages/
+  // 05-damping.md and issue #75): a per-Channel high shelf applied after
+  // decay gain and before mixing, on every circulation. Disabled when the
+  // Resolved Configuration carries no Damping. `highShelfBypassed_` skips
+  // the filter's arithmetic and state entirely at a unity high ratio, so
+  // output stays bit-identical to Damping disabled rather than merely
+  // relying on the coefficients simplifying to identity under rounding.
+  bool dampingEnabled_ = false;
+  bool highShelfBypassed_ = true;
+  std::vector<Sample> highShelfB0_;
+  std::vector<Sample> highShelfB1_;
+  std::vector<Sample> highShelfA1_;
+  std::vector<Sample> highShelfPrevInput_;
+  std::vector<Sample> highShelfPrevOutput_;
 };
 
 } // namespace rvrbotron::dsp

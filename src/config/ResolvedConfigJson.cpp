@@ -151,7 +151,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
     }
     matrix.push_back(std::move(values));
   }
-  return {
+  Json document{
       {"type", "feedback-loop"},
       {"channels", loop.channels},
       {"delayMinSamples", loop.delayMinSamples},
@@ -174,6 +174,24 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
        loop.silenceFloorDb.has_value() ? Json(*loop.silenceFloorDb)
                                         : Json(nullptr)},
   };
+  // Omitted entirely (rather than emitted as null) when disabled, so an
+  // existing format-version-1 Resolved Configuration written before
+  // Damping existed remains byte-identical to one produced with it
+  // disabled today, and loads back as disabled (see issue #75).
+  if (loop.damping.has_value()) {
+    const auto& damping = *loop.damping;
+    document["damping"] = {
+        {"highRatio", damping.highRatio},
+        {"highHz", damping.highHz},
+        {"lowRatio", damping.lowRatio},
+        {"lowHz", damping.lowHz},
+        {"highShelfGains", damping.highShelfGains},
+        {"highShelfB0", damping.highShelfB0},
+        {"highShelfB1", damping.highShelfB1},
+        {"highShelfA1", damping.highShelfA1},
+    };
+  }
+  return document;
 }
 
 Json downmixJson(const dsp::ResolvedDownmix& downmix) {

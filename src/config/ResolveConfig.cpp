@@ -1,6 +1,7 @@
 #include "rvrbotron/config/ResolveConfig.h"
 
 #include "rvrbotron/HarnessError.h"
+#include "rvrbotron/config/DampingResolution.h"
 #include "rvrbotron/config/MixMatrixResolution.h"
 #include "rvrbotron/config/PositionalRandom.h"
 
@@ -752,6 +753,41 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   }
   }
 
+  if (requested.damping.has_value()) {
+    dsp::ResolvedDamping damping;
+    damping.highRatio =
+        requested.damping->highRatio.value_or(kDefaultDampingHighRatio);
+    damping.highHz =
+        requested.damping->highHz.value_or(kDefaultDampingHighHz);
+    damping.lowRatio =
+        requested.damping->lowRatio.value_or(kDefaultDampingLowRatio);
+    damping.lowHz = requested.damping->lowHz.value_or(kDefaultDampingLowHz);
+
+    // Per-Channel high-shelf gain and coefficients are only solvable once
+    // every Channel's own decay gain is known (see resolveHighShelfGain);
+    // finiteness/range validation of highRatio/highHz runs regardless, in
+    // validateFeedbackLoopStage below.
+    if (std::isfinite(damping.highRatio) && damping.highRatio > 0.0 &&
+        std::isfinite(damping.highHz) && damping.highHz > 0.0 &&
+        damping.highHz < sampleRate / 2.0) {
+      damping.highShelfGains.reserve(channels);
+      damping.highShelfB0.reserve(channels);
+      damping.highShelfB1.reserve(channels);
+      damping.highShelfA1.reserve(channels);
+      for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        const auto shelfGain =
+            resolveHighShelfGain(loop.gains[channel], damping.highRatio);
+        damping.highShelfGains.push_back(shelfGain);
+        const auto coefficients = resolveHighShelfCoefficients(
+            shelfGain, damping.highHz, sampleRate);
+        damping.highShelfB0.push_back(coefficients.b0);
+        damping.highShelfB1.push_back(coefficients.b1);
+        damping.highShelfA1.push_back(coefficients.a1);
+      }
+    }
+    loop.damping = std::move(damping);
+  }
+
   return loop;
 }
 
@@ -1473,6 +1509,109 @@ void validateFeedbackLoopStage(
       channels,
       feedbackLoop.matrix,
       path + "/matrix");
+
+  if (feedbackLoop.damping.has_value()) {
+    const auto& damping = *feedbackLoop.damping;
+    const auto dampingPath = path + "/damping";
+    if (!std::isfinite(damping.highRatio) || !(damping.highRatio > 0.0)) {
+      fail(
+          dampingPath + "/highRatio",
+          "expected finite value greater than zero");
+    }
+    // Safe boosting (highRatio > 1.0) is proven by a conservative
+    // contraction certificate arriving in a later slice (#77); this slice
+    // only supports neutral or attenuating high ratios.
+    if (damping.highRatio > 1.0) {
+      fail(
+          dampingPath + "/highRatio",
+          "boosting above 1.0 is not supported yet -- safe boosting "
+          "arrives in a later slice");
+    }
+    if (!std::isfinite(damping.highHz) || !(damping.highHz > 0.0) ||
+        !(damping.highHz < resolved.sampleRate / 2.0)) {
+      fail(
+          dampingPath + "/highHz",
+          "expected finite value strictly between 0 Hz and Nyquist");
+    }
+    if (!std::isfinite(damping.lowRatio) || !(damping.lowRatio > 0.0)) {
+      fail(
+          dampingPath + "/lowRatio",
+          "expected finite value greater than zero");
+    }
+    // The low shelf itself is not applied to audio until a later slice
+    // (#76); lowRatio is recorded now for schema stability but restricted
+    // to the identity value so rendered audio never silently diverges from
+    // a low-frequency experiment it cannot yet honour.
+    if (damping.lowRatio != 1.0) {
+      fail(
+          dampingPath + "/lowRatio",
+          "low-frequency damping is not supported yet -- lowRatio must "
+          "remain 1.0 until a later slice");
+    }
+    if (!std::isfinite(damping.lowHz) || !(damping.lowHz > 0.0) ||
+        !(damping.lowHz < resolved.sampleRate / 2.0)) {
+      fail(
+          dampingPath + "/lowHz",
+          "expected finite value strictly between 0 Hz and Nyquist");
+    }
+
+    const auto requireDampingChannelValues =
+        [channels, &dampingPath](
+            const std::size_t size, const std::string_view field) {
+          if (size != channels) {
+            fail(
+                dampingPath + std::string(field),
+                "expected one value per Channel");
+          }
+        };
+    requireDampingChannelValues(
+        damping.highShelfGains.size(), "/highShelfGains");
+    requireDampingChannelValues(damping.highShelfB0.size(), "/highShelfB0");
+    requireDampingChannelValues(damping.highShelfB1.size(), "/highShelfB1");
+    requireDampingChannelValues(damping.highShelfA1.size(), "/highShelfA1");
+
+    const auto gainTolerance = 4.0 * std::numeric_limits<double>::epsilon();
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+      const auto expectedGain =
+          resolveHighShelfGain(feedbackLoop.gains[channel], damping.highRatio);
+      if (!std::isfinite(damping.highShelfGains[channel]) ||
+          !(damping.highShelfGains[channel] > 0.0)) {
+        fail(
+            dampingPath + "/highShelfGains",
+            "expected finite gain greater than zero");
+      }
+      if (std::abs(damping.highShelfGains[channel] - expectedGain) >
+          gainTolerance) {
+        fail(
+            dampingPath + "/highShelfGains",
+            "expected gain solved from that Channel's own decay gain and "
+            "highRatio");
+      }
+      const auto expectedCoefficients = resolveHighShelfCoefficients(
+          expectedGain, damping.highHz, resolved.sampleRate);
+      // A modest relative tolerance, not the tighter fixed epsilon used for
+      // gains above: these coefficients chain tan/sqrt/pow, so a resolved.
+      // json produced on another platform (see ADR-0001) may differ by a
+      // few ULPs once rerendered here.
+      const auto coefficientTolerance = [](const double expected) noexcept {
+        return 1e-9 * std::max(1.0, std::abs(expected));
+      };
+      if (!std::isfinite(damping.highShelfB0[channel]) ||
+          !std::isfinite(damping.highShelfB1[channel]) ||
+          !std::isfinite(damping.highShelfA1[channel]) ||
+          std::abs(damping.highShelfB0[channel] - expectedCoefficients.b0) >
+              coefficientTolerance(expectedCoefficients.b0) ||
+          std::abs(damping.highShelfB1[channel] - expectedCoefficients.b1) >
+              coefficientTolerance(expectedCoefficients.b1) ||
+          std::abs(damping.highShelfA1[channel] - expectedCoefficients.a1) >
+              coefficientTolerance(expectedCoefficients.a1)) {
+        fail(
+            dampingPath,
+            "expected high-shelf coefficients solved from the resolved "
+            "gain, highHz, and sampleRate");
+      }
+    }
+  }
 }
 
 void validateResolvedConfig(

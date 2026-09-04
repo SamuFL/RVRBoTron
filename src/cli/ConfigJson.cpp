@@ -413,6 +413,32 @@ config::DiffuserConfig parseRequestedDiffuser(
   return diffuser;
 }
 
+config::DampingConfig parseRequestedDamping(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value, path, {"highRatio", "highHz", "lowRatio", "lowHz"});
+  config::DampingConfig damping;
+  if (value.contains("highRatio")) {
+    damping.highRatio = parseNumber(
+        value.at("highRatio"), std::string(path) + "/highRatio");
+  }
+  if (value.contains("highHz")) {
+    damping.highHz =
+        parseNumber(value.at("highHz"), std::string(path) + "/highHz");
+  }
+  if (value.contains("lowRatio")) {
+    damping.lowRatio =
+        parseNumber(value.at("lowRatio"), std::string(path) + "/lowRatio");
+  }
+  if (value.contains("lowHz")) {
+    damping.lowHz =
+        parseNumber(value.at("lowHz"), std::string(path) + "/lowHz");
+  }
+  return damping;
+}
+
 config::FeedbackLoopConfig parseRequestedFeedbackLoop(
     const Json& value,
     const std::string_view path) {
@@ -427,7 +453,8 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
        "decayMargin",
        "mix",
        "gainMode",
-       "silenceFloorDb"});
+       "silenceFloorDb",
+       "damping"});
   config::FeedbackLoopConfig loop;
   if (value.contains("delayMinMs")) {
     loop.delayMinMs = parseNumber(
@@ -460,6 +487,10 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
       !value.at("silenceFloorDb").is_null()) {
     loop.silenceFloorDb = parseNumber(
         value.at("silenceFloorDb"), std::string(path) + "/silenceFloorDb");
+  }
+  if (value.contains("damping")) {
+    loop.damping = parseRequestedDamping(
+        value.at("damping"), std::string(path) + "/damping");
   }
   return loop;
 }
@@ -691,6 +722,52 @@ dsp::ResolvedDiffuser parseResolvedDiffuser(
   return diffuser;
 }
 
+dsp::ResolvedDamping parseResolvedDamping(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value,
+      path,
+      {"highRatio",
+       "highHz",
+       "lowRatio",
+       "lowHz",
+       "highShelfGains",
+       "highShelfB0",
+       "highShelfB1",
+       "highShelfA1"});
+  for (const auto field :
+       {"highRatio",
+        "highHz",
+        "lowRatio",
+        "lowHz",
+        "highShelfGains",
+        "highShelfB0",
+        "highShelfB1",
+        "highShelfA1"}) {
+    requireField(value, field, path);
+  }
+  dsp::ResolvedDamping damping;
+  damping.highRatio =
+      parseNumber(value.at("highRatio"), std::string(path) + "/highRatio");
+  damping.highHz =
+      parseNumber(value.at("highHz"), std::string(path) + "/highHz");
+  damping.lowRatio =
+      parseNumber(value.at("lowRatio"), std::string(path) + "/lowRatio");
+  damping.lowHz =
+      parseNumber(value.at("lowHz"), std::string(path) + "/lowHz");
+  damping.highShelfGains = parseNumberArray(
+      value.at("highShelfGains"), std::string(path) + "/highShelfGains");
+  damping.highShelfB0 = parseNumberArray(
+      value.at("highShelfB0"), std::string(path) + "/highShelfB0");
+  damping.highShelfB1 = parseNumberArray(
+      value.at("highShelfB1"), std::string(path) + "/highShelfB1");
+  damping.highShelfA1 = parseNumberArray(
+      value.at("highShelfA1"), std::string(path) + "/highShelfA1");
+  return damping;
+}
+
 dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
     const Json& value,
     const std::string_view path) {
@@ -715,7 +792,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
        "decayMargin",
        "tailBudgetSamples",
        "blockSizeBoundSamples",
-       "silenceFloorDb"});
+       "silenceFloorDb",
+       "damping"});
   for (const auto field :
        {"channels",
         "delayMinSamples",
@@ -785,6 +863,10 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
       std::string(path) + "/blockSizeBoundSamples");
   loop.silenceFloorDb = parseOptionalNumber(
       value.at("silenceFloorDb"), std::string(path) + "/silenceFloorDb");
+  if (value.contains("damping")) {
+    loop.damping = parseResolvedDamping(
+        value.at("damping"), std::string(path) + "/damping");
+  }
   return loop;
 }
 
