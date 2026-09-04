@@ -829,11 +829,11 @@ def main():
     # that Channel's own loop time. Under uniform gain mode, the shared gain
     # combined with each Channel's own (unequal) loop time spreads expected
     # decay into a real per-Channel range instead.
-    per_channel_low = default_damping["expectedHighRt60Sec"]
-    if abs(per_channel_low[0] - per_channel_low[1]) > 1e-6:
+    per_channel_high = default_damping["expectedHighRt60Sec"]
+    if abs(per_channel_high[0] - per_channel_high[1]) > 1e-6:
         raise AssertionError(
             f"gainMode per-channel did not converge on a narrow common "
-            f"expected-decay target across Channels: {per_channel_low}"
+            f"expected-decay target across Channels: {per_channel_high}"
         )
     uniform_request = json.loads(json.dumps(request))
     uniform_request["composition"]["stages"][1]["gainMode"] = "uniform"
