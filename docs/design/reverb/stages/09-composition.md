@@ -70,7 +70,7 @@ When included stage fields are omitted, they resolve from the Reference configur
 | Damping must preserve the 1 kHz RT60 contract and remain conservatively contractive after float32 and float64 quantisation | Stage 5 |
 | Summing downmix strategies are rejected on aligned input | Stage 8 |
 | Tap indices must reference existing diffusion steps | Stage 7 |
-| Delay buffers must cover nominal delay + modulation depth + interpolation margin | Stage 6 |
+| Delay buffers must cover nominal delay + symmetric modulation Excursion + a worst-case Interpolation margin, and every modulated Channel's resolved delay less that Excursion must exceed the margin | Stage 6 |
 | Resolved step lengths must sum to `totalMs` | Stage 3 |
 
 Deliberately *not* rejected: ablations. `shuffle: false`, `delayStrategy: even`, `polarity: none`, `normalisation: none` all produce bad reverbs on purpose. The instrument must be able to produce the wrong answer on request.
@@ -85,7 +85,8 @@ One global seed. Every randomised quantity derives from it positionally — a pu
 |---|---|
 | Diffusion step delays, shuffle, polarity | seed, step index |
 | Feedback loop delays | seed, channel index |
-| Modulation LFO phases | seed, channel index |
+| Modulation trajectory phase, rate spread, and Channel selection | seed, usage, step index, channel index |
+| Modulation `smoothed-random` targets | the same, plus a target counter |
 | Random orthogonal matrices | seed, usage site |
 
 This is what makes the step-count sweep mean anything: step 2 gets identical delays whether the chain has three steps or thirty. Retrofitting it invalidates every render already made.
