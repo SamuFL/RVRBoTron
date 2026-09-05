@@ -700,6 +700,58 @@ files. Regeneration is unconditional and reads only already-published
 evidence, so rerunning a fully resumed sweep refreshes the report without
 re-rendering anything.
 
+### Sweep Damping Over Curated Listening Samples
+
+`tools/damping_sweep_v1.json` is a versioned axis catalog for the Two-shelf
+Damping research space (issue #79): one Reference Feedback Loop
+configuration (100-200 ms delays, RT60 2.4 s, Householder mixing,
+per-Channel gain, and the documented Damping research baseline -- `highRatio`
+0.5 at 4000 Hz, `lowRatio` 1.0 at 200 Hz) plus 4 named axes -- `high-ratio`,
+`low-ratio`, `high-corner`, `low-corner` -- each swept as 1-2 named values
+that override only that axis's Damping field(s) from the Reference, never
+combinatorially. Ratios above `1.0` (boost) are deliberately excluded from
+this listening catalog; they remain covered by `test_feedback_loop_cli.py`'s
+configuration tests. Same shape and CLI as the tail sweep above -- the
+sample to sweep is a runtime argument, not catalog-embedded:
+
+```bash
+python3 tools/run_damping_sweep.py \
+  --catalog tools/damping_sweep_v1.json \
+  --renderer build/release/rvrbotron \
+  --analyzer tools/analyze_tail_v2.py \
+  --sample samples/listening/PianoDry.wav \
+  --mono-impulse tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --stereo-impulse tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
+  --output manual_UATs/damping-sweep
+```
+
+Every sweep point renders both the selected sample and its matching
+deterministic impulse under an identical Resolved Configuration -- the same
+`--resolved`-reuse pattern the tail sweep uses -- and analyzes the impulse
+with tail analysis version 2 (`analyze_tail_v2.py`, #78) rather than version
+1, publishing `analysis/tail-v2.json`: Damping-aware, predicted-vs-measured
+octave-band decay, the canonical low/Reference/high ratio summary, and
+eventual-contraction evidence. Materialisation, per-step resumability,
+one-axis-at-a-time catalog loading, and Git-LFS-aware sample matching are
+shared with `run_tail_sweep.py` via `experiment_runner`; only the analyzer
+and the listening-report layout differ. This full run is a local research
+artifact; CI instead runs a millisecond-scale tracer sweep
+(`tests/test_damping_sweep_cli.py`) that proves the same properties without
+executing the full sweep.
+
+Every run also (re)generates `<output>/<sample>/listening-report.html`,
+presenting each point's playable sample and impulse renders, its requested
+`highRatio`/`highHz`/`lowRatio`/`lowHz` (read from `resolved.json`), the
+canonical low/Reference/high measured ratios, the full predicted-vs-measured
+octave-band decay curve behind a `<details>` toggle, complete-response and
+eventual-contraction status, and benchmark cost -- self-contained, playable
+in a browser with no external resource requests or JavaScript. Per
+[ADR-0004](docs/adr/0004-validate-structure-not-acoustics.md), a rendered 1
+kHz Reference-band deviation past 10% from the requested `rt60Sec` is a
+gentle one-pole shelf's real, expected transition-band behavior -- the
+report flags it visibly (`significantDeviation` in `tail-v2.json`) rather
+than treating it as a failed point.
+
 ### Validate a Listening Sample Locally
 
 Listening material is intentionally excluded from automated tests. After

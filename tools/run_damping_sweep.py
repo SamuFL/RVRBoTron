@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 
-"""Runs the versioned tail axis catalog (see tail_sweep_v1.json): sweeps one
-curated listening sample across the Feedback Loop research axes -- delay
-range, RT60, matrix, delay strategy, gain mode -- one axis at a time from a
-single Reference configuration, never combinatorially.
+"""Runs the versioned Damping axis catalog (see damping_sweep_v1.json):
+sweeps one curated listening sample across the Two-shelf Damping research
+axes -- high-ratio, low-ratio, high-corner, low-corner -- one axis at a time
+from a single Reference configuration, never combinatorially (issue #79).
 
 Every sweep point renders both the selected listening sample and the
-deterministic impulse under an identical Resolved Configuration (the sample
-render's resolved.json, reused via `--resolved` rather than re-resolving
-from the impulse), because Schroeder integration assumes an impulse
-response and programme material would contaminate the decay curve with its
-own envelope. Tail analysis and benchmarking then both run against that
-paired impulse/Resolved Configuration.
+matching deterministic impulse under an identical Resolved Configuration
+(the sample render's resolved.json, reused via `--resolved` rather than
+re-resolving from the impulse), because Schroeder integration assumes an
+impulse response and programme material would contaminate the decay curve
+with its own envelope. Tail analysis version 2 (analyze_tail_v2.py) and
+benchmarking then both run against that paired impulse/Resolved
+Configuration, publishing Damping-aware octave-band evidence -- predicted
+and measured low/Reference/high/transition decay -- rather than tail-v1's
+single broadband RT60.
 
 Output is laid out per sample, per axis, and per axis value, with numeric
 prefixes so a folder plays back in sweep order: <output>/<sample>/
@@ -19,19 +22,22 @@ prefixes so a folder plays back in sweep order: <output>/<sample>/
 
 Every run also (re)generates <output>/<sample>/listening-report.html: one
 self-contained page presenting every point's renders (playable in place,
-via relative paths -- no external resource requests), measured decay
-against the requested RT60, and benchmark cost, so a tuning session is
-consumable without reading terminal scrollback or opening a dozen JSON
-files. Regeneration is unconditional and reads only already-published
-evidence, so rerunning a fully resumed sweep refreshes the report without
-re-rendering anything.
+via relative paths -- no external resource requests, no JavaScript), the
+requested and measured low/Reference/high ratios, the full octave-band
+decay curve, complete-response and eventual-contraction status, and
+benchmark cost -- so a tuning session is consumable without reading
+terminal scrollback or opening a dozen JSON files. Per the note on issue
+#79 (and ADR-0004), a Reference-band deviation past 10% is presented as a
+flagged, not failing, observation. Regeneration is unconditional and reads
+only already-published evidence, so rerunning a fully resumed sweep
+refreshes the report without re-rendering anything.
 
 Materialisation, command execution, render/benchmark invocation,
 per-step resumability, one-axis-at-a-time catalog loading, and Git-LFS-aware
 sample matching are catalog-agnostic and live in experiment_runner (shared
-with run_damping_sweep.py, the other axis-catalog sweep); this module
-supplies only what is specific to the tail sweep: the tail analyzer, and the
-listening-report layout tail-v1 evidence produces.
+with run_tail_sweep.py, the other axis-catalog sweep); this module supplies
+only what is specific to the Damping sweep: the tail-v2 analyzer, and the
+listening-report layout its Damping-aware evidence produces.
 """
 
 import argparse
@@ -39,6 +45,8 @@ import html
 import json
 import sys
 from pathlib import Path
+
+import analyze_tail
 
 from experiment_runner import (
     CatalogError,
@@ -64,6 +72,8 @@ CANONICAL_WARMUP_SECONDS = 1.0
 CANONICAL_MEASURE_SECONDS = 5.0
 CANONICAL_BENCHMARK_BLOCK_SIZE = 128
 
+ANALYSIS_ARTIFACT_NAME = "tail-v2.json"
+
 
 def run_sweep_point(
     name,
@@ -78,11 +88,11 @@ def run_sweep_point(
     measure_seconds,
     block_size,
 ):
-    """Renders, tail-analyzes, and benchmarks one sweep point. Each of the
-    four steps below is independently resumable, matching
-    run_diffusion_catalog.py's established per-case shape: a case that
-    failed partway through finishes on the next run instead of failing the
-    same way forever."""
+    """Renders, tail-v2-analyzes, and benchmarks one sweep point. Each of
+    the four steps below is independently resumable, matching
+    run_tail_sweep.py's established per-case shape: a case that failed
+    partway through finishes on the next run instead of failing the same
+    way forever."""
     sample_dir = point_dir / "sample"
     impulse_dir = point_dir / "impulse"
     resolved_path = sample_dir / "resolved.json"
@@ -112,8 +122,8 @@ def run_sweep_point(
             ),
         ),
         (
-            impulse_dir / "analysis" / "tail-v1.json",
-            "analyze tail",
+            impulse_dir / "analysis" / ANALYSIS_ARTIFACT_NAME,
+            "analyze tail (v2)",
             lambda: run_command(
                 sys.executable, analyzer, impulse_dir, "--source", impulse
             ),
@@ -142,10 +152,12 @@ def run_sweep_point(
 
 
 def _point_evidence(point_dir):
-    """Best-effort read of a point's already-published tail analysis and
-    benchmark evidence for the listening report -- None for whatever a
-    failed point never produced, rather than raising."""
-    analysis_path = point_dir / "impulse" / "analysis" / "tail-v1.json"
+    """Best-effort read of a point's already-published tail-v2 analysis,
+    Resolved Configuration, and benchmark evidence for the listening
+    report -- None for whatever a failed point never produced, rather than
+    raising."""
+    analysis_path = point_dir / "impulse" / "analysis" / ANALYSIS_ARTIFACT_NAME
+    resolved_path = point_dir / "sample" / "resolved.json"
     benchmark_path = point_dir / "benchmark.json"
 
     def load_json(path):
@@ -156,36 +168,135 @@ def _point_evidence(point_dir):
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
 
-    return load_json(analysis_path), load_json(benchmark_path)
+    return (
+        load_json(analysis_path),
+        load_json(resolved_path),
+        load_json(benchmark_path),
+    )
 
 
-def _decay_section_html(analysis):
+def _requested_damping(resolved):
+    """The resolved Damping object (highRatio/highHz/lowRatio/lowHz/...) for
+    this point, or None when Damping is disabled or the Resolved
+    Configuration doesn't parse as one -- read from resolved.json rather
+    than the analysis artifact, since tail-v2.json records only the derived
+    shelf coefficients and predicted decay, not the ratio/corner inputs
+    that produced them. Shared by the requested-parameters table below and
+    the canonical ratio table's "requested ratio" column."""
+    try:
+        loop = analyze_tail.locate_feedback_loop(resolved)
+    except (KeyError, ValueError):
+        return None
+    return loop.get("damping")
+
+
+def _requested_damping_html(damping):
+    if damping is None:
+        return "<p>Damping: disabled.</p>"
+    return f"""<table>
+<tr><th>highRatio</th><th>highHz</th><th>lowRatio</th><th>lowHz</th></tr>
+<tr><td>{damping['highRatio']:.3f}</td><td>{damping['highHz']:.0f} Hz</td>
+<td>{damping['lowRatio']:.3f}</td><td>{damping['lowHz']:.0f} Hz</td></tr>
+</table>"""
+
+
+def _rt60_word(value):
+    return f"{value:.3f} s" if value is not None else "n/a"
+
+
+def _predicted_word(predicted, gain_mode):
+    if gain_mode == "uniform":
+        low, high = predicted["rangeRt60Sec"]
+        return f"{low:.3f}-{high:.3f} s (range)"
+    return f"{predicted['targetRt60Sec']:.3f} s (target)"
+
+
+def _requested_ratio_word(label, damping):
+    """The requested ratio behind one canonical band, for the "requested
+    vs. measured" comparison the report needs alongside each band's
+    measuredRatio (tail-v2.json's canonicalRatios carries no requested-ratio
+    field of its own -- only the shelf's own highRatio/lowRatio do). The
+    Reference band has no ratio parameter at all: ratios are defined
+    relative to it, so its requested ratio is 1.0 by definition."""
+    if damping is None:
+        return "n/a"
+    if label == "reference":
+        return "1.000"
+    return f'{damping["lowRatio" if label == "low" else "highRatio"]:.3f}'
+
+
+def _canonical_ratios_html(decay, damping):
+    rows = []
+    for label in ("low", "reference", "high"):
+        band_ratio = decay["canonicalRatios"][label]
+        if band_ratio is None:
+            continue
+        rows.append(
+            "<tr><td>{}</td><td>{:.0f} Hz</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+                label.capitalize(),
+                band_ratio["centerHz"],
+                _requested_ratio_word(label, damping),
+                _rt60_word(band_ratio["measuredRt60Sec"]),
+                f'{band_ratio["measuredRatio"]:.3f}'
+                if band_ratio["measuredRatio"] is not None
+                else "n/a",
+            )
+        )
+    return f"""<table>
+<tr><th>Band</th><th>Center</th><th>Requested ratio</th><th>Measured RT60</th>
+<th>Measured ratio</th></tr>
+{"".join(rows)}
+</table>"""
+
+
+def _octave_band_table_html(decay, gain_mode):
+    rows = "".join(
+        "<tr><td>{:.0f} Hz</td><td>{}</td><td>{}</td><td>{}</td></tr>".format(
+            band["centerHz"],
+            _rt60_word(band["t30"]["rt60Sec"] if band["t30"] else None),
+            _predicted_word(band["predictedRt60Sec"], gain_mode),
+            yes_no(band["withinPredictedTolerance"]),
+        )
+        for band in decay["bands"]
+    )
+    return f"""<details><summary>Full octave-band decay curve</summary>
+<table>
+<tr><th>Band</th><th>Measured T30</th><th>Predicted</th><th>Within +/-10%</th></tr>
+{rows}
+</table></details>"""
+
+
+def _decay_section_html(analysis, damping):
     decay = analysis["decay"]
-    measured = decay["measuredRt60Sec"]
-    measured_word = f'{measured:.3f} s' if measured is not None else "n/a"
     error_word = (
         f'{decay["relativeError"] * 100:.2f}%'
         if decay["relativeError"] is not None
         else "n/a"
     )
-    band_rows = "".join(
-        "<tr><td>{:.0f} Hz</td><td>{}</td></tr>".format(
-            band["centerHz"],
-            f'{band["t30"]["rt60Sec"]:.3f} s' if band["t30"] else "n/a",
-        )
-        for band in decay["bands"]
+    significant = decay["significantDeviation"]
+    significant_word = (
+        '<span class="flag-significant">significant</span>'
+        if significant
+        else "no"
     )
+    complete = analysis["completeResponse"]
+    contraction = analysis["eventualContraction"]
     return f"""<table>
-<tr><th>Requested RT60</th><th>Measured RT60 (1 kHz)</th><th>Relative error</th>
-<th>Within +/-5%</th><th>Alignment score</th><th>Decay monotonic</th></tr>
-<tr><td>{decay['requestedRt60Sec']:.3f} s</td><td>{measured_word}</td>
+<tr><th>Requested RT60 (1 kHz)</th><th>Measured RT60</th><th>Relative error</th>
+<th>Within +/-5%</th><th>Deviation &gt;10%</th></tr>
+<tr><td>{decay['requestedRt60Sec']:.3f} s</td>
+<td>{_rt60_word(decay['measuredRt60Sec'])}</td>
 <td>{error_word}</td>
 <td>{yes_no(decay["withinAccuracyInvariant"])}</td>
-<td>{analysis['alignment']['score']:.3f}</td>
-<td>{yes_no(analysis['decayEnvelope']['monotonic'])}</td></tr>
+<td>{significant_word}</td></tr>
 </table>
-<details><summary>Per-band T30 RT60</summary>
-<table><tr><th>Band</th><th>T30 RT60</th></tr>{band_rows}</table></details>"""
+{_canonical_ratios_html(decay, damping)}
+{_octave_band_table_html(decay, analysis["gainMode"])}
+<table>
+<tr><th>Frame count check</th><th>Eventual contraction</th></tr>
+<tr><td>{html.escape(complete["frameCountCheck"])}</td>
+<td>{yes_no(contraction["negativeTrend"])}</td></tr>
+</table>"""
 
 
 def _benchmark_section_html(benchmark):
@@ -205,9 +316,15 @@ def _point_section_html(name, directory, point_dir, outcome):
             f'<p class="status-failed">FAILED: {html.escape(outcome.detail or "")}</p>'
         )
 
-    analysis, benchmark = _point_evidence(point_dir)
+    analysis, resolved, benchmark = _point_evidence(point_dir)
+    damping = _requested_damping(resolved) if resolved is not None else None
+    damping_html = (
+        _requested_damping_html(damping)
+        if resolved is not None
+        else "<p>Resolved Configuration unavailable.</p>"
+    )
     decay_html = (
-        _decay_section_html(analysis)
+        _decay_section_html(analysis, damping)
         if analysis is not None
         else "<p>Tail analysis unavailable.</p>"
     )
@@ -223,6 +340,7 @@ def _point_section_html(name, directory, point_dir, outcome):
 <audio controls src="{sample_audio}"></audio>
 <p class="meta">Impulse render (used for tail analysis)</p>
 <audio controls src="{impulse_audio}"></audio>
+{damping_html}
 {decay_html}
 {benchmark_html}"""
 
@@ -256,17 +374,20 @@ td:first-child, th:first-child { text-align: left; }
 audio { width: 100%; margin: .25rem 0 .75rem; }
 .status-failed { color: #b00020; font-weight: bold; }
 .status-completed, .status-resumed { color: #1a7a1a; }
+.flag-significant { color: #b06a00; font-weight: bold; }
 .meta { color: #555; font-size: .9rem; margin-bottom: 0; }
 """
 
 
 def generate_report(sample_root, sample_name, points, summary):
     """Writes one self-contained listening-report.html presenting every
-    point's renders, measured decay, and benchmark cost -- no external
-    resource requests, no JavaScript, and no dependency on anything but the
-    evidence this sweep already published to sample_root. Unconditional and
-    read-only against already-published evidence, so rerunning a fully
-    resumed sweep regenerates the report without re-rendering anything."""
+    point's renders, requested and measured Damping ratios, the octave-band
+    decay curve, complete-response and eventual-contraction status, and
+    benchmark cost -- no external resource requests, no JavaScript, and no
+    dependency on anything but the evidence this sweep already published to
+    sample_root. Unconditional and read-only against already-published
+    evidence, so rerunning a fully resumed sweep regenerates the report
+    without re-rendering anything."""
     sections = "\n".join(
         _point_section_html(name, directory, point_dir, outcome)
         for name, directory, point_dir, outcome in points
@@ -275,11 +396,11 @@ def generate_report(sample_root, sample_name, points, summary):
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Tail sweep: {html.escape(sample_name)}</title>
+<title>Damping sweep: {html.escape(sample_name)}</title>
 <style>{_REPORT_STYLE}</style>
 </head>
 <body>
-<h1>Tail sweep: {html.escape(sample_name)}</h1>
+<h1>Damping sweep: {html.escape(sample_name)}</h1>
 <h2>Benchmark comparison</h2>
 {_benchmark_summary_html(summary)}
 {sections}
@@ -294,8 +415,8 @@ def generate_report(sample_root, sample_name, points, summary):
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description=(
-            "Sweep one curated listening sample across the versioned tail "
-            "axis catalog."
+            "Sweep one curated listening sample across the versioned "
+            "Damping axis catalog."
         )
     )
     parser.add_argument("--catalog", required=True, type=Path)
@@ -330,7 +451,7 @@ def main():
     try:
         catalog = load_catalog(arguments.catalog)
     except (CatalogError, OSError, json.JSONDecodeError, KeyError) as error:
-        print(f"tail sweep failed: {error}", file=sys.stderr)
+        print(f"damping sweep failed: {error}", file=sys.stderr)
         return 1
 
     reason = sample_unavailable_reason(arguments.sample)
@@ -343,7 +464,7 @@ def main():
             arguments.sample, arguments.mono_impulse, arguments.stereo_impulse
         )
     except CatalogError as error:
-        print(f"tail sweep failed: {error}", file=sys.stderr)
+        print(f"damping sweep failed: {error}", file=sys.stderr)
         return 1
 
     sample_root = arguments.output / arguments.sample.stem
@@ -418,7 +539,7 @@ def main():
     failures = [outcome for outcome in outcomes if outcome.status == "failed"]
     if failures:
         print(file=sys.stderr)
-        print("Tail sweep had failures:", file=sys.stderr)
+        print("Damping sweep had failures:", file=sys.stderr)
         for outcome in failures:
             print(f"  {outcome.name}: {outcome.detail}", file=sys.stderr)
         return 1

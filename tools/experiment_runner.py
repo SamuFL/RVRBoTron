@@ -14,10 +14,132 @@ artifact paths that make each of its steps resumable.
 import copy
 import json
 import subprocess
+import wave
+from pathlib import Path
+
+# The first four bytes of a Git LFS pointer file, checked out in place of
+# real content whenever a clone has not run `git lfs pull` -- distinct from
+# the sample being absent entirely, which `Path.exists()` alone catches.
+_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 
 
 class CatalogError(ValueError):
     pass
+
+
+def load_catalog(path: Path):
+    """Loads and validates a versioned one-axis-at-a-time catalog: a
+    `formatVersion`, one complete `reference` Requested Configuration, and
+    `axes` -- each a named list of `{label, overrides}` values, `overrides`
+    being JSON-Pointer operations applied to the Reference (see
+    `materialize`). Shared by every catalog whose sample is a runtime
+    argument rather than catalog-embedded (tail_sweep_v1.json,
+    damping_sweep_v1.json): both use this exact schema, so a catalog-
+    authoring mistake -- a missing field, a duplicate axis name, a duplicate
+    value label within an axis, an axis with no values -- fails identically
+    and descriptively regardless of which sweep is loading it."""
+    document = json.loads(path.read_text())
+    if document.get("formatVersion") != 1:
+        raise CatalogError(f"unsupported catalog formatVersion: {document.get('formatVersion')}")
+    for field in ("reference", "axes"):
+        if field not in document:
+            raise CatalogError(f"catalog is missing required field: {field}")
+
+    names = []
+    for axis in document["axes"]:
+        for field in ("name", "values"):
+            if field not in axis:
+                raise CatalogError(f"axis is missing required field {field!r}: {axis}")
+        names.append(axis["name"])
+    if len(names) != len(set(names)):
+        raise CatalogError("catalog contains duplicate axis names")
+
+    for axis in document["axes"]:
+        labels = []
+        for value in axis["values"]:
+            for field in ("label", "overrides"):
+                if field not in value:
+                    raise CatalogError(
+                        f"axis {axis['name']!r} has a value missing required "
+                        f"field {field!r}: {value}"
+                    )
+            labels.append(value["label"])
+        if len(labels) != len(set(labels)):
+            raise CatalogError(
+                f"axis {axis['name']!r} contains duplicate value labels"
+            )
+        if not labels:
+            raise CatalogError(f"axis {axis['name']!r} has no values to sweep")
+    return document
+
+
+def sweep_points(catalog):
+    """Yields (point_name, directory_name, overrides) for the Reference
+    point followed by every axis's values in catalog order -- one axis at a
+    time, never combinatorially: each point overrides only its own single
+    axis from the Reference, and the Reference point itself carries no
+    overrides at all."""
+    yield "reference", "00-reference", []
+    for axis_index, axis in enumerate(catalog["axes"], start=1):
+        axis_directory = f"{axis_index:02d}-{axis['name']}"
+        for value_index, value in enumerate(axis["values"], start=1):
+            point_name = f"{axis['name']}/{value['label']}"
+            directory = f"{axis_directory}/{value_index:02d}-{value['label']}"
+            yield point_name, directory, value["overrides"]
+
+
+def sample_unavailable_reason(sample: Path):
+    """None when the sample is real, local, curated material; otherwise the
+    reason it cannot be swept -- either genuinely absent, or present only as
+    an unpulled Git LFS pointer (the file exists, but is a few dozen bytes
+    of pointer text rather than audio)."""
+    if not sample.exists():
+        return f"listening sample not present locally (needs `git lfs pull`): {sample}"
+    with sample.open("rb") as handle:
+        prefix = handle.read(len(_LFS_POINTER_PREFIX))
+    if prefix == _LFS_POINTER_PREFIX:
+        return (
+            f"listening sample is an unpulled Git LFS pointer, not audio "
+            f"(needs `git lfs pull`): {sample}"
+        )
+    return None
+
+
+def matching_impulse(sample, mono_impulse, stereo_impulse):
+    """Rendering the impulse via `--resolved` (see render_from_resolved)
+    requires the resolved Split's inputChannels to match exactly -- a mono
+    impulse against a resolved.json baked from a stereo sample fails loudly
+    rather than silently mixing channel counts -- so the matching fixture is
+    selected from the sample's own Channel count, mirroring
+    run_diffusion_catalog.py's mono/stereo source pairing."""
+    try:
+        with wave.open(str(sample), "rb") as wav:
+            channels = wav.getnchannels()
+    except (wave.Error, EOFError) as error:
+        raise CatalogError(
+            f"listening sample is not a readable WAV file: {sample} ({error})"
+        ) from error
+    if channels == 1:
+        return mono_impulse
+    if channels == 2:
+        return stereo_impulse
+    raise CatalogError(
+        f"listening sample has {channels} Channels; only mono or stereo "
+        f"source material is supported: {sample}"
+    )
+
+
+def yes_no(value):
+    """True/False/None -> "yes"/"no"/"n/a" for an HTML report -- several
+    optional booleans across tail analysis versions (tail-v1's
+    decayEnvelope.monotonic, tail-v2's withinAccuracyInvariant/
+    withinPredictedTolerance/eventualContraction.negativeTrend) are None
+    when the tail is too short to measure, and collapsing that into "no"
+    would falsely read as a measured negative result rather than an
+    unmeasured one."""
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
 
 
 def _unescape_token(token: str) -> str:
@@ -169,7 +291,7 @@ def render_from_resolved(renderer, source, resolved_path, output_dir, block_size
     impulse with the sample it accompanies. The new source's Channel count
     must still match the resolved Split's inputChannels exactly; the caller
     is responsible for picking a source with the right Channel count (see
-    run_tail_sweep.py's matching_impulse)."""
+    matching_impulse below)."""
     extra_flags = [] if block_size is None else ["--block-size", block_size]
     return _render(
         renderer, source, output_dir, "--resolved", resolved_path, extra_flags
