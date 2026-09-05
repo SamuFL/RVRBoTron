@@ -1,96 +1,118 @@
 {
-  "formatVersion": 1,
-  "rationale": "Reviewed against real cross-platform CI evidence for issue #78 (PR #84, CI run https://github.com/SamuFL/RVRBoTron/actions/runs/33867625534): macOS arm64 clang, macOS Intel clang, and Windows x86_64 MSVC, both float32 and float64 presets, comparing every platform's compact tail-v2-equivalence summary of the same millisecond-scale Damping tracer (tests/test_tail_v2_equivalence_cli.py) against a macOS arm64 baseline. Every structural fact (band count, T20/T30 fit presence, withinPredictedTolerance, withinAccuracyInvariant, significantDeviation, eventualContraction.negativeTrend, dampingEnabled, gainMode, nonFiniteSampleCount, alignmentScore) reproduced with exactly zero delta on every platform and precision, same as tail_tolerances_v1.json's own findings. The float64 preset's numeric metrics also reproduced at the same tiny 1e-13-to-1e-16 scale tail_tolerances_v1.json observed, chained through the identical NumPy float64 FFT/regression/Coloration math regardless of DSP sample precision. The float32 preset told a different, genuinely new story: decayRt60Sec, decayRelativeError, eventualContractionSlopeDbPerSegment, and every Coloration metric showed materially larger cross-platform deltas (1e-7-to-1e-4 scale, not 1e-13-to-1e-16) than tail-v1's own undamped tracer ever produced under the identical code paths. This is attributed to the Damping shelf recursion itself: the boosted/attenuated spectral shape it produces makes the T20/T30 Schroeder-curve regression and the Coloration FFT summary more sensitive to the float32 DSP build's own platform-specific rounding (different compilers -- AppleClang vs. MSVC -- and SIMD codegen), not to any instability in this analyzer's own Python math (which is confirmed float64-deterministic by the float64 preset's tiny deltas, and by predictedTargetRt60Sec/predictedRangeLow/HighRt60Sec -- pure functions of resolved.json's already-double-precision coefficients -- reproducing at the same ~1e-14 scale in BOTH precision groups, unaffected by DSP sample precision at all). Each committed value below states its own observed evidence and headroom; values for the new predicted-target/range and eventual-contraction metrics were absent from tail_tolerances_v1.json entirely and are derived fresh here.",
+  "formatVersion": 2,
+  "rationale": "Reviewed against real cross-platform CI evidence for issue #78 (PR #84, CI run https://github.com/SamuFL/RVRBoTron/actions/runs/33867625534): macOS arm64 AppleClang, macOS Intel AppleClang, and Windows x86_64 MSVC, both float32 and float64 presets, comparing every platform pair's compact tail-v2-equivalence summary of the same millisecond-scale Damping tracer (tests/test_tail_v2_equivalence_cli.py). Every exact-compared structural fact (band count, T20/T30 fit presence, withinPredictedTolerance, withinAccuracyInvariant, significantDeviation, eventualContraction.negativeTrend, dampingEnabled, and gainMode) reproduced exactly on every platform and precision. The tolerance-checked nonFiniteSampleCount and alignmentScore measurements also had zero delta, same as tail_tolerances_v1.json's own findings. The float64 preset's numeric metrics reproduced at the same tiny 1e-13-to-1e-16 scale tail_tolerances_v1.json observed. The float32 preset showed a specific architecture split: macOS Intel and Windows x86_64 produced effectively identical analyzed results, while macOS arm64 differed by up to 1.82e-7 seconds in fitted RT60, 1.41e-7 in relative error, 2.79e-7 dB per segment in late-tail slope, and 7.61e-5 dB in Coloration peak-to-peak. A controlled local rebuild of the same arm64 tracer with only AppleClang's -ffp-contract=off flag reproduced those deltas exactly: the default object emitted fmadd/fmsub instructions for the one-pole shelf recurrence, the no-contraction object did not, and the no-contraction arm64 metrics matched both x86_64 CI platforms to the analysis numerical floor. All gains and active shelf coefficients had identical realised float32 bit patterns across platforms, while render length, Tail budget, FFT length, and analysis segmentation also matched. The larger float32 deltas therefore come from arm64 FMA contraction introducing one rounding after the shelf's fused operations where the x86_64 executions round the separate operations; the recursive shelf state and outer Feedback Loop propagate that valid arithmetic difference. Coloration peak-to-peak is especially exposed because it is determined by extrema over individual FFT-bin levels, whereas RMS and spectral flatness average over all bins. Same-architecture comparisons retain tight tolerances, while cross-architecture comparisons carry only the additional observed FMA headroom. This preserves cross-architecture coverage and each supported toolchain's default floating-point optimizations without allowing the arm64 boundary to mask an x86_64-only regression; see ADR-0001. Each committed value below states its own observed evidence and headroom; values for the new predicted-target/range and eventual-contraction metrics were absent from tail_tolerances_v1.json entirely and are derived fresh here.",
   "byPrecision": {
     "float32": {
       "nonFiniteSampleCount": {
-        "absoluteTolerance": 0,
+        "sameArchitectureAbsoluteTolerance": 0,
+        "crossArchitectureAbsoluteTolerance": 0,
         "rationale": "Observed: exactly 0 delta across macOS arm64, macOS Intel, and Windows x86_64 (CI run 33867625534) for the tracer's output.wav. A non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation, same basis as tail_tolerances_v1.json's identical entry."
       },
       "decayRt60Sec": {
-        "absoluteTolerance": 1e-4,
-        "rationale": "Observed max delta 1.82e-07 (Windows x86_64 vs. macOS arm64 baseline, band=2000 T30 fit, CI run 33867625534) across all 9 octave bands' T20 and T30 estimates -- roughly two orders of magnitude looser than tail-v1's own float32 decayRt60Sec observation (2.66e-15), attributed to the Damping shelf recursion making the Schroeder-curve regression more sensitive to the float32 DSP build's own cross-platform rounding (see the top-level rationale), not to this analyzer's own math. Committed at 1e-4, roughly 550x that observed delta: 1e-4 seconds remains far tighter than any practically meaningful RT60 precision, while leaving headroom for configurations (steeper shelves, longer renders) this tiny tracer does not exercise."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-4,
+        "rationale": "Observed max cross-architecture delta 1.82e-07 (x86_64 vs. arm64, band=2000 T30 fit, CI run 33867625534) across all 9 octave bands' T20 and T30 estimates, caused by arm64 FMA contraction as established in the top-level rationale. The two x86_64 platforms differed by only 1.33e-15 across T30 fits. The same-architecture tolerance remains 1e-9; the cross-architecture tolerance is 1e-4, roughly 550x the observed FMA-boundary delta and still far tighter than practically meaningful RT60 precision."
       },
       "predictedTargetRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.01e-14 (Windows x86_64 vs. macOS arm64 baseline, band=125, CI run 33867625534). A pure function of resolved.json's already-double-precision shelf coefficients (cos/sin/log10 chained in Python float64), independent of DSP sample precision -- confirmed by the float64 preset observing the identical ~1e-14 scale. Committed at 1e-9, matching tail_tolerances_v1.json's own decayRt60Sec headroom philosophy for cross-platform libm variance."
       },
       "predictedRangeLowRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.02e-14 (Windows x86_64 vs. macOS arm64 baseline, band=63, CI run 33867625534); see predictedTargetRt60Sec, the per-Channel minimum of the same computation."
       },
       "predictedRangeHighRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.82e-14 (Windows x86_64 vs. macOS arm64 baseline, band=125, CI run 33867625534); see predictedTargetRt60Sec, the per-Channel maximum of the same computation."
       },
       "decayRelativeError": {
-        "absoluteTolerance": 1e-4,
-        "rationale": "Observed max delta 1.41e-07 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534): a ratio of two decayRt60Sec-scale quantities (measured vs. requested), so the same evidence and headroom basis as decayRt60Sec above."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-4,
+        "rationale": "Observed max cross-architecture delta 1.41e-07 (x86_64 vs. arm64, CI run 33867625534), while the two x86_64 platforms differed by 2.22e-16. This is a ratio of two decayRt60Sec-scale quantities, so the architecture-specific values use the same evidence and headroom basis as decayRt60Sec above."
       },
       "eventualContractionSlopeDbPerSegment": {
-        "absoluteTolerance": 1e-4,
-        "rationale": "Observed max delta 2.79e-07 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534): a linear-regression slope over per-segment log-energy, chaining the same float32-DSP-sensitive Schroeder/regression machinery as decayRt60Sec. Committed at 1e-4, the same headroom philosophy."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-4,
+        "rationale": "Observed max cross-architecture delta 2.79e-07 (x86_64 vs. arm64, CI run 33867625534), while the two x86_64 platforms differed by 1.78e-15. The slope chains the same FMA-sensitive float32 DSP output through a log-energy regression, so the same-architecture tolerance remains 1e-9 and the cross-architecture tolerance carries the established FMA-boundary headroom at 1e-4."
       },
       "alignmentScore": {
-        "absoluteTolerance": 0.0,
+        "sameArchitectureAbsoluteTolerance": 0.0,
+        "crossArchitectureAbsoluteTolerance": 0.0,
         "rationale": "Observed: exactly 0 delta on all three platforms, confirming the design expectation -- Alignment is a discrete Jaccard overlap of active-frame sets, not a floating-point accumulation, same basis as tail_tolerances_v1.json's identical entry."
       },
       "colorationPeakToPeakDb": {
-        "absoluteTolerance": 1e-3,
-        "rationale": "Observed max delta 7.61e-05 dB (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534) -- materially larger than tail_tolerances_v1.json's own float32 colorationPeakToPeakDb observation (exactly 0), attributed to the Damping shelf reshaping the spectrum in a way that is more sensitive to the float32 DSP build's own cross-platform rounding (see the top-level rationale), the same underlying cause as decayRt60Sec's own new headroom. Committed at 1e-3 dB, roughly 13x that observed delta and far below any audible significance."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-3,
+        "rationale": "Observed max cross-architecture delta 7.61e-05 dB (x86_64 vs. arm64, CI run 33867625534), while the two x86_64 platforms matched exactly. A single deep FFT-bin null exposes the arm64 FMA rounding difference more strongly than the averaged Coloration metrics. The same-architecture tolerance remains 1e-9; the cross-architecture tolerance is 1e-3 dB, roughly 13x the observed delta and far below audible significance."
       },
       "colorationRmsDb": {
-        "absoluteTolerance": 1e-6,
-        "rationale": "Observed max delta 1.10e-09 dB (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534). Committed at 1e-6, roughly 900x that observed delta; same underlying cause as colorationPeakToPeakDb but a materially smaller effect on this smoother, more-averaged metric."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-6,
+        "rationale": "Observed max cross-architecture delta 1.10e-09 dB (x86_64 vs. arm64, CI run 33867625534), while the two x86_64 platforms matched exactly. The same-architecture tolerance remains 1e-9; the cross-architecture tolerance is 1e-6, roughly 900x the observed FMA-boundary delta."
       },
       "colorationSpectralFlatness": {
-        "absoluteTolerance": 1e-6,
-        "rationale": "Observed max delta 1.11e-09 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534). Committed at 1e-6, roughly 900x that observed delta; see colorationRmsDb."
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-6,
+        "rationale": "Observed max cross-architecture delta 1.11e-09 (x86_64 vs. arm64, CI run 33867625534), while the two x86_64 platforms matched exactly. The same-architecture tolerance remains 1e-9; the cross-architecture tolerance is 1e-6, roughly 900x the observed FMA-boundary delta; see colorationRmsDb."
       }
     },
     "float64": {
       "nonFiniteSampleCount": {
-        "absoluteTolerance": 0,
+        "sameArchitectureAbsoluteTolerance": 0,
+        "crossArchitectureAbsoluteTolerance": 0,
         "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64 (macOS Intel does not build the double preset, CI run 33867625534); same basis as the float32 entry."
       },
       "decayRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 3.77e-15 (Windows x86_64 vs. macOS arm64 baseline, band=250 T20 fit, CI run 33867625534) -- the same tiny scale tail_tolerances_v1.json's own float64 decayRt60Sec entry observed (1.11e-15), confirming the float32 preset's much larger delta is specifically a float32-DSP-build effect, not a defect in the T20/T30 fit itself. Committed at 1e-9, matching tail_tolerances_v1.json's own value."
       },
       "predictedTargetRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.01e-14 (Windows x86_64 vs. macOS arm64 baseline, band=125, CI run 33867625534) -- identical to the float32 preset's own observation, confirming this metric is independent of DSP sample precision (see the float32 entry)."
       },
       "predictedRangeLowRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.02e-14 (Windows x86_64 vs. macOS arm64 baseline, band=63, CI run 33867625534); see the float32 entry."
       },
       "predictedRangeHighRt60Sec": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.82e-14 (Windows x86_64 vs. macOS arm64 baseline, band=125, CI run 33867625534); see the float32 entry."
       },
       "decayRelativeError": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 2.96e-14 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534); see the float32 entry and decayRt60Sec above."
       },
       "eventualContractionSlopeDbPerSegment": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 1.05e-13 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534) -- the same tiny scale as decayRt60Sec's float64 entry, confirming the float32 preset's much larger delta is a float32-DSP-build effect."
       },
       "alignmentScore": {
-        "absoluteTolerance": 0.0,
+        "sameArchitectureAbsoluteTolerance": 0.0,
+        "crossArchitectureAbsoluteTolerance": 0.0,
         "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64, confirming the design expectation; same basis as the float32 entry."
       },
       "colorationPeakToPeakDb": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 1.07e-13 dB (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534) -- close to tail_tolerances_v1.json's own float64 colorationPeakToPeakDb tolerance (1e-12), confirming the float32 preset's much larger delta is specifically a float32-DSP-build effect. Committed at 1e-9 for consistency with this file's other float64 entries."
       },
       "colorationRmsDb": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 3.55e-15 dB (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534). Committed at 1e-9 for consistency with this file's other float64 entries."
       },
       "colorationSpectralFlatness": {
-        "absoluteTolerance": 1e-9,
+        "sameArchitectureAbsoluteTolerance": 1e-9,
+        "crossArchitectureAbsoluteTolerance": 1e-9,
         "rationale": "Observed max delta 4.79e-16 (Windows x86_64 vs. macOS arm64 baseline, CI run 33867625534). Committed at 1e-9 for consistency with this file's other float64 entries."
       }
     }

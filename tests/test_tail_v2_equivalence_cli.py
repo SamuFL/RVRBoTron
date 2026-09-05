@@ -30,6 +30,22 @@ def run(*arguments):
     )
 
 
+def tolerance_document(same_architecture, cross_architecture, rationale):
+    return {
+        "byPrecision": {
+            precision: {
+                key: {
+                    "sameArchitectureAbsoluteTolerance": same_architecture,
+                    "crossArchitectureAbsoluteTolerance": cross_architecture,
+                    "rationale": rationale,
+                }
+                for key in REQUIRED_METRIC_KEYS
+            }
+            for precision in ("float32", "float64")
+        }
+    }
+
+
 def main():
     extractor = Path(sys.argv[1])
     comparator = Path(sys.argv[2])
@@ -55,8 +71,12 @@ def main():
                 f"{set(categories)}"
             )
         for name, entry in categories.items():
-            if not isinstance(entry["absoluteTolerance"], (int, float)):
-                raise AssertionError(f"{precision}.{name} tolerance is not numeric")
+            for comparison_class in ("sameArchitecture", "crossArchitecture"):
+                key = f"{comparison_class}AbsoluteTolerance"
+                if not isinstance(entry[key], (int, float)):
+                    raise AssertionError(
+                        f"{precision}.{name}.{key} tolerance is not numeric"
+                    )
             if not entry.get("rationale"):
                 raise AssertionError(f"{precision}.{name} has no rationale")
 
@@ -256,17 +276,7 @@ def main():
     # boundary sits.
     custom_tolerances = workspace / "custom-tolerances.json"
     custom_tolerances.write_text(
-        json.dumps(
-            {
-                "byPrecision": {
-                    precision: {
-                        key: {"absoluteTolerance": 1e-9, "rationale": "tracer"}
-                        for key in REQUIRED_METRIC_KEYS
-                    }
-                    for precision in ("float32", "float64")
-                }
-            }
-        )
+        json.dumps(tolerance_document(1e-9, 1e-9, "tracer"))
     )
     numeric_breach = json.loads(equivalence_b.read_text())
     numeric_breach["alignmentScore"] += 1e-6
@@ -301,6 +311,61 @@ def main():
         raise AssertionError(
             f"identical platforms failed under a tight tolerances document: "
             f"{within_tolerance.stdout}"
+        )
+
+    # Architecture-specific tolerances preserve a tight x86_64-to-x86_64
+    # comparison while allowing the separately evidenced arm64 FMA
+    # contraction delta. All platform pairs must be compared: using only an
+    # arm64 baseline would never exercise the tighter same-architecture
+    # threshold when the group also contains two x86_64 platforms.
+    architecture_tolerances = workspace / "architecture-tolerances.json"
+    architecture_tolerances.write_text(
+        json.dumps(
+            tolerance_document(1e-9, 1e-5, "architecture-class tracer")
+        )
+    )
+    arm64 = json.loads(equivalence_a.read_text())
+    arm64["platform"] = "macOS"
+    arm64["architecture"] = "arm64"
+    macos_x86 = json.loads(equivalence_b.read_text())
+    macos_x86["platform"] = "macOS"
+    macos_x86["alignmentScore"] += 2e-6
+    macos_x86_path = workspace / "equivalence-macos-x86_64.json"
+    macos_x86_path.write_text(json.dumps(macos_x86))
+    windows_x86 = json.loads(equivalence_b.read_text())
+    windows_x86["alignmentScore"] += 4e-6
+    windows_x86_path = workspace / "equivalence-windows-x86_64-offset.json"
+    windows_x86_path.write_text(json.dumps(windows_x86))
+    architecture_compared = run(
+        sys.executable,
+        comparator,
+        equivalence_a,
+        macos_x86_path,
+        windows_x86_path,
+        "--tolerances",
+        architecture_tolerances,
+    )
+    if architecture_compared.returncode != 1:
+        raise AssertionError(
+            "same-architecture tolerance breach was hidden by the wider "
+            f"cross-architecture tolerance: {architecture_compared.stdout}"
+        )
+    if (
+        "macOS-x86_64 -> Windows-x86_64" not in architecture_compared.stdout
+        or "comparison=sameArchitecture" not in architecture_compared.stdout
+    ):
+        raise AssertionError(
+            "same-architecture failure did not identify its platform pair "
+            f"and comparison class: {architecture_compared.stdout}"
+        )
+    if "arm64 ->" in architecture_compared.stdout and "[FAIL]" in "\n".join(
+        line
+        for line in architecture_compared.stdout.splitlines()
+        if "arm64 ->" in line
+    ):
+        raise AssertionError(
+            "cross-architecture delta did not use its wider tolerance: "
+            f"{architecture_compared.stdout}"
         )
 
     report_path = workspace / "report.json"

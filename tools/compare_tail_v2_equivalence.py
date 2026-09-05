@@ -2,7 +2,7 @@
 
 """Compare compact tail-v2-equivalence summaries (see
 extract_tail_v2_equivalence.py) captured on different platforms, grouped by
-sample precision, against one baseline per group.
+sample precision, across every platform pair.
 
 Mirrors compare_tail_equivalence.py. Discrete facts about the committed CI
 tracer -- the octave-band count, whether each band's T20/T30 fit exists,
@@ -12,12 +12,13 @@ eventual-contraction trend sign, and the echoed dampingEnabled/gainMode
 config -- are compared for exact equality unconditionally, on the same
 footing as tail-v1's own decayEnvelopeMonotonic (see docs/adr/
 0001-cross-platform-reproducibility.md). Every measured metric, including
-each band's own T20/T30 fit and predicted target/range, is compared
-against the absolute tolerance committed in a tolerances file
-(tools/tail_tolerances_v2.json by default).
+each band's own T20/T30 fit and predicted target/range, is compared against
+the same-architecture or cross-architecture absolute tolerance committed in
+a tolerances file (tools/tail_tolerances_v2.json by default).
 """
 
 import argparse
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -25,13 +26,6 @@ from pathlib import Path
 
 def platform_label(entry):
     return f'{entry["platform"]}-{entry["architecture"]}'
-
-
-def choose_baseline(entries):
-    for entry in entries:
-        if entry["platform"].lower() == "macos" and entry["architecture"] == "arm64":
-            return entry
-    return sorted(entries, key=platform_label)[0]
 
 
 def numeric_metrics(entry):
@@ -97,11 +91,22 @@ def structural_metrics(entry):
 _MISSING = object()
 
 
-def _compare_metric(precision, platform, name, expected, actual, tolerance):
+def _compare_metric(
+    precision,
+    first_platform,
+    second_platform,
+    comparison_class,
+    name,
+    expected,
+    actual,
+    tolerance,
+):
     if actual is _MISSING:
         return {
             "precision": precision,
-            "platform": platform,
+            "firstPlatform": first_platform,
+            "secondPlatform": second_platform,
+            "comparisonClass": comparison_class,
             "metric": name,
             "baseline": expected,
             "candidate": None,
@@ -120,7 +125,9 @@ def _compare_metric(precision, platform, name, expected, actual, tolerance):
         passed = delta <= tolerance
     return {
         "precision": precision,
-        "platform": platform,
+        "firstPlatform": first_platform,
+        "secondPlatform": second_platform,
+        "comparisonClass": comparison_class,
         "metric": name,
         "baseline": expected,
         "candidate": actual,
@@ -130,40 +137,49 @@ def _compare_metric(precision, platform, name, expected, actual, tolerance):
     }
 
 
-def compare_group(precision, baseline, candidates, tolerances):
+def compare_pair(precision, first, second, tolerances):
     rows = []
-    ok = True
-    baseline_structural = dict(structural_metrics(baseline))
-    baseline_numeric = dict(numeric_metrics(baseline))
-    for candidate in candidates:
-        label = platform_label(candidate)
-        candidate_structural = dict(structural_metrics(candidate))
-        candidate_numeric = dict(numeric_metrics(candidate))
-        for name, expected in baseline_structural.items():
-            rows.append(
-                _compare_metric(
-                    precision,
-                    label,
-                    name,
-                    expected,
-                    candidate_structural.get(name, _MISSING),
-                    0,
-                )
+    first_label = platform_label(first)
+    second_label = platform_label(second)
+    comparison_class = (
+        "sameArchitecture"
+        if first["architecture"] == second["architecture"]
+        else "crossArchitecture"
+    )
+    first_structural = dict(structural_metrics(first))
+    first_numeric = dict(numeric_metrics(first))
+    second_structural = dict(structural_metrics(second))
+    second_numeric = dict(numeric_metrics(second))
+    for name, expected in first_structural.items():
+        rows.append(
+            _compare_metric(
+                precision,
+                first_label,
+                second_label,
+                comparison_class,
+                name,
+                expected,
+                second_structural.get(name, _MISSING),
+                0,
             )
-        for name, expected in baseline_numeric.items():
-            tolerance = tolerances[tolerance_key(name)]["absoluteTolerance"]
-            rows.append(
-                _compare_metric(
-                    precision,
-                    label,
-                    name,
-                    expected,
-                    candidate_numeric.get(name, _MISSING),
-                    tolerance,
-                )
+        )
+    for name, expected in first_numeric.items():
+        tolerance = tolerances[tolerance_key(name)][
+            f"{comparison_class}AbsoluteTolerance"
+        ]
+        rows.append(
+            _compare_metric(
+                precision,
+                first_label,
+                second_label,
+                comparison_class,
+                name,
+                expected,
+                second_numeric.get(name, _MISSING),
+                tolerance,
             )
-        ok = ok and all(row["pass"] for row in rows if row["platform"] == label)
-    return ok, rows
+        )
+    return all(row["pass"] for row in rows), rows
 
 
 def compare(entries, tolerances_document):
@@ -186,16 +202,21 @@ def compare(entries, tolerances_document):
                 }
             )
             continue
-        baseline = choose_baseline(group)
-        candidates = [entry for entry in group if entry is not baseline]
         tolerances = tolerances_document["byPrecision"][precision]
-        group_ok, rows = compare_group(precision, baseline, candidates, tolerances)
+        rows = []
+        group_ok = True
+        ordered = sorted(group, key=lambda entry: platform_label(entry).lower())
+        for first, second in itertools.combinations(ordered, 2):
+            pair_ok, pair_rows = compare_pair(
+                precision, first, second, tolerances
+            )
+            group_ok = group_ok and pair_ok
+            rows.extend(pair_rows)
         ok = ok and group_ok
         groups.append(
             {
                 "precision": precision,
                 "skipped": False,
-                "baseline": platform_label(baseline),
                 "rows": rows,
                 "pass": group_ok,
             }
@@ -208,14 +229,16 @@ def print_report(groups):
         if group["skipped"]:
             print(f'{group["precision"]}: {group["reason"]}')
             continue
-        print(f'{group["precision"]} (baseline {group["baseline"]}):')
+        print(f'{group["precision"]}:')
         for row in group["rows"]:
             status = "ok" if row["pass"] else "FAIL"
             delta = "n/a" if row["delta"] is None else f'{row["delta"]:.3g}'
             print(
-                f'  [{status}] {row["platform"]} {row["metric"]}: '
+                f'  [{status}] {row["firstPlatform"]} -> '
+                f'{row["secondPlatform"]} {row["metric"]}: '
                 f'baseline={row["baseline"]!r} candidate={row["candidate"]!r} '
-                f'delta={delta} tolerance={row["tolerance"]!r}'
+                f'delta={delta} tolerance={row["tolerance"]!r} '
+                f'comparison={row["comparisonClass"]}'
             )
 
 
