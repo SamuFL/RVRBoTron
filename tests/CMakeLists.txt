@@ -247,3 +247,16 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/tail-sweep-contract
 )
+
+add_test(
+  NAME damping_sweep_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_damping_sweep_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/run_damping_sweep.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_SOURCE_DIR}/tools/analyze_tail_v2.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/damping-sweep-contract
+)
