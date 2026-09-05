@@ -70,7 +70,7 @@ Validity is enforced at configuration load, loudly. Hadamard at N=20 is a hard e
   in ─► Split ─► Diffuser ──────────────┴────► FeedbackLoop ──────► Downmix ─► out
            │         │                              │
         N chans  DiffusionStep × k          delays, decay gain, mix
-                                            + Damping + Modulation
+                 + Modulation               + Damping + Modulation
 ```
 
 Everything between Split and Downmix is multi-channel. The two halves do separate jobs:
@@ -80,7 +80,7 @@ Everything between Split and Downmix is multi-channel. The two halves do separat
 
 Keeping these separate is the whole design. Asking the feedback loop to also diffuse is what makes conventional FDN reverbs a tuning problem.
 
-Damping and Modulation are components of the FeedbackLoop, not stages in the chain; they are documented separately because their parameters are conceptually distinct.
+Damping is a component of the FeedbackLoop, and Modulation is a component of both the FeedbackLoop and individual DiffusionSteps — neither is a stage in the chain. They are documented separately because their parameters are conceptually distinct.
 
 | Stage | Role | File |
 |---|---|---|
