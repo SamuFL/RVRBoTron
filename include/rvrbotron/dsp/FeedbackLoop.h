@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rvrbotron/dsp/DelayLine.h"
 #include "rvrbotron/dsp/ResolvedConfig.h"
 #include "rvrbotron/dsp/Sample.h"
 
@@ -17,7 +18,10 @@ class MixMatrix;
 // read each Channel's delay line, mix the gained readings, write input plus
 // the mixed feedback. Read happens before write -- the one place the
 // signal flow in this codebase runs backwards -- so this stays a single
-// explicit loop rather than an abstraction that hides the ordering.
+// explicit loop rather than an abstraction that hides the ordering: the
+// shared DelayLine (issue #88) owns storage and wrap-around indexing, but
+// this class still calls read() across every Channel before it calls
+// write() across any of them.
 class FeedbackLoop {
 public:
   explicit FeedbackLoop(const ResolvedFeedbackLoop& config);
@@ -35,10 +39,7 @@ private:
   std::uint64_t tailBudgetSamples_;
   std::uint64_t blockSizeBoundSamples_;
 
-  std::vector<std::uint64_t> delays_;
-  std::vector<std::size_t> delayOffsets_;
-  std::vector<std::size_t> delayPositions_;
-  std::vector<Sample> delayStorage_;
+  DelayLine delayLine_;
 
   std::vector<Sample> gains_;
   std::unique_ptr<MixMatrix> mix_;

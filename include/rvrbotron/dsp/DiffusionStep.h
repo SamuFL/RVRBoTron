@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rvrbotron/dsp/DelayLine.h"
 #include "rvrbotron/dsp/ResolvedConfig.h"
 #include "rvrbotron/dsp/Sample.h"
 
@@ -25,10 +26,7 @@ public:
 private:
   std::size_t channels_;
 
-  std::vector<std::uint64_t> delays_;
-  std::vector<std::size_t> delayOffsets_;
-  std::vector<std::size_t> delayPositions_;
-  std::vector<Sample> delayStorage_;
+  DelayLine delayLine_;
 
   std::vector<std::uint32_t> permutation_;
   std::vector<Sample> polarity_;

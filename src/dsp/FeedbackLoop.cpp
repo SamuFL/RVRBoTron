@@ -33,39 +33,13 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     : channels_(config.delaysSamples.size()),
       tailBudgetSamples_(config.tailBudgetSamples),
       blockSizeBoundSamples_(config.blockSizeBoundSamples),
-      delays_(config.delaysSamples),
-      delayOffsets_(channels_),
-      delayPositions_(channels_, 0),
+      delayLine_(config.delaysSamples, config.bufferSizes),
       mix_(nullptr),
       fedBack_(channels_) {
-  if (config.bufferSizes.size() != channels_ ||
-      config.gains.size() != channels_) {
+  if (config.gains.size() != channels_) {
     throw std::invalid_argument(
-        "Feedback Loop requires one resolved buffer size and gain per "
-        "Channel");
+        "Feedback Loop requires one resolved gain per Channel");
   }
-
-  std::size_t totalDelayStorage = 0;
-  for (std::size_t channel = 0; channel < channels_; ++channel) {
-    delayOffsets_[channel] = totalDelayStorage;
-    const auto delay = delays_[channel];
-    const auto bufferSize = config.bufferSizes[channel];
-    if (delay > std::numeric_limits<std::size_t>::max() ||
-        bufferSize > std::numeric_limits<std::size_t>::max()) {
-      throw std::length_error("Feedback Loop delay storage is too large");
-    }
-    if (bufferSize < delay) {
-      throw std::invalid_argument(
-          "Feedback Loop resolved buffer is shorter than its delay");
-    }
-    const auto storageSize = static_cast<std::size_t>(bufferSize);
-    if (storageSize >
-        std::numeric_limits<std::size_t>::max() - totalDelayStorage) {
-      throw std::length_error("Feedback Loop delay storage is too large");
-    }
-    totalDelayStorage += storageSize;
-  }
-  delayStorage_.assign(totalDelayStorage, Sample{0});
 
   gains_.reserve(config.gains.size());
   for (const auto gain : config.gains) {
@@ -174,12 +148,8 @@ FeedbackLoop::~FeedbackLoop() = default;
 void FeedbackLoop::processFrame(const Sample* const inputs,
                                 Sample* const outputs) noexcept {
   for (std::size_t channel = 0; channel < channels_; ++channel) {
-    const auto delay = static_cast<std::size_t>(delays_[channel]);
-    const auto delayed = delay == 0
-                              ? Sample{0}
-                              : delayStorage_
-                                    [delayOffsets_[channel] +
-                                     delayPositions_[channel]];
+    const auto delay = delayLine_.delaySamples(channel);
+    const auto delayed = delay == 0 ? Sample{0} : delayLine_.read(channel);
     outputs[channel] = delayed;
     fedBack_[channel] = delayed * gains_[channel];
   }
@@ -215,15 +185,11 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
   mix_->mix(fedBack_.data());
 
   for (std::size_t channel = 0; channel < channels_; ++channel) {
-    const auto delay = static_cast<std::size_t>(delays_[channel]);
-    if (delay == 0) {
+    if (delayLine_.delaySamples(channel) == 0) {
       continue;
     }
-    const auto storageIndex =
-        delayOffsets_[channel] + delayPositions_[channel];
-    delayStorage_[storageIndex] =
-        flushDenormal(inputs[channel] + fedBack_[channel]);
-    delayPositions_[channel] = (delayPositions_[channel] + 1) % delay;
+    delayLine_.write(
+        channel, flushDenormal(inputs[channel] + fedBack_[channel]));
   }
 }
 
@@ -240,11 +206,9 @@ std::uint64_t FeedbackLoop::blockSizeBoundSamples() const noexcept {
 }
 
 std::size_t FeedbackLoop::ownedBytes() const noexcept {
-  return sizeof(*this) + ownedVectorBytes(delays_) +
-         ownedVectorBytes(delayOffsets_) +
-         ownedVectorBytes(delayPositions_) +
-         ownedVectorBytes(delayStorage_) + ownedVectorBytes(gains_) +
-         ownedVectorBytes(fedBack_) + mix_->ownedBytes() +
+  return sizeof(*this) + delayLine_.ownedStorageBytes() +
+         ownedVectorBytes(gains_) + ownedVectorBytes(fedBack_) +
+         mix_->ownedBytes() +
          ownedVectorBytes(highShelfB0_) + ownedVectorBytes(highShelfB1_) +
          ownedVectorBytes(highShelfA1_) +
          ownedVectorBytes(highShelfPrevInput_) +
