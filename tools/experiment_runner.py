@@ -37,16 +37,32 @@ def load_catalog(path: Path):
     damping_sweep_v1.json): both use this exact schema, so a catalog-
     authoring mistake -- a missing field, a duplicate axis name, a duplicate
     value label within an axis, an axis with no values -- fails identically
-    and descriptively regardless of which sweep is loading it."""
+    and descriptively regardless of which sweep is loading it. Every
+    container's type is checked before it is indexed or iterated, so a
+    structurally wrong document (a JSON array as the root, a null `axes`,
+    an axis or value that isn't an object) raises `CatalogError` here too,
+    rather than a bare `AttributeError`/`TypeError` escaping uncaught."""
     document = json.loads(path.read_text())
+    if not isinstance(document, dict):
+        raise CatalogError(
+            f"catalog root must be a JSON object, got {type(document).__name__}"
+        )
     if document.get("formatVersion") != 1:
         raise CatalogError(f"unsupported catalog formatVersion: {document.get('formatVersion')}")
     for field in ("reference", "axes"):
         if field not in document:
             raise CatalogError(f"catalog is missing required field: {field}")
 
+    axes = document["axes"]
+    if not isinstance(axes, list):
+        raise CatalogError(f"catalog 'axes' must be an array, got {type(axes).__name__}")
+
     names = []
-    for axis in document["axes"]:
+    for axis in axes:
+        if not isinstance(axis, dict):
+            raise CatalogError(
+                f"catalog axis must be an object, got {type(axis).__name__}: {axis!r}"
+            )
         for field in ("name", "values"):
             if field not in axis:
                 raise CatalogError(f"axis is missing required field {field!r}: {axis}")
@@ -54,14 +70,45 @@ def load_catalog(path: Path):
     if len(names) != len(set(names)):
         raise CatalogError("catalog contains duplicate axis names")
 
-    for axis in document["axes"]:
+    for axis in axes:
+        values = axis["values"]
+        if not isinstance(values, list):
+            raise CatalogError(
+                f"axis {axis['name']!r} 'values' must be an array, got "
+                f"{type(values).__name__}"
+            )
         labels = []
-        for value in axis["values"]:
+        for value in values:
+            if not isinstance(value, dict):
+                raise CatalogError(
+                    f"axis {axis['name']!r} has a value that is not an "
+                    f"object: {value!r}"
+                )
             for field in ("label", "overrides"):
                 if field not in value:
                     raise CatalogError(
                         f"axis {axis['name']!r} has a value missing required "
                         f"field {field!r}: {value}"
+                    )
+            overrides = value["overrides"]
+            if not isinstance(overrides, list):
+                raise CatalogError(
+                    f"axis {axis['name']!r} value {value['label']!r} "
+                    f"'overrides' must be an array, got "
+                    f"{type(overrides).__name__}"
+                )
+            for operation in overrides:
+                if not isinstance(operation, dict) or "op" not in operation or "path" not in operation:
+                    raise CatalogError(
+                        f"axis {axis['name']!r} value {value['label']!r} has "
+                        f"a malformed override (must be an object with 'op' "
+                        f"and 'path'): {operation!r}"
+                    )
+                if operation["op"] in ("add", "replace") and "value" not in operation:
+                    raise CatalogError(
+                        f"axis {axis['name']!r} value {value['label']!r} has "
+                        f"an override operation {operation['op']!r} missing "
+                        f"required field 'value': {operation}"
                     )
             labels.append(value["label"])
         if len(labels) != len(set(labels)):
@@ -177,8 +224,20 @@ def _navigate(document, tokens, pointer):
 
 
 def _apply_operation(document, operation):
+    if not isinstance(operation, dict):
+        raise CatalogError(f"override operation must be an object: {operation!r}")
+    if "op" not in operation or "path" not in operation:
+        raise CatalogError(
+            f"override operation is missing required field 'op' or 'path': "
+            f"{operation}"
+        )
     op = operation["op"]
     pointer = operation["path"]
+    if op in ("add", "replace") and "value" not in operation:
+        raise CatalogError(
+            f"override operation {op!r} is missing required field 'value': "
+            f"{operation}"
+        )
     tokens = _split_pointer(pointer)
     parent = _navigate(document, tokens[:-1], pointer)
     last = tokens[-1]
@@ -333,7 +392,21 @@ def run_resumable_steps(steps):
     whatever earlier steps already produced.
 
     Returns `(did_new_work, failure_detail)`; `failure_detail` is `None` on
-    success."""
+    success.
+
+    Known, deliberately unfixed limitation: a step is considered done once
+    `expected_path` exists, without verifying its content. A run killed
+    mid-write (e.g. `rvrbotron benchmark --json` writes its report directly
+    to the final path, not via a temp-file-then-rename) can leave a
+    truncated artifact that a resumed run treats as complete and then
+    crashes reading; a producer that exits 0 without writing its expected
+    artifact would likewise be reported "completed". Both require an
+    interrupted or misbehaving run to trigger, both have a one-line manual
+    recovery (delete the bad artifact, rerun), and neither affects a normal
+    run to completion (including every CI tracer, which never interrupts
+    itself). Not worth the added complexity for a research tool -- flagged
+    in PR #85's review, left as-is.
+    """
     did_new_work = False
     for expected_path, name, action in steps:
         if expected_path.exists():

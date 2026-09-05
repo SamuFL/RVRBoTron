@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 
+import html
 import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def section_html(report_html, name):
+    """The report's HTML for one named point -- from its own `<h2>` heading
+    up to the next point's, or end of document for the last point -- so an
+    assertion about one point's evidence (e.g. the significant-deviation
+    flag below) can't be satisfied by another point's section instead."""
+    marker = f"<h2>{html.escape(name)}"
+    start = report_html.find(marker)
+    if start == -1:
+        raise AssertionError(f"listening report has no section for {name!r}")
+    next_marker = report_html.find("<h2>", start + len(marker))
+    return report_html[start:] if next_marker == -1 else report_html[start:next_marker]
 
 
 def run(*arguments):
@@ -183,37 +197,78 @@ def main():
     if "not a readable WAV file" not in invalid.stderr:
         raise AssertionError(f"invalid WAV sample was not explained: {invalid.stderr}")
 
+    def run_catalog(catalog_path):
+        return run(
+            sys.executable,
+            runner,
+            "--catalog",
+            catalog_path,
+            "--renderer",
+            renderer,
+            "--analyzer",
+            analyzer,
+            "--sample",
+            fixture,
+            "--mono-impulse",
+            fixture,
+            "--stereo-impulse",
+            stereo_fixture,
+            "--output",
+            output_dir,
+        )
+
+    def expect_clean_catalog_failure(catalog_path, contents, expected_substrings, label):
+        catalog_path.write_text(json.dumps(contents))
+        result = run_catalog(catalog_path)
+        if result.returncode != 1:
+            raise AssertionError(f"{label} should fail cleanly: {result.stdout}")
+        if "Traceback" in result.stderr:
+            raise AssertionError(
+                f"{label} crashed instead of failing cleanly: {result.stderr}"
+            )
+        for substring in expected_substrings:
+            if substring not in result.stderr:
+                raise AssertionError(
+                    f"{label} was not explained (missing {substring!r}): "
+                    f"{result.stderr}"
+                )
+
     # A malformed catalog (an axis missing a required field) fails with a
     # descriptive message naming the field, not a bare KeyError.
     malformed_catalog = dict(tracer_catalog)
     malformed_catalog["axes"] = [{"values": []}]
-    malformed_catalog_path = workspace / "malformed-sweep.json"
-    malformed_catalog_path.write_text(json.dumps(malformed_catalog))
-    malformed = run(
-        sys.executable,
-        runner,
-        "--catalog",
-        malformed_catalog_path,
-        "--renderer",
-        renderer,
-        "--analyzer",
-        analyzer,
-        "--sample",
-        fixture,
-        "--mono-impulse",
-        fixture,
-        "--stereo-impulse",
-        stereo_fixture,
-        "--output",
-        output_dir,
+    expect_clean_catalog_failure(
+        workspace / "malformed-sweep.json",
+        malformed_catalog,
+        ("missing required field", "'name'"),
+        "malformed catalog (axis missing 'name')",
     )
-    if malformed.returncode != 1:
-        raise AssertionError(f"malformed catalog should fail cleanly: {malformed.stdout}")
-    if "missing required field" not in malformed.stderr or "'name'" not in malformed.stderr:
-        raise AssertionError(
-            f"malformed catalog surfaced a bare KeyError instead of a "
-            f"descriptive message naming the field: {malformed.stderr}"
-        )
+
+    # A catalog whose JSON root is not an object fails cleanly instead of
+    # crashing with a bare AttributeError on `document.get(...)`.
+    expect_clean_catalog_failure(
+        workspace / "non-object-root.json",
+        [],
+        ("catalog root must be a JSON object",),
+        "malformed catalog (non-object root)",
+    )
+
+    # An axis whose 'values' is a malformed override (missing 'op'/'path')
+    # fails cleanly instead of crashing with a bare KeyError deep inside
+    # JSON-Pointer application.
+    bad_override_catalog = dict(tracer_catalog)
+    bad_override_catalog["axes"] = [
+        {
+            "name": "bad-axis",
+            "values": [{"label": "x", "overrides": [{"path": "/seed", "value": 1}]}],
+        }
+    ]
+    expect_clean_catalog_failure(
+        workspace / "bad-override-sweep.json",
+        bad_override_catalog,
+        ("malformed override", "'op'", "'path'"),
+        "malformed catalog (override missing 'op')",
+    )
 
     # A real (tracer) sample sweeps every point.
     first = run_sweep(fixture)
@@ -371,6 +426,30 @@ def main():
     ):
         if expected not in report_html:
             raise AssertionError(f"listening report is missing {expected!r}")
+
+    # The central reporting rule from #79/ADR-0004: a >10% Reference-band
+    # deviation is flagged as significant, never treated as a failure.
+    # high-ratio/strong (highRatio 0.2) genuinely produces
+    # significantDeviation: true against this tracer's rt60Sec -- verified
+    # via its own published tail-v2.json, not assumed -- so this is a real
+    # exercise of the flag, not a fixture that merely claims to be one.
+    if outcome(report, "high-ratio/strong")["status"] != "completed":
+        raise AssertionError(
+            "a significant Reference-band deviation incorrectly failed the "
+            "point instead of merely being flagged"
+        )
+    significant_section = section_html(report_html, "high-ratio/strong")
+    if "flag-significant" not in significant_section:
+        raise AssertionError(
+            f"high-ratio/strong's real >10% Reference-band deviation was "
+            f"not flagged as significant in the report: {significant_section}"
+        )
+    reference_section = section_html(report_html, "reference")
+    if "flag-significant" in reference_section:
+        raise AssertionError(
+            "reference point (no significant deviation) unexpectedly "
+            "carries the significant-deviation flag"
+        )
 
     # Resumable: a second run does not re-render or re-analyze anything, but
     # the report is regenerated as part of that same run -- deleting it and
