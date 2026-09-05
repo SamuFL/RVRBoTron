@@ -206,8 +206,9 @@ std::uint64_t FeedbackLoop::blockSizeBoundSamples() const noexcept {
 }
 
 std::size_t FeedbackLoop::ownedBytes() const noexcept {
-  return sizeof(*this) + delayLine_.ownedBytes() + ownedVectorBytes(gains_) +
-         ownedVectorBytes(fedBack_) + mix_->ownedBytes() +
+  return sizeof(*this) + delayLine_.ownedStorageBytes() +
+         ownedVectorBytes(gains_) + ownedVectorBytes(fedBack_) +
+         mix_->ownedBytes() +
          ownedVectorBytes(highShelfB0_) + ownedVectorBytes(highShelfB1_) +
          ownedVectorBytes(highShelfA1_) +
          ownedVectorBytes(highShelfPrevInput_) +

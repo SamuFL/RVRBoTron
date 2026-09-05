@@ -42,23 +42,7 @@ DelayLine::DelayLine(
   storage_.assign(totalStorage, Sample{0});
 }
 
-Sample DelayLine::read(const std::size_t channel) const noexcept {
-  return storage_[offsets_[channel] + positions_[channel]];
-}
-
-void DelayLine::write(const std::size_t channel, const Sample value) noexcept {
-  const auto index = offsets_[channel] + positions_[channel];
-  storage_[index] = value;
-  const auto delay = static_cast<std::size_t>(delays_[channel]);
-  positions_[channel] = (positions_[channel] + 1) % delay;
-}
-
-std::uint64_t DelayLine::delaySamples(
-    const std::size_t channel) const noexcept {
-  return delays_[channel];
-}
-
-std::size_t DelayLine::ownedBytes() const noexcept {
+std::size_t DelayLine::ownedStorageBytes() const noexcept {
   return ownedVectorBytes(delays_) + ownedVectorBytes(offsets_) +
          ownedVectorBytes(positions_) + ownedVectorBytes(storage_);
 }

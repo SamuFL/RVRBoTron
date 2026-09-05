@@ -68,7 +68,7 @@ std::size_t DiffusionStep::channelCount() const noexcept {
 }
 
 std::size_t DiffusionStep::ownedBytes() const noexcept {
-  return sizeof(*this) + delayLine_.ownedBytes() +
+  return sizeof(*this) + delayLine_.ownedStorageBytes() +
          ownedVectorBytes(permutation_) + ownedVectorBytes(polarity_) +
          ownedVectorBytes(delayedValues_) + mix_->ownedBytes();
 }

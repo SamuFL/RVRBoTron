@@ -35,17 +35,28 @@ public:
 
   // The sample currently at this Channel's read/write position; does not
   // advance it. Only valid when delaySamples(channel) > 0.
-  [[nodiscard]] Sample read(std::size_t channel) const noexcept;
+  [[nodiscard]] Sample read(const std::size_t channel) const noexcept {
+    return storage_[offsets_[channel] + positions_[channel]];
+  }
 
   // Writes into the slot the last read() returned for this Channel, then
   // advances that Channel's position by one, wrapping at its delay length.
   // Only valid when delaySamples(channel) > 0.
-  void write(std::size_t channel, Sample value) noexcept;
+  void write(const std::size_t channel, const Sample value) noexcept {
+    const auto index = offsets_[channel] + positions_[channel];
+    storage_[index] = value;
+    const auto delay = static_cast<std::size_t>(delays_[channel]);
+    positions_[channel] = (positions_[channel] + 1) % delay;
+  }
 
   [[nodiscard]] std::uint64_t delaySamples(
-      std::size_t channel) const noexcept;
+      const std::size_t channel) const noexcept {
+    return delays_[channel];
+  }
 
-  [[nodiscard]] std::size_t ownedBytes() const noexcept;
+  // The backing-vector allocations only. A containing stage owns this
+  // object's in-place storage through its own sizeof(*this).
+  [[nodiscard]] std::size_t ownedStorageBytes() const noexcept;
 
 private:
   std::vector<std::uint64_t> delays_;
