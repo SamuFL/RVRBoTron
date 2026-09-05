@@ -64,6 +64,15 @@ EVENTUAL_CONTRACTION_LATE_FRACTION = 0.5
 _TINY_POWER = np.finfo(np.float64).tiny
 
 
+def is_finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _octave_band_gain(frequencies, low_hz, high_hz):
     """Duplicated from analyze_tail.py's own private helper rather than
     imported: that leading underscore marks it internal to that module, so
@@ -121,6 +130,11 @@ def validate_damping_shape(damping, channels):
     reason, not a raw KeyError deep inside the prediction math."""
     if damping is None:
         return
+    if not isinstance(damping, dict):
+        raise ValueError(
+            "resolved Damping evidence is inconsistent: "
+            "damping must be an object"
+        )
     for field in (
         "highShelfB0",
         "highShelfB1",
@@ -135,10 +149,10 @@ def validate_damping_shape(damping, channels):
                 "resolved Damping evidence is inconsistent: "
                 f"{field!r} does not have one value per Channel"
             )
-        if not all(isinstance(value, (int, float)) for value in values):
+        if not all(is_finite_number(value) for value in values):
             raise ValueError(
                 "resolved Damping evidence is inconsistent: "
-                f"{field!r} contains a non-numeric value"
+                f"{field!r} contains a non-finite or non-numeric value"
             )
 
 
@@ -171,7 +185,9 @@ def predicted_channel_rt60_sec(loop, damping, channel, frequency_hz, sample_rate
     return -60.0 * loop_time_sec / total_loss_db
 
 
-def predicted_band_evidence(loop, damping, frequency_hz, sample_rate):
+def predicted_band_evidence(
+    loop, damping, frequency_hz, sample_rate, gain_mode
+):
     channels = len(loop["gains"])
     per_channel = [
         predicted_channel_rt60_sec(loop, damping, channel, frequency_hz, sample_rate)
@@ -179,7 +195,9 @@ def predicted_band_evidence(loop, damping, frequency_hz, sample_rate):
     ]
     return {
         "perChannelRt60Sec": per_channel,
-        "targetRt60Sec": float(np.mean(per_channel)),
+        "targetRt60Sec": (
+            float(np.mean(per_channel)) if gain_mode == "per-channel" else None
+        ),
         "rangeRt60Sec": [min(per_channel), max(per_channel)],
     }
 
@@ -229,12 +247,14 @@ def decay_evidence(frames, sample_rate, loop, damping):
     bands = []
     for center in analyze_tail.OCTAVE_BAND_CENTERS_HZ:
         low, high = analyze_tail.octave_band_edges(center)
-        if low >= nyquist:
+        if center >= nyquist:
             continue
         high = min(high, nyquist)
         energy = _band_energy(spectrum, frequencies, fft_length, length, low, high)
         band = analyze_tail.band_evidence(center, low, high, energy, sample_rate)
-        predicted = predicted_band_evidence(loop, damping, center, sample_rate)
+        predicted = predicted_band_evidence(
+            loop, damping, center, sample_rate, gain_mode
+        )
         measured_rt60_sec = band["t30"]["rt60Sec"] if band["t30"] else None
         band["predictedRt60Sec"] = predicted
         band["withinPredictedTolerance"] = within_predicted_tolerance(

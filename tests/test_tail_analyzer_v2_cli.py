@@ -4,9 +4,11 @@ import hashlib
 import json
 import math
 import shutil
+import struct
 import subprocess
 import sys
 import time
+import wave
 from pathlib import Path
 
 
@@ -187,6 +189,48 @@ def main():
     if canonical["reference"]["centerHz"] != 1000.0:
         raise AssertionError(f"unexpected canonicalRatios reference band: {canonical}")
 
+    # A canonical octave band is available only when its center lies below
+    # Nyquist. A partially overlapping band with a center above Nyquist
+    # must not be emitted or evaluated at an aliased prediction frequency.
+    low_rate_fixture = workspace / "impulse-mono-pcm16-24000.wav"
+    with wave.open(str(low_rate_fixture), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes(struct.pack("<h", 32767) + bytes(31 * 2))
+    low_rate_request = workspace / "low-rate-request.json"
+    low_rate_request.write_text(
+        json.dumps(
+            feedback_loop_request(
+                damping={"highRatio": 0.5, "highHz": 4000, "lowRatio": 1.0}
+            )
+        )
+    )
+    low_rate_result = workspace / "low-rate-result"
+    run_renderer(
+        renderer,
+        low_rate_request,
+        low_rate_result,
+        low_rate_fixture,
+        block_size=16,
+    )
+    low_rate_analyzed = run_analyzer(
+        tail_v2_analyzer, low_rate_result, low_rate_fixture
+    )
+    if low_rate_analyzed.returncode != 0:
+        raise AssertionError(low_rate_analyzed.stderr)
+    low_rate_analysis = json.loads(
+        (low_rate_result / "analysis" / "tail-v2.json").read_text()
+    )
+    low_rate_centers = [
+        band["centerHz"] for band in low_rate_analysis["decay"]["bands"]
+    ]
+    if low_rate_centers != expected_centers[:-1]:
+        raise AssertionError(
+            "tail-v2 emitted an octave band whose center is unavailable "
+            f"above Nyquist: {low_rate_centers}"
+        )
+
     eventual = analysis["eventualContraction"]
     if eventual["negativeTrend"] is not True:
         raise AssertionError(
@@ -223,30 +267,57 @@ def main():
     if artifact.read_bytes() != original:
         raise AssertionError("failed provenance check changed analysis")
 
-    # Inconsistent resolved Damping evidence (a shelf coefficient array
-    # missing a Channel's worth of values) is rejected with a descriptive
-    # failure, before any prediction math runs.
-    corrupted_result = workspace / "corrupted-damping-result"
-    shutil.copytree(render_result, corrupted_result)
-    (corrupted_result / "analysis" / "tail-v2.json").unlink()
-    corrupted_path = corrupted_result / "resolved.json"
-    corrupted = json.loads(corrupted_path.read_text())
-    corrupted_loop = next(
-        stage
-        for stage in corrupted["composition"]["stages"]
-        if stage["type"] == "feedback-loop"
-    )
-    corrupted_loop["damping"]["highShelfB0"].pop()
-    corrupted_path.write_text(json.dumps(corrupted))
-    corrupted_analyzed = run_analyzer(tail_v2_analyzer, corrupted_result, fixture)
-    if corrupted_analyzed.returncode == 0:
-        raise AssertionError("tail-v2 analyzer accepted inconsistent Damping evidence")
-    if "resolved Damping evidence is inconsistent" not in corrupted_analyzed.stderr:
-        raise AssertionError(
-            f"unexpected inconsistent-Damping failure: {corrupted_analyzed.stderr}"
+    # Inconsistent resolved Damping evidence is rejected descriptively,
+    # before any prediction math runs.
+    def reject_corrupted_damping(name, corrupt):
+        corrupted_result = workspace / f"corrupted-damping-{name}-result"
+        shutil.copytree(render_result, corrupted_result)
+        (corrupted_result / "analysis" / "tail-v2.json").unlink()
+        corrupted_path = corrupted_result / "resolved.json"
+        corrupted = json.loads(corrupted_path.read_text())
+        corrupted_loop = next(
+            stage
+            for stage in corrupted["composition"]["stages"]
+            if stage["type"] == "feedback-loop"
         )
-    if (corrupted_result / "analysis" / "tail-v2.json").exists():
-        raise AssertionError("rejected Damping evidence published a tail-v2 analysis")
+        corrupt(corrupted_loop)
+        corrupted_path.write_text(json.dumps(corrupted))
+        corrupted_analyzed = run_analyzer(
+            tail_v2_analyzer, corrupted_result, fixture
+        )
+        if corrupted_analyzed.returncode == 0:
+            raise AssertionError(
+                f"tail-v2 analyzer accepted inconsistent Damping evidence: {name}"
+            )
+        if (
+            "resolved Damping evidence is inconsistent"
+            not in corrupted_analyzed.stderr
+        ):
+            raise AssertionError(
+                f"unexpected inconsistent-Damping failure ({name}): "
+                f"{corrupted_analyzed.stderr}"
+            )
+        if (corrupted_result / "analysis" / "tail-v2.json").exists():
+            raise AssertionError(
+                f"rejected Damping evidence published a tail-v2 analysis: {name}"
+            )
+
+    reject_corrupted_damping(
+        "short-array", lambda loop: loop["damping"]["highShelfB0"].pop()
+    )
+    reject_corrupted_damping("non-object", lambda loop: loop.update(damping=[]))
+    reject_corrupted_damping(
+        "boolean-coefficient",
+        lambda loop: loop["damping"]["highShelfB0"].__setitem__(0, True),
+    )
+    reject_corrupted_damping(
+        "non-finite-coefficient",
+        lambda loop: loop["damping"]["highShelfB0"].__setitem__(0, float("nan")),
+    )
+    reject_corrupted_damping(
+        "oversized-integer-coefficient",
+        lambda loop: loop["damping"]["highShelfB0"].__setitem__(0, 10**400),
+    )
 
     # A Composition without a Feedback Loop is rejected, mirroring tail-v1.
     diffuser_only_request = {
@@ -351,15 +422,31 @@ def main():
         )
         if reference["t30"] is None:
             raise AssertionError(f"{name} T30 fit failed: {reference}")
-        low, high = reference["predictedRt60Sec"]["rangeRt60Sec"]
-        return high - low, reference["withinPredictedTolerance"]
+        predicted = reference["predictedRt60Sec"]
+        low, high = predicted["rangeRt60Sec"]
+        return (
+            high - low,
+            predicted["targetRt60Sec"],
+            reference["withinPredictedTolerance"],
+        )
 
-    per_channel_spread, per_channel_within = predicted_reference_band(
+    (
+        per_channel_spread,
+        per_channel_target,
+        per_channel_within,
+    ) = predicted_reference_band(
         "wide-per-channel", "per-channel"
     )
-    uniform_spread, uniform_within = predicted_reference_band(
+    uniform_spread, uniform_target, uniform_within = predicted_reference_band(
         "wide-uniform", "uniform"
     )
+    if per_channel_target is None:
+        raise AssertionError("gainMode: per-channel did not publish its target")
+    if uniform_target is not None:
+        raise AssertionError(
+            "gainMode: uniform invented a single predicted target instead "
+            f"of publishing only its per-Channel range: {uniform_target}"
+        )
     if not per_channel_within:
         raise AssertionError(
             "gainMode: per-channel measured T30 did not fall within its "

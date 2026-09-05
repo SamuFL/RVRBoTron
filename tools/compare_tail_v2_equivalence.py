@@ -37,7 +37,11 @@ def numeric_metrics(entry):
             yield f"decayRt60Sec{prefix}[fit=t20]", band["t20Rt60Sec"]
         if band["t30Rt60Sec"] is not None:
             yield f"decayRt60Sec{prefix}[fit=t30]", band["t30Rt60Sec"]
-        yield f"predictedTargetRt60Sec{prefix}", band["predictedTargetRt60Sec"]
+        if band["predictedTargetRt60Sec"] is not None:
+            yield (
+                f"predictedTargetRt60Sec{prefix}",
+                band["predictedTargetRt60Sec"],
+            )
         low, high = band["predictedRangeRt60Sec"]
         yield f"predictedRangeLowRt60Sec{prefix}", low
         yield f"predictedRangeHighRt60Sec{prefix}", high
@@ -80,6 +84,10 @@ def structural_metrics(entry):
             f"decay.withinPredictedTolerance{prefix}",
             band["withinPredictedTolerance"],
         )
+        yield (
+            f"decay.predictedTargetPresent{prefix}",
+            band["predictedTargetRt60Sec"] is not None,
+        )
     yield "decay.withinAccuracyInvariant", entry["decay"]["withinAccuracyInvariant"]
     yield "decay.significantDeviation", entry["decay"]["significantDeviation"]
     yield (
@@ -100,6 +108,7 @@ def _compare_metric(
     expected,
     actual,
     tolerance,
+    exact=False,
 ):
     if actual is _MISSING:
         return {
@@ -114,12 +123,9 @@ def _compare_metric(
             "tolerance": tolerance,
             "pass": False,
         }
-    # A discrete label (gainMode) has no meaningful numeric distance --
-    # compared for exact equality, like every other structural metric, but
-    # without attempting a subtraction strings do not support.
-    if isinstance(expected, str) or isinstance(actual, str):
+    if exact:
         delta = None
-        passed = actual == expected
+        passed = type(actual) is type(expected) and actual == expected
     else:
         delta = abs(actual - expected)
         passed = delta <= tolerance
@@ -161,6 +167,7 @@ def compare_pair(precision, first, second, tolerances):
                 expected,
                 second_structural.get(name, _MISSING),
                 0,
+                exact=True,
             )
         )
     for name, expected in first_numeric.items():

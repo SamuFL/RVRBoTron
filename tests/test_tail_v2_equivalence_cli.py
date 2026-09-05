@@ -271,6 +271,54 @@ def main():
             f"trend mismatch did not name the metric: {trend_mismatched.stdout}"
         )
 
+    # Missing fits and an unavailable contraction trend are valid nullable
+    # structural values. Matching nulls compare exactly; a null/value split
+    # still fails as a structural mismatch.
+    nullable_a = json.loads(equivalence_a.read_text())
+    nullable_b = json.loads(equivalence_b.read_text())
+    for nullable in (nullable_a, nullable_b):
+        nullable["decay"]["bands"][0]["t30Rt60Sec"] = None
+        nullable["decay"]["bands"][0]["withinPredictedTolerance"] = None
+        nullable["decay"]["bands"][0]["predictedTargetRt60Sec"] = None
+        nullable["eventualContraction"]["slopeDbPerSegment"] = None
+        nullable["eventualContraction"]["negativeTrend"] = None
+    nullable_a_path = workspace / "equivalence-nullable-a.json"
+    nullable_b_path = workspace / "equivalence-nullable-b.json"
+    nullable_a_path.write_text(json.dumps(nullable_a))
+    nullable_b_path.write_text(json.dumps(nullable_b))
+    matching_nulls = run(
+        sys.executable, comparator, nullable_a_path, nullable_b_path
+    )
+    if matching_nulls.returncode != 0:
+        raise AssertionError(
+            "matching nullable structural evidence compared unequal: "
+            f"{matching_nulls.stderr}{matching_nulls.stdout}"
+        )
+
+    nullable_b["eventualContraction"]["negativeTrend"] = False
+    nullable_b_path.write_text(json.dumps(nullable_b))
+    mismatched_null = run(
+        sys.executable, comparator, nullable_a_path, nullable_b_path
+    )
+    if mismatched_null.returncode != 1:
+        raise AssertionError(
+            "nullable structural mismatch was not reported as a failure: "
+            f"{mismatched_null.stdout}"
+        )
+
+    boolean_as_number = json.loads(equivalence_b.read_text())
+    boolean_as_number["eventualContraction"]["negativeTrend"] = 1
+    boolean_as_number_path = workspace / "equivalence-boolean-as-number.json"
+    boolean_as_number_path.write_text(json.dumps(boolean_as_number))
+    mismatched_type = run(
+        sys.executable, comparator, equivalence_b, boolean_as_number_path
+    )
+    if mismatched_type.returncode != 1:
+        raise AssertionError(
+            "structural boolean accepted a numerically equal integer: "
+            f"{mismatched_type.stdout}"
+        )
+
     # A numeric metric that exceeds its committed tolerance must fail; a
     # custom tolerances document controls exactly where the pass/fail
     # boundary sits.
