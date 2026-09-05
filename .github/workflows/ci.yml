@@ -94,6 +94,27 @@ jobs:
           name: tail-equivalence-${{ matrix.architecture }}-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/tail-equivalence.json
 
+      - name: Collect tail-v2 tolerance evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: tail-v2-${{ matrix.architecture }}-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/render.json
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/resolved.json
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/analysis/tail-v2.json
+
+      - name: Extract compact tail-v2-equivalence summary
+        run: |
+          python3 tools/extract_tail_v2_equivalence.py \
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result \
+            --output build/${{ matrix.preset }}/tail-v2-equivalence.json
+
+      - name: Upload tail-v2-equivalence summary
+        uses: actions/upload-artifact@v6
+        with:
+          name: tail-v2-equivalence-${{ matrix.architecture }}-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/tail-v2-equivalence.json
+
   windows:
     name: Windows x86_64 (${{ matrix.preset }})
     runs-on: windows-2022
@@ -168,6 +189,27 @@ jobs:
           name: tail-equivalence-windows-x86_64-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/tail-equivalence.json
 
+      - name: Collect tail-v2 tolerance evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: tail-v2-windows-x86_64-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/render.json
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/resolved.json
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result/analysis/tail-v2.json
+
+      - name: Extract compact tail-v2-equivalence summary
+        run: |
+          python tools/extract_tail_v2_equivalence.py `
+            build/${{ matrix.preset }}/tests/tail-analyzer-v2-contract/render-result `
+            --output build/${{ matrix.preset }}/tail-v2-equivalence.json
+
+      - name: Upload tail-v2-equivalence summary
+        uses: actions/upload-artifact@v6
+        with:
+          name: tail-v2-equivalence-windows-x86_64-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/tail-v2-equivalence.json
+
   compare-diffusion-equivalence:
     name: Compare diffusion equivalence across platforms
     runs-on: ubuntu-latest
@@ -211,3 +253,25 @@ jobs:
           python3 tools/compare_tail_equivalence.py \
             tail-equivalence/*/tail-equivalence.json \
             --tolerances tools/tail_tolerances_v1.json
+
+  compare-tail-v2-equivalence:
+    name: Compare tail-v2 equivalence across platforms
+    runs-on: ubuntu-latest
+    needs: [macos, windows]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download tail-v2-equivalence summaries
+        uses: actions/download-artifact@v6
+        with:
+          pattern: tail-v2-equivalence-*
+          path: tail-v2-equivalence
+
+      - name: Compare across platforms by precision
+        run: |
+          python3 tools/compare_tail_v2_equivalence.py \
+            tail-v2-equivalence/*/tail-v2-equivalence.json \
+            --tolerances tools/tail_tolerances_v2.json

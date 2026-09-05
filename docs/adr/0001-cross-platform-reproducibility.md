@@ -19,3 +19,46 @@ The values currently committed were reviewed this way for issue #37 (PR #48, CI 
 The same workflow covers the sustained tail: each CI platform/precision job additionally analyzes the same millisecond-scale Feedback Loop tracer (`tests/test_tail_analyzer_cli.py`'s fixture composition) used by `tail_analyzer_contract`, `tools/extract_tail_equivalence.py` reduces its `analysis/tail-v1.json` to a compact, WAV-free summary, and a final CI job compares every platform's summary with `tools/compare_tail_equivalence.py` against `tools/tail_tolerances_v1.json`.
 
 The values currently committed were reviewed this way for issue #58 (PR #69, CI run [33429129103](https://github.com/SamuFL/RVRBoTron/actions/runs/33429129103)): non-finite sample count, Alignment score, and every Coloration metric reproduced with exactly zero delta across macOS arm64, macOS Intel, and Windows x86_64 on the millisecond-scale tracer, so their committed tolerances are small non-zero headroom -- Coloration's matching diffusion's own committed values exactly, since it is the identical FFT/dB code path (`analyze_diffusion.coloration_evidence`, reused directly by `analyze_tail.py`) with the same latent per-platform risk, even though it did not manifest on this tracer/run. Only each octave band's T20/T30 RT60 estimate showed a measurable, non-zero cross-platform delta (at the same `1e-16`-to-`1e-15` scale as diffusion's Coloration, for the same NumPy-float64 reason), so its committed tolerance carries roughly five to six orders of magnitude of headroom above the largest such delta actually observed -- warranted because RT60 fits accumulate a Schroeder backward integration and linear regression over tens of thousands of samples, more numerically involved than a single Coloration summary, for configurations (longer renders, different band shapes) this tiny tracer does not exercise.
+
+## Damping, FMA contraction, and architecture equivalence
+
+Issue #78 added a Damping-enabled tail tracer in PR #84. CI run
+[33867625534](https://github.com/SamuFL/RVRBoTron/actions/runs/33867625534)
+showed a float32-only split: macOS Intel and Windows x86_64 produced
+effectively identical analyzed results, while macOS arm64 differed by up to
+`1.82e-7` seconds in fitted RT60, `2.79e-7` dB per segment in the late-tail
+slope, and `7.61e-5` dB in Coloration peak-to-peak. Float64 remained at the
+`1e-13`-to-`1e-16` scale.
+
+This split was reproduced locally from the same Resolved Configuration by
+changing only AppleClang's floating-point contraction policy. The default
+arm64 build emitted `fmadd` and `fmsub` instructions for the one-pole shelf
+recurrence in `FeedbackLoop::processFrame`; rebuilding with
+`-ffp-contract=off` emitted no fused instructions. The two arm64 renders
+first differed at frame 145, Channel 0, and their metric deltas matched the
+CI arm64-versus-x86_64 deltas. The no-contraction arm64 metrics then matched
+both x86_64 platforms to the analysis numerical floor: no Coloration-summary
+delta and at most `8.88e-16` seconds across T30 fits.
+
+Configuration resolution is not the source of this difference. Every
+resolved gain and active shelf coefficient has the same realised float32 bit
+pattern on all three platforms. Render length, Tail budget, FFT length, and
+analysis segmentation also agree. The architecture split begins when arm64
+contracts the shelf's multiply-add/subtract expression into fused operations;
+the shelf state and outer Feedback Loop then propagate that valid initial
+rounding difference. Coloration peak-to-peak exposes the largest reported
+delta because it is a max-minus-min over individual FFT-bin levels, so one
+deep spectral null is substantially more sensitive than its averaged RMS and
+spectral-flatness companions.
+
+RVRBoTron deliberately retains each toolchain's default floating-point
+optimizations. Cross-platform equivalence therefore continues to compare
+arm64 with x86_64 using evidence-based measurement tolerances rather than
+disabling FMA contraction or excluding an architecture from comparison.
+Keeping the cross-architecture comparison preserves coverage for genuine
+architecture-specific regressions. Tail-v2 compares every platform pair and
+uses a tighter same-architecture tolerance than the cross-architecture
+tolerance where the float32 FMA evidence requires that distinction. This
+keeps the macOS-Intel-versus-Windows x86_64 signal tight instead of letting
+the arm64 FMA allowance mask an x86_64-only regression. Structural facts
+remain exact in both comparison classes.
