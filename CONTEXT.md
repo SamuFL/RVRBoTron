@@ -40,9 +40,25 @@ _Avoid_: Output EQ
 The current Damping model: one low shelf and one high shelf shape decay around the 1 kHz Reference band using low- and high-band decay ratios.
 _Avoid_: Three-band damping, multiband damping
 
+**Decay tilt**:
+The slope of measured per-octave-band T30 against log-frequency, expressing how strongly decay time varies with frequency.
+_Avoid_: Spectral tilt, Coloration
+
 **Modulation**:
 Seeded movement of delay times that smears fixed resonances.
 _Avoid_: Chorus
+
+**Excursion**:
+The symmetric peak deviation, in milliseconds, of a modulated delay above and below its nominal resolved length.
+_Avoid_: Depth, sweep width
+
+**Interpolation margin**:
+The fixed extra delay-line headroom reserved so any interpolation method can read past the Excursion bound without overrunning.
+_Avoid_: Guard band, padding
+
+**Detune product**:
+The product of modulation depth and rate, which governs perceived pitch deviation.
+_Avoid_: Modulation amount
 
 **Early Reflections**:
 The diffuser taps mixed in parallel before the reverb tail arrives.
@@ -93,12 +109,16 @@ The resolved upper bound on the frames a render writes after its input ends, der
 _Avoid_: Tail length, drain length, finite response
 
 **Block-size bound**:
-The resolved upper bound on legal block size, derived from the Feedback Loop's shortest resolved per-Channel delay.
+The resolved upper bound on legal block size, derived from the Feedback Loop's shortest resolved per-Channel delay less any modulation Excursion applied to it.
 _Avoid_: Maximum block size, buffer size limit
 
 **Correlation**:
 The normalized zero-lag dot product between Channel signals: 1.0 identical, -1.0 polarity-inverted, and 0.0 linearly independent at zero lag.
 _Avoid_: Alignment
+
+**Output correlation**:
+The signed normalized zero-lag similarity between the two Downmix output signals, used to detect coherent modulation surviving into the summed output.
+_Avoid_: Channel decorrelation
 
 **Requested configuration**:
 The user-authored description of the desired reverb.
