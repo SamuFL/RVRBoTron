@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace rvrbotron::config {
 
@@ -54,11 +55,16 @@ constexpr std::uint64_t kModulationInterpolationMarginSamples = 3;
 [[nodiscard]] std::uint64_t resolveModulationHeadroomSamples(
     double excursionSamples) noexcept;
 
-// The modulation-aware Block-size bound: the shortest resolved
-// per-Channel delay less the Excursion applied to it (see "The
-// Block-size bound becomes modulation-aware"), rounded down so the bound
-// never overstates what is safely servable.
+// The modulation-aware Block-size bound: the shortest *instantaneous*
+// per-Channel delay across every Channel (see "The Block-size bound
+// becomes modulation-aware") -- a modulated Channel's own delay less the
+// Excursion applied to it, an unmodulated Channel's own delay unchanged
+// (issue #90's partial-Channel modulation) -- rounded down so the bound
+// never overstates what is safely servable. `delaysSamples` and
+// `channelModulated` must be the same size.
 [[nodiscard]] std::uint64_t resolveModulationBlockSizeBoundSamples(
-    std::uint64_t shortestDelaySamples, double excursionSamples) noexcept;
+    const std::vector<std::uint64_t>& delaysSamples,
+    const std::vector<bool>& channelModulated,
+    double excursionSamples) noexcept;
 
 } // namespace rvrbotron::config

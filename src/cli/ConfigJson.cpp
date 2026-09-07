@@ -226,6 +226,22 @@ dsp::ModulationInterpolation parseModulationInterpolation(
   fail(path, "expected lagrange3");
 }
 
+dsp::ModulationShape parseModulationShape(
+    const Json& value,
+    const std::string_view path) {
+  const auto name = parseString(value, path);
+  if (name == "smoothed-random") {
+    return dsp::ModulationShape::smoothedRandom;
+  }
+  if (name == "sine") {
+    return dsp::ModulationShape::sine;
+  }
+  if (name == "triangle") {
+    return dsp::ModulationShape::triangle;
+  }
+  fail(path, "expected smoothed-random, sine, or triangle");
+}
+
 dsp::GainMode parseGainMode(
     const Json& value,
     const std::string_view path) {
@@ -453,7 +469,10 @@ config::ModulationConfig parseRequestedModulation(
     const Json& value,
     const std::string_view path) {
   requireObject(value, path);
-  rejectUnknownFields(value, path, {"depthMs", "rateHz", "interpolation"});
+  rejectUnknownFields(
+      value,
+      path,
+      {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"});
   config::ModulationConfig modulation;
   if (value.contains("depthMs")) {
     modulation.depthMs =
@@ -462,6 +481,14 @@ config::ModulationConfig parseRequestedModulation(
   if (value.contains("rateHz")) {
     modulation.rateHz =
         parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  }
+  if (value.contains("shape")) {
+    modulation.shape = parseModulationShape(
+        value.at("shape"), std::string(path) + "/shape");
+  }
+  if (value.contains("channelFraction")) {
+    modulation.channelFraction = parseNumber(
+        value.at("channelFraction"), std::string(path) + "/channelFraction");
   }
   if (value.contains("interpolation")) {
     modulation.interpolation = parseModulationInterpolation(
@@ -605,6 +632,19 @@ std::vector<std::uint32_t> parseUnsigned32Array(
   result.reserve(value.size());
   for (std::size_t index = 0; index < value.size(); ++index) {
     result.push_back(parseUnsigned32(
+        value.at(index), std::string(path) + "/" + std::to_string(index)));
+  }
+  return result;
+}
+
+std::vector<bool> parseBooleanArray(
+    const Json& value,
+    const std::string_view path) {
+  requireArray(value, path);
+  std::vector<bool> result;
+  result.reserve(value.size());
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    result.push_back(parseBoolean(
         value.at(index), std::string(path) + "/" + std::to_string(index)));
   }
   return result;
@@ -869,21 +909,27 @@ dsp::ResolvedModulation parseResolvedModulation(
       path,
       {"depthMs",
        "rateHz",
+       "shape",
+       "channelFraction",
        "interpolation",
        "excursionSamples",
        "interpolationMarginSamples",
        "channelSeeds",
        "channelTargetsPerSample",
-       "channelPhases"});
+       "channelPhases",
+       "channelModulated"});
   for (const auto field :
        {"depthMs",
         "rateHz",
+        "shape",
+        "channelFraction",
         "interpolation",
         "excursionSamples",
         "interpolationMarginSamples",
         "channelSeeds",
         "channelTargetsPerSample",
-        "channelPhases"}) {
+        "channelPhases",
+        "channelModulated"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedModulation modulation;
@@ -891,6 +937,10 @@ dsp::ResolvedModulation parseResolvedModulation(
       parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
   modulation.rateHz =
       parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  modulation.shape = parseModulationShape(
+      value.at("shape"), std::string(path) + "/shape");
+  modulation.channelFraction = parseNumber(
+      value.at("channelFraction"), std::string(path) + "/channelFraction");
   modulation.interpolation = parseModulationInterpolation(
       value.at("interpolation"), std::string(path) + "/interpolation");
   modulation.excursionSamples = parseNumber(
@@ -905,6 +955,8 @@ dsp::ResolvedModulation parseResolvedModulation(
       std::string(path) + "/channelTargetsPerSample");
   modulation.channelPhases = parseNumberArray(
       value.at("channelPhases"), std::string(path) + "/channelPhases");
+  modulation.channelModulated = parseBooleanArray(
+      value.at("channelModulated"), std::string(path) + "/channelModulated");
   return modulation;
 }
 

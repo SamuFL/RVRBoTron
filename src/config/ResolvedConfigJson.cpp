@@ -65,6 +65,19 @@ const char* modulationInterpolationName(
       "unsupported Modulation interpolation");
 }
 
+const char* modulationShapeName(const dsp::ModulationShape shape) {
+  switch (shape) {
+  case dsp::ModulationShape::smoothedRandom:
+    return "smoothed-random";
+  case dsp::ModulationShape::sine:
+    return "sine";
+  case dsp::ModulationShape::triangle:
+    return "triangle";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration, "unsupported Modulation shape");
+}
+
 const char* gainModeName(const dsp::GainMode gainMode) {
   switch (gainMode) {
   case dsp::GainMode::perChannel:
@@ -223,6 +236,8 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
     document["modulation"] = {
         {"depthMs", modulation.depthMs},
         {"rateHz", modulation.rateHz},
+        {"shape", modulationShapeName(modulation.shape)},
+        {"channelFraction", modulation.channelFraction},
         {"interpolation",
          modulationInterpolationName(modulation.interpolation)},
         {"excursionSamples", modulation.excursionSamples},
@@ -230,6 +245,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"channelSeeds", modulation.channelSeeds},
         {"channelTargetsPerSample", modulation.channelTargetsPerSample},
         {"channelPhases", modulation.channelPhases},
+        {"channelModulated", modulation.channelModulated},
     };
   }
   return document;

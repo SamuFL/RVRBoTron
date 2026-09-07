@@ -1,3 +1,4 @@
+#include "rvrbotron/HarnessError.h"
 #include "rvrbotron/config/ModulationResolution.h"
 #include "rvrbotron/config/ResolveConfig.h"
 #include "rvrbotron/dsp/DelayLine.h"
@@ -1816,12 +1817,17 @@ int main() {
   // per-Channel seeds/rates at depthMs == 0) rather than by arithmetic
   // collapsing to identity.
   {
+    // Short delays (5-10ms) so the impulse actually circulates within
+    // this fixture's frame budget -- 40/60ms (thousands of samples)
+    // would leave both loops silent for the whole window, making the
+    // comparison pass vacuously regardless of correctness (PR #97
+    // follow-up review).
     const auto omittedConfig =
-        resolvedModulatedLoopConfig(2, 1.5, 40.0, 60.0, std::nullopt);
+        resolvedModulatedLoopConfig(2, 1.5, 5.0, 10.0, std::nullopt);
     rvrbotron::config::ModulationConfig zeroModulation;
     zeroModulation.depthMs = 0.0;
     const auto zeroDepthConfig =
-        resolvedModulatedLoopConfig(2, 1.5, 40.0, 60.0, zeroModulation);
+        resolvedModulatedLoopConfig(2, 1.5, 5.0, 10.0, zeroModulation);
 
     const auto& omittedLoopStage =
         std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
@@ -1837,7 +1843,7 @@ int main() {
 
     rvrbotron::dsp::FeedbackLoop omittedLoop(omittedLoopStage);
     rvrbotron::dsp::FeedbackLoop zeroDepthLoop(zeroDepthLoopStage);
-    constexpr std::size_t identityFrames = 400;
+    constexpr std::size_t identityFrames = 2000;
     const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, -1.0F};
     const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
     for (std::size_t frame = 0; frame < identityFrames; ++frame) {
@@ -2054,6 +2060,420 @@ int main() {
                    "different resolved phases read identical lookbacks "
                    "at frame 0\n";
       return 1;
+    }
+  }
+
+  // sine and triangle shapes (issue #90): rateHz means the same thing
+  // for every shape -- one full target-grid cycle per 1/rateHz seconds
+  // -- so both waveforms must hit the same checkpoints (zero at t=0,
+  // peak +1 at t=0.25, zero at t=0.5, trough -1 at t=0.75) at the exact
+  // same frame indices, while still differing from each other, and from
+  // smoothed-random, in between those checkpoints.
+  {
+    const auto trajectoryIsClose =
+        [](const rvrbotron::dsp::ModulationShape shape,
+           const int frame,
+           const double expectedTrajectory) {
+          rvrbotron::dsp::ResolvedModulation config;
+          config.shape = shape;
+          config.channelSeeds = {1ULL};
+          // 0.125 per frame: frame 0/2/4/6 land exactly on t = 0, 0.25,
+          // 0.5, 0.75.
+          config.channelTargetsPerSample = {0.125};
+          config.channelPhases = {0.0};
+          config.excursionSamples = 1.0;
+          rvrbotron::dsp::Modulation modulation(config);
+          for (int step = 0; step < frame; ++step) {
+            modulation.advanceFrame();
+          }
+          const auto lookback = modulation.lookbackSamples(0, 1000);
+          return close(
+              static_cast<rvrbotron::dsp::Sample>(lookback),
+              1000.0 + expectedTrajectory);
+        };
+    const struct {
+      rvrbotron::dsp::ModulationShape shape;
+      const char* name;
+    } shapes[] = {
+        {rvrbotron::dsp::ModulationShape::sine, "sine"},
+        {rvrbotron::dsp::ModulationShape::triangle, "triangle"},
+    };
+    for (const auto& entry : shapes) {
+      if (!trajectoryIsClose(entry.shape, 0, 0.0) ||
+          !trajectoryIsClose(entry.shape, 2, 1.0) ||
+          !trajectoryIsClose(entry.shape, 4, 0.0) ||
+          !trajectoryIsClose(entry.shape, 6, -1.0)) {
+        std::cerr << entry.name
+                  << " did not hit the expected checkpoints at rateHz's "
+                     "documented meaning (zero/peak/zero/trough at t = "
+                     "0, 0.25, 0.5, 0.75)\n";
+        return 1;
+      }
+    }
+    // Between checkpoints (t = 0.125) the two shapes must differ from
+    // each other -- sine ~= 0.7071, triangle == 0.5 -- proving they are
+    // genuinely different waveforms rather than aliasing to the same
+    // shape away from the checkpoints they share.
+    if (trajectoryIsClose(
+            rvrbotron::dsp::ModulationShape::sine, 1, 0.5) ||
+        trajectoryIsClose(
+            rvrbotron::dsp::ModulationShape::triangle, 1, 1.0 / std::sqrt(2.0))) {
+      std::cerr << "sine and triangle produced the same trajectory "
+                   "value between their shared checkpoints\n";
+      return 1;
+    }
+  }
+
+  // The fixed +-10% per-Channel rate spread applies to every shape
+  // (issue #90): resolving `sine` still gives distinct Channels distinct
+  // resolved rates.
+  {
+    rvrbotron::config::ModulationConfig sineModulation;
+    sineModulation.depthMs = 0.5;
+    sineModulation.shape = rvrbotron::dsp::ModulationShape::sine;
+    const auto sineConfig =
+        resolvedModulatedLoopConfig(2, 1.5, 100.0, 200.0, sineModulation);
+    const auto& sineLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        sineConfig.composition.stages[1]);
+    const auto& sineRates = sineLoop.modulation->channelTargetsPerSample;
+    if (sineRates.size() != 2 || sineRates[0] == sineRates[1]) {
+      std::cerr << "sine shape did not resolve distinct per-Channel "
+                   "rates from the +-10% seeded spread\n";
+      return 1;
+    }
+  }
+
+  // channelFraction (issue #90): the modulated Channels are the first
+  // ceil(fraction * N) entries of a positionally seeded FIXED
+  // permutation, so raising the fraction only lengthens the prefix --
+  // every Channel already modulating at a smaller fraction stays
+  // modulating at a larger one, with no reshuffle.
+  {
+    rvrbotron::config::ModulationConfig quarterModulation;
+    quarterModulation.depthMs = 0.5;
+    quarterModulation.channelFraction = 0.25;
+    const auto quarterConfig = resolvedModulatedLoopConfig(
+        8, 1.5, 100.0, 200.0, quarterModulation);
+    const auto& quarterMask =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            quarterConfig.composition.stages[1])
+            .modulation->channelModulated;
+
+    rvrbotron::config::ModulationConfig halfModulation = quarterModulation;
+    halfModulation.channelFraction = 0.5;
+    const auto halfConfig =
+        resolvedModulatedLoopConfig(8, 1.5, 100.0, 200.0, halfModulation);
+    const auto& halfMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        halfConfig.composition.stages[1])
+                                .modulation->channelModulated;
+
+    std::size_t quarterCount = 0;
+    std::size_t halfCount = 0;
+    for (std::size_t channel = 0; channel < 8; ++channel) {
+      quarterCount += quarterMask[channel] ? 1 : 0;
+      halfCount += halfMask[channel] ? 1 : 0;
+      // Every Channel modulating at fraction 0.25 must still be
+      // modulating at fraction 0.5 -- the prefix never shrinks or
+      // reshuffles as the fraction grows.
+      if (quarterMask[channel] && !halfMask[channel]) {
+        std::cerr << "raising channelFraction dropped Channel "
+                  << channel << " that a smaller fraction had selected\n";
+        return 1;
+      }
+    }
+    if (quarterCount != 2 || halfCount != 4) {
+      std::cerr << "channelFraction did not resolve ceil(fraction * N) "
+                   "modulated Channels: quarter=" << quarterCount
+                << " half=" << halfCount << '\n';
+      return 1;
+    }
+  }
+
+  // Channel selection is independent of delay ordering (issue #90): the
+  // same seed and channelFraction give the identical bypass mask
+  // regardless of the Feedback Loop's own delay range.
+  {
+    rvrbotron::config::ModulationConfig fractionModulation;
+    fractionModulation.depthMs = 0.5;
+    fractionModulation.channelFraction = 0.5;
+    const auto narrowDelayConfig = resolvedModulatedLoopConfig(
+        8, 1.5, 100.0, 105.0, fractionModulation);
+    const auto wideDelayConfig = resolvedModulatedLoopConfig(
+        8, 1.5, 50.0, 400.0, fractionModulation);
+    const auto& narrowMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        narrowDelayConfig.composition.stages[1])
+                                  .modulation->channelModulated;
+    const auto& wideMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        wideDelayConfig.composition.stages[1])
+                                .modulation->channelModulated;
+    if (narrowMask != wideMask) {
+      std::cerr << "Channel selection changed when only the delay range "
+                   "changed, correlating selection with delay ordering\n";
+      return 1;
+    }
+  }
+
+  // channelFraction of 0 disables Modulation for that stage (issue #90),
+  // bit-identical to Modulation omitted; any non-zero fraction modulates
+  // at least one Channel even when N is large and the fraction is tiny.
+  {
+    const auto omittedConfig =
+        resolvedModulatedLoopConfig(4, 1.5, 100.0, 200.0, std::nullopt);
+    rvrbotron::config::ModulationConfig zeroFractionModulation;
+    zeroFractionModulation.depthMs = 5.0;
+    zeroFractionModulation.channelFraction = 0.0;
+    const auto zeroFractionConfig = resolvedModulatedLoopConfig(
+        4, 1.5, 100.0, 200.0, zeroFractionModulation);
+    const auto& zeroFractionLoop =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            zeroFractionConfig.composition.stages[1]);
+    if (!zeroFractionLoop.modulation->channelModulated.empty()) {
+      std::cerr << "channelFraction of 0 still resolved a non-empty "
+                   "bypass mask\n";
+      return 1;
+    }
+    if (zeroFractionLoop.bufferSizes !=
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            omittedConfig.composition.stages[1])
+            .bufferSizes) {
+      std::cerr << "channelFraction of 0 grew the resolved buffer sizes "
+                   "over Modulation omitted\n";
+      return 1;
+    }
+
+    rvrbotron::config::ModulationConfig tinyFractionModulation;
+    tinyFractionModulation.depthMs = 0.5;
+    tinyFractionModulation.channelFraction = 0.01;
+    const auto tinyFractionConfig = resolvedModulatedLoopConfig(
+        16, 1.5, 100.0, 200.0, tinyFractionModulation);
+    const auto& tinyMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        tinyFractionConfig.composition.stages[1])
+                                .modulation->channelModulated;
+    const auto tinyCount =
+        std::count(tinyMask.begin(), tinyMask.end(), true);
+    if (tinyCount != 1) {
+      std::cerr << "a tiny non-zero channelFraction did not modulate "
+                   "exactly one Channel (ceil never rounds to zero): got "
+                << tinyCount << '\n';
+      return 1;
+    }
+  }
+
+  // Unmodulated Channels inside a modulated stage keep the integer read
+  // path, with no Channel reordering (issue #90): a Channel
+  // channelFraction excludes renders bit-identical to that same Channel
+  // with Modulation omitted entirely, while an included Channel differs.
+  {
+    // Short delays (5-10ms, a few hundred samples) so the impulse
+    // actually arrives well within this fixture's frame budget --
+    // delayMinMs/delayMaxMs of 100/200 (milliseconds, thousands of
+    // samples) would leave every Channel silent for the whole window.
+    rvrbotron::config::ModulationConfig halfFractionModulation;
+    halfFractionModulation.depthMs = 1.0;
+    halfFractionModulation.rateHz = 2.0;
+    halfFractionModulation.channelFraction = 0.5;
+    const auto halfFractionConfig = resolvedModulatedLoopConfig(
+        2, 1.5, 5.0, 10.0, halfFractionModulation);
+    const auto& halfFractionLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            halfFractionConfig.composition.stages[1]);
+    const auto& mask = halfFractionLoopStage.modulation->channelModulated;
+    const auto bypassedChannel = mask[0] ? std::size_t{1} : std::size_t{0};
+    const auto modulatedChannel = mask[0] ? std::size_t{0} : std::size_t{1};
+
+    const auto omittedConfig = resolvedModulatedLoopConfig(
+        2, 1.5, 5.0, 10.0, std::nullopt);
+    const auto& omittedLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            omittedConfig.composition.stages[1]);
+
+    rvrbotron::dsp::FeedbackLoop halfFractionLoop(halfFractionLoopStage);
+    rvrbotron::dsp::FeedbackLoop omittedLoop(omittedLoopStage);
+    // Both Channels' own first arrivals (at their own delay lengths,
+    // ~240 and ~480 samples) land well inside this window, but the
+    // mixing matrix hasn't yet had a chance to circulate the modulated
+    // Channel's content into the bypassed one's delay line and back
+    // out again (see docs/design/reverb/stages/06-modulation.md's
+    // "only some channels need modulating; the mixing matrix
+    // distributes detuned content to the rest" -- expected to happen,
+    // just not yet, this early). This fixture checks the bypassed
+    // Channel's own direct read, not what the matrix eventually mixes
+    // into it.
+    constexpr std::size_t partialFrames = 600;
+    const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, 1.0F};
+    const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
+    bool sawDifference = false;
+    for (std::size_t frame = 0; frame < partialFrames; ++frame) {
+      std::array<rvrbotron::dsp::Sample, 2> halfFractionOutput{};
+      std::array<rvrbotron::dsp::Sample, 2> omittedOutput{};
+      const auto& in = frame == 0 ? impulse : silence;
+      halfFractionLoop.processFrame(in.data(), halfFractionOutput.data());
+      omittedLoop.processFrame(in.data(), omittedOutput.data());
+      if (halfFractionOutput[bypassedChannel] !=
+          omittedOutput[bypassedChannel]) {
+        std::cerr << "channelFraction-excluded Channel "
+                  << bypassedChannel
+                  << " diverged from Modulation omitted at frame " << frame
+                  << '\n';
+        return 1;
+      }
+      if (halfFractionOutput[modulatedChannel] !=
+          omittedOutput[modulatedChannel]) {
+        sawDifference = true;
+      }
+    }
+    if (!sawDifference) {
+      std::cerr << "the channelFraction-included Channel never diverged "
+                   "from Modulation omitted; this fixture did not "
+                   "exercise Modulation at all\n";
+      return 1;
+    }
+  }
+
+  // The Excursion rejection rule applies to modulated Channels only
+  // (issue #90): a Channel channelFraction excludes may carry a delay
+  // too short to ever serve the requested Excursion without being
+  // rejected, while including that same Channel does reject it.
+  {
+    constexpr double exemptionDelayMinMs = 2.0;
+    constexpr double exemptionDelayMaxMs = 250.0;
+    rvrbotron::config::ModulationConfig halfFractionModulation;
+    halfFractionModulation.channelFraction = 0.5;
+    halfFractionModulation.depthMs = 0.5;
+
+    // "even" deterministically assigns Channel 0 the shortest delay
+    // (delayMinMs) and Channel 1 the longest (delayMaxMs); try candidate
+    // seeds until Channel 0 lands in the excluded half -- the only
+    // arrangement this fixture can use, since delayMaxMs is structurally
+    // never shorter than delayMinMs.
+    std::optional<std::uint64_t> foundSeed;
+    for (std::uint64_t candidateSeed = 0; candidateSeed < 64;
+         ++candidateSeed) {
+      const auto learnConfig = resolvedModulatedLoopConfig(
+          2,
+          1.5,
+          exemptionDelayMinMs,
+          exemptionDelayMaxMs,
+          halfFractionModulation,
+          rvrbotron::dsp::DelayStrategy::even,
+          48000,
+          candidateSeed);
+      const auto& mask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+          learnConfig.composition.stages[1])
+                              .modulation->channelModulated;
+      if (!mask[0] && mask[1]) {
+        foundSeed = candidateSeed;
+        break;
+      }
+    }
+    if (!foundSeed.has_value()) {
+      std::cerr << "could not find a seed placing Channel 0 outside the "
+                   "modulated half within 64 tries\n";
+      return 1;
+    }
+
+    // depthMs high enough that Channel 0's short delay would fail the
+    // Excursion rejection rule if it were ever checked (excursion 240
+    // samples against a ~96-sample delay).
+    rvrbotron::config::ModulationConfig unsafeModulation =
+        halfFractionModulation;
+    unsafeModulation.depthMs = 5.0;
+    bool halfFractionRejected = false;
+    try {
+      resolvedModulatedLoopConfig(
+          2,
+          1.5,
+          exemptionDelayMinMs,
+          exemptionDelayMaxMs,
+          unsafeModulation,
+          rvrbotron::dsp::DelayStrategy::even,
+          48000,
+          *foundSeed);
+    } catch (const rvrbotron::HarnessError&) {
+      halfFractionRejected = true;
+    }
+    if (halfFractionRejected) {
+      std::cerr << "channelFraction excluded Channel 0 but its short "
+                   "delay was still rejected\n";
+      return 1;
+    }
+
+    rvrbotron::config::ModulationConfig fullFractionModulation =
+        unsafeModulation;
+    fullFractionModulation.channelFraction = 1.0;
+    bool fullFractionRejected = false;
+    try {
+      resolvedModulatedLoopConfig(
+          2,
+          1.5,
+          exemptionDelayMinMs,
+          exemptionDelayMaxMs,
+          fullFractionModulation,
+          rvrbotron::dsp::DelayStrategy::even,
+          48000,
+          *foundSeed);
+    } catch (const rvrbotron::HarnessError&) {
+      fullFractionRejected = true;
+    }
+    if (!fullFractionRejected) {
+      std::cerr << "including Channel 0 via channelFraction 1.0 did not "
+                   "trigger its short-delay rejection\n";
+      return 1;
+    }
+  }
+
+  // Zero depth remains bit-identical to Modulation omitted for every
+  // shape (issue #90): the resolved bypass does not depend on which
+  // shape was requested.
+  {
+    // Short delays (5-10ms) so the impulse actually circulates within
+    // this fixture's frame budget -- 100/200ms (thousands of samples)
+    // would leave both loops silent for the whole window, making the
+    // comparison pass vacuously regardless of correctness (PR #97
+    // follow-up review).
+    const auto omittedConfig =
+        resolvedModulatedLoopConfig(2, 1.5, 5.0, 10.0, std::nullopt);
+    const auto& omittedLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            omittedConfig.composition.stages[1]);
+
+    const rvrbotron::dsp::ModulationShape shapes[] = {
+        rvrbotron::dsp::ModulationShape::smoothedRandom,
+        rvrbotron::dsp::ModulationShape::sine,
+        rvrbotron::dsp::ModulationShape::triangle,
+    };
+    for (const auto shape : shapes) {
+      // A fresh FeedbackLoop per shape on both sides of the comparison,
+      // since neither is copy- nor move-assignable and each must start
+      // silent at frame 0.
+      rvrbotron::dsp::FeedbackLoop omittedLoop(omittedLoopStage);
+
+      rvrbotron::config::ModulationConfig zeroDepthModulation;
+      zeroDepthModulation.depthMs = 0.0;
+      zeroDepthModulation.shape = shape;
+      const auto zeroDepthConfig = resolvedModulatedLoopConfig(
+          2, 1.5, 5.0, 10.0, zeroDepthModulation);
+      const auto& zeroDepthLoopStage =
+          std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+              zeroDepthConfig.composition.stages[1]);
+      rvrbotron::dsp::FeedbackLoop zeroDepthLoop(zeroDepthLoopStage);
+
+      const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, -1.0F};
+      const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
+      for (std::size_t frame = 0; frame < 2000; ++frame) {
+        std::array<rvrbotron::dsp::Sample, 2> zeroDepthOutput{};
+        std::array<rvrbotron::dsp::Sample, 2> omittedOutput{};
+        const auto& in = frame == 0 ? impulse : silence;
+        zeroDepthLoop.processFrame(in.data(), zeroDepthOutput.data());
+        omittedLoop.processFrame(in.data(), omittedOutput.data());
+        if (zeroDepthOutput != omittedOutput) {
+          std::cerr << "zero-depth Modulation output diverged from "
+                       "Modulation omitted at frame " << frame
+                    << " for shape index "
+                    << static_cast<int>(shape) << '\n';
+          return 1;
+        }
+      }
     }
   }
 

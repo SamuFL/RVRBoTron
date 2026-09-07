@@ -2,7 +2,9 @@
 
 #include "rvrbotron/dsp/PositionalRandom.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace rvrbotron::config {
 namespace {
@@ -42,10 +44,17 @@ std::uint64_t resolveModulationHeadroomSamples(
 }
 
 std::uint64_t resolveModulationBlockSizeBoundSamples(
-    const std::uint64_t shortestDelaySamples,
+    const std::vector<std::uint64_t>& delaysSamples,
+    const std::vector<bool>& channelModulated,
     const double excursionSamples) noexcept {
-  return static_cast<std::uint64_t>(
-      std::floor(static_cast<double>(shortestDelaySamples) - excursionSamples));
+  auto shortest = std::numeric_limits<double>::infinity();
+  for (std::size_t channel = 0; channel < delaysSamples.size(); ++channel) {
+    const auto instantaneous = channelModulated[channel]
+        ? static_cast<double>(delaysSamples[channel]) - excursionSamples
+        : static_cast<double>(delaysSamples[channel]);
+    shortest = std::min(shortest, instantaneous);
+  }
+  return static_cast<std::uint64_t>(std::floor(shortest));
 }
 
 } // namespace rvrbotron::config

@@ -1,12 +1,14 @@
 #include "rvrbotron/config/DampingResolution.h"
 
+#include "rvrbotron/dsp/MathConstants.h"
+
 #include <algorithm>
 #include <cmath>
 
 namespace rvrbotron::config {
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+using dsp::kPi;
 
 } // namespace
 
