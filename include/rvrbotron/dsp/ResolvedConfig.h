@@ -137,6 +137,18 @@ enum class ModulationInterpolation {
   lagrange3,
 };
 
+// A Modulation's per-Channel trajectory waveform (see docs/design/
+// reverb/stages/06-modulation.md's "Decorrelation and shape"):
+// `smoothedRandom` is Catmull-Rom interpolation between random targets;
+// `sine` and `triangle` are periodic. `rateHz` means the same thing for
+// all three -- one full target-grid cycle per 1/rateHz seconds -- so
+// comparing shapes at a fixed rate compares only the shapes.
+enum class ModulationShape {
+  smoothedRandom,
+  sine,
+  triangle,
+};
+
 // Resolved Modulation (see docs/design/reverb/stages/06-modulation.md,
 // issue #89): seeded per-Channel delay-time movement inside the Feedback
 // Loop, read through a fractional DelayLine interpolator. Disabled
@@ -158,6 +170,12 @@ struct ResolvedModulation {
   // otherwise empty Modulation object -- not a neutral default.
   double depthMs = 0.4;
   double rateHz = 0.7;
+  ModulationShape shape = ModulationShape::smoothedRandom;
+  // Proportion of Channels modulated, rounded up to the nearest Channel
+  // (see "Placement"'s "channelFraction is what tests it at the
+  // output"). 1.0 modulates every Channel; 0 disables Modulation for
+  // this stage, exactly like an explicit depthMs of 0.
+  double channelFraction = 1.0;
   ModulationInterpolation interpolation = ModulationInterpolation::lagrange3;
   // depthMs resolved to samples at this Composition's sample rate; 0 when
   // depthMs is 0.
@@ -181,6 +199,14 @@ struct ResolvedModulation {
   std::vector<std::uint64_t> channelSeeds;
   std::vector<double> channelTargetsPerSample;
   std::vector<double> channelPhases;
+  // The per-Channel bypass mask (see "What this forces on the
+  // architecture"'s "Identity is guaranteed by construction, not by
+  // arithmetic"): true for a Channel actually modulated -- the first
+  // ceil(channelFraction * N) entries of a positionally seeded fixed
+  // permutation, independent of delay ordering -- false for a Channel
+  // that keeps the cheaper integer read path. Empty exactly when the
+  // other three per-Channel vectors are (the resolved bypass).
+  std::vector<bool> channelModulated;
 };
 
 struct ResolvedFeedbackLoop {

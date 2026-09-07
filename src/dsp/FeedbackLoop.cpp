@@ -143,21 +143,24 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
   }
 
   // Resolution's own bypass (config::modulationFitsDelay et al.): an
-  // omitted Modulation object (config.modulation is nullopt) and an
-  // explicit zero depth (config.modulation holds a Modulation whose
-  // `depthMs` is zero) are different resolved representations, but they
-  // share the same runtime outcome here -- `modulation_` stays
-  // unconstructed either way, exactly like Damping's unity-ratio
-  // bypasses above. Every read/write below asks `modulation_` directly
+  // omitted Modulation object, an explicit zero depth, and a zero
+  // channelFraction are three different resolved representations, but
+  // they all share the same runtime outcome here -- `modulation_` stays
+  // unconstructed whenever resolution found no Channel to actually move
+  // (config.modulation->channelModulated empty), exactly like Damping's
+  // unity-ratio bypasses above. Every read/write below asks
+  // `modulation_` (and, per Channel, its own isModulated()) directly
   // rather than tracking a second, always-consistent bool.
-  if (config.modulation.has_value() && config.modulation->depthMs > 0.0) {
+  if (config.modulation.has_value() &&
+      !config.modulation->channelModulated.empty()) {
     const auto& modulation = *config.modulation;
     if (modulation.channelSeeds.size() != channels_ ||
         modulation.channelTargetsPerSample.size() != channels_ ||
-        modulation.channelPhases.size() != channels_) {
+        modulation.channelPhases.size() != channels_ ||
+        modulation.channelModulated.size() != channels_) {
       throw std::invalid_argument(
-          "Feedback Loop requires one resolved Modulation seed, rate, and "
-          "phase per Channel");
+          "Feedback Loop requires one resolved Modulation seed, rate, "
+          "phase, and bypass flag per Channel");
     }
     modulation_.emplace(modulation);
   }
@@ -172,7 +175,7 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
     Sample delayed;
     if (delay == 0) {
       delayed = Sample{0};
-    } else if (modulation_.has_value()) {
+    } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
       const auto lookback = modulation_->lookbackSamples(channel, delay);
       delayed = delayLine_.readFraction(channel, lookback);
     } else {

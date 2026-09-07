@@ -1,5 +1,6 @@
 #include "rvrbotron/dsp/Modulation.h"
 
+#include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 #include "rvrbotron/dsp/PositionalRandom.h"
 
@@ -47,30 +48,8 @@ double catmullRom(
        (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
-} // namespace
-
-Modulation::Modulation(const ResolvedModulation& config)
-    : channelSeeds_(config.channelSeeds),
-      channelTargetsPerSample_(config.channelTargetsPerSample),
-      channelPhases_(config.channelPhases),
-      excursionSamples_(config.excursionSamples) {}
-
-double Modulation::lookbackSamples(
-    const std::size_t channel, const std::uint64_t nominalDelaySamples) const noexcept {
-  // Each Channel's target grid is offset by its own positionally seeded
-  // phase (see resolution's kModulationPhaseUsage) before the +-10% rate
-  // spread ever separates the grids further, so no two Channels ever
-  // start reading the same point of their own (independently seeded)
-  // trajectory -- the third of the design doc's "Phase, rate spread and
-  // Channel selection each get their own usage tag" axes.
-  //
-  // rateHz >= 0 and frameIndex_ >= 0, so the rate term is never negative;
-  // adding a phase in [0, 1) cannot make `t` negative either, so the
-  // only target index ever needed below zero is exactly -1 (see
-  // targetValue's derivation).
-  const auto t =
-      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
-      channelPhases_[channel];
+double smoothedRandomTrajectory(
+    const std::uint64_t channelSeed, const double t) noexcept {
   const auto base = std::floor(t);
   const auto frac = t - base;
   // `rateHz` is only bounded below (>= 0); resolution places no upper
@@ -83,18 +62,82 @@ double Modulation::lookbackSamples(
   constexpr double kMaxTargetIndex = 9.0e18;
   const auto index = static_cast<std::int64_t>(
       std::clamp(base, -kMaxTargetIndex, kMaxTargetIndex));
-  const auto seed = channelSeeds_[channel];
-  const auto p0 = targetValue(seed, index - 1);
-  const auto p1 = targetValue(seed, index);
-  const auto p2 = targetValue(seed, index + 1);
-  const auto p3 = targetValue(seed, index + 2);
+  const auto p0 = targetValue(channelSeed, index - 1);
+  const auto p1 = targetValue(channelSeed, index);
+  const auto p2 = targetValue(channelSeed, index + 1);
+  const auto p3 = targetValue(channelSeed, index + 2);
   // Catmull-Rom can overshoot the [-1, 1] range of its control points for
   // non-monotonic data, which uniform random targets certainly are;
   // clamping keeps the trajectory within the Excursion the buffer was
   // actually sized for (see resolution's "Delay buffers need headroom"),
   // rather than requiring a larger, harder-to-reason-about margin.
-  const auto trajectory =
-      std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
+  return std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
+}
+
+// A period-1 sine, zero and rising at every integer `t` -- one full
+// cycle per target-grid step, so `rateHz` means the same thing here as
+// for `smoothedRandom` (see "Decorrelation and shape"). Reducing to a
+// fractional phase before calling sin() keeps the argument bounded
+// regardless of how large `t` has grown over a long render, rather than
+// losing precision to a huge, unreduced angle.
+double sineTrajectory(const double t) noexcept {
+  const auto phase = t - std::floor(t);
+  return std::sin(2.0 * kPi * phase);
+}
+
+// A period-1 triangle wave sharing sine's zero crossings and peak
+// locations (zero and rising at integer `t`, +1 at t + 0.25, -1 at
+// t + 0.75), so a `sine`-versus-`triangle` comparison at a fixed rate
+// differs only in shape, never in timing.
+double triangleTrajectory(const double t) noexcept {
+  const auto shifted = t + 0.25;
+  const auto shiftedPhase = shifted - std::floor(shifted);
+  return 1.0 - 4.0 * std::abs(shiftedPhase - 0.5);
+}
+
+} // namespace
+
+Modulation::Modulation(const ResolvedModulation& config)
+    : channelSeeds_(config.channelSeeds),
+      channelTargetsPerSample_(config.channelTargetsPerSample),
+      channelPhases_(config.channelPhases),
+      channelModulated_(config.channelModulated),
+      shape_(config.shape),
+      excursionSamples_(config.excursionSamples) {}
+
+bool Modulation::isModulated(const std::size_t channel) const noexcept {
+  return channelModulated_[channel];
+}
+
+double Modulation::lookbackSamples(
+    const std::size_t channel, const std::uint64_t nominalDelaySamples) const noexcept {
+  // Each Channel's target grid is offset by its own positionally seeded
+  // phase (see resolution's kModulationPhaseUsage) before the +-10% rate
+  // spread ever separates the grids further, so no two Channels ever
+  // start reading the same point of their own (independently seeded)
+  // trajectory -- the third of the design doc's "Phase, rate spread and
+  // Channel selection each get their own usage tag" axes. `rateHz`
+  // means the same thing for every shape: one full target-grid cycle
+  // per 1/rateHz seconds, computed identically here regardless of which
+  // waveform is sampled from it below.
+  //
+  // rateHz >= 0 and frameIndex_ >= 0, so the rate term is never negative;
+  // adding a phase in [0, 1) cannot make `t` negative either.
+  const auto t =
+      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
+      channelPhases_[channel];
+  double trajectory;
+  switch (shape_) {
+  case ModulationShape::smoothedRandom:
+    trajectory = smoothedRandomTrajectory(channelSeeds_[channel], t);
+    break;
+  case ModulationShape::sine:
+    trajectory = sineTrajectory(t);
+    break;
+  case ModulationShape::triangle:
+    trajectory = triangleTrajectory(t);
+    break;
+  }
   return static_cast<double>(nominalDelaySamples) +
       trajectory * excursionSamples_;
 }
@@ -111,7 +154,8 @@ std::size_t Modulation::ownedBytes() const noexcept {
   // adding sizeof(*this) here as well would double-count it.
   return ownedVectorBytes(channelSeeds_) +
       ownedVectorBytes(channelTargetsPerSample_) +
-      ownedVectorBytes(channelPhases_);
+      ownedVectorBytes(channelPhases_) +
+      ownedVectorBytes(channelModulated_);
 }
 
 } // namespace rvrbotron::dsp

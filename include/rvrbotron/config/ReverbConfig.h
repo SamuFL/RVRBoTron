@@ -91,15 +91,17 @@ struct DampingConfig {
 constexpr double kDefaultModulationDepthMs = 0.4;
 constexpr double kDefaultModulationRateHz = 0.7;
 
-// Scope is deliberately narrowed to what issue #89 ships: `smoothed-
-// random` shape (not yet a settable field), `lagrange3` interpolation,
-// every Channel modulated. `interpolation` already exists as a settable
-// field -- and its resolved value is already recorded as evidence -- so
-// later tickets extend dsp::ModulationInterpolation and this parser's
+// Issue #89 shipped `lagrange3` interpolation with every Channel always
+// modulated; issue #90 adds `shape` (all three waveforms) and
+// `channelFraction` (partial-Channel modulation). `interpolation` still
+// only accepts `lagrange3` -- `linear` and `allpass` are added by later
+// tickets that extend dsp::ModulationInterpolation and this parser's
 // accepted values without moving the field itself.
 struct ModulationConfig {
   std::optional<double> depthMs;
   std::optional<double> rateHz;
+  std::optional<dsp::ModulationShape> shape;
+  std::optional<double> channelFraction;
   std::optional<dsp::ModulationInterpolation> interpolation;
 };
 

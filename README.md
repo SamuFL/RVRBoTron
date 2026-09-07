@@ -373,24 +373,31 @@ to the baseline shown here:
 | `modulation` field | Values | Default | Notes |
 | --- | --- | --- | --- |
 | `depthMs` | finite number >= 0 | `0.4` | Peak Excursion, in milliseconds, above and below each Channel's nominal resolved delay. `0` disables movement -- a resolved bypass, bit-identical to `modulation` omitted, rather than an interpolator collapsing to identity. |
-| `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. |
+| `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. Means the same thing for every `shape`. |
+| `shape` | `"smoothed-random"` / `"sine"` / `"triangle"` | `"smoothed-random"` | The per-Channel trajectory waveform. `sine`'s periodicity becomes an audible regular wobble at a larger Excursion; `smoothed-random` (band-limited noise) has no period to lock onto. `triangle` shares `sine`'s zero crossings and peak locations, so comparing the two at a fixed `rateHz` compares only the shape. |
+| `channelFraction` | finite number in `[0, 1]` | `1.0` | Proportion of Channels modulated, rounded up. `0` disables Modulation for the stage, exactly like `depthMs: 0`. The modulated Channels are the first `ceil(channelFraction * N)` entries of a positionally seeded fixed permutation, independent of delay ordering -- raising the fraction only adds Channels, never reshuffling ones already selected. |
 | `interpolation` | `"lagrange3"` | `"lagrange3"` | The Feedback Loop delay line's fractional-read method. Only third-order Lagrange ships in this milestone (#89); `linear` and `allpass` are added by later tickets. |
 
-Movement is `smoothed-random`: Catmull-Rom interpolation between per-Channel
-targets drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`,
-reproducible from an integer target counter with no accumulated state. Every
-Channel carries a fixed, undocumented-as-a-parameter +-10% seeded rate
-spread and a positionally seeded phase offset so trajectories decorrelate
-across Channels; trajectories are not pinned at render start. Resolution
-reserves each modulated Channel's buffer as its nominal delay plus
-`depthMs` in samples (the Excursion) plus a fixed worst-case Interpolation
-margin, so DSP-owned memory does not move if a later ticket changes
-`interpolation`. A resolved delay too short to serve that Excursion plus
-margin is rejected before any audio is processed -- naming
-`modulation/depthMs` -- rather than overrunning intermittently at the
-modulation peak; the Feedback Loop's Block-size bound is derived from the
-Excursion-adjusted delays the same way. Resolved per-Channel trajectory
-seeds, rates, and phases, the resolved Excursion, and the Interpolation
+`smoothed-random` is Catmull-Rom interpolation between per-Channel targets
+drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`, reproducible
+from an integer target counter with no accumulated state. Every Channel
+carries a fixed, undocumented-as-a-parameter +-10% seeded rate spread and a
+positionally seeded phase offset so trajectories decorrelate across
+Channels regardless of `shape`; trajectories are not pinned at render
+start. A Channel `channelFraction` excludes keeps the cheaper integer read
+path with no Channel reordering, and the Excursion rejection rule below
+applies to modulated Channels only -- an excluded Channel may carry a delay
+too short to ever serve the requested Excursion without being rejected.
+Resolution reserves each *modulated* Channel's buffer as its nominal delay
+plus `depthMs` in samples (the Excursion) plus a fixed worst-case
+Interpolation margin, so DSP-owned memory does not move if a later ticket
+changes `interpolation`. A modulated Channel's resolved delay too short to
+serve that Excursion plus margin is rejected before any audio is processed
+-- naming `modulation/depthMs` -- rather than overrunning intermittently at
+the modulation peak; the Feedback Loop's Block-size bound is derived from
+the shortest *instantaneous* per-Channel delay across every Channel, moved
+or not. Resolved shape, per-Channel trajectory seeds, rates, and phases,
+the per-Channel bypass mask, the resolved Excursion, and the Interpolation
 margin are recorded in `resolved.json`.
 
 Each Channel's decay gain is solved independently from that Channel's own

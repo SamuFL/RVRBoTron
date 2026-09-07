@@ -32,7 +32,7 @@ def feedback_loop_stage(resolved: dict) -> dict:
     )
 
 
-def base_request(modulation=None) -> dict:
+def base_request(modulation=None, channels=2) -> dict:
     loop = {
         "type": "feedback-loop",
         "delayMinMs": 40.0,
@@ -50,7 +50,7 @@ def base_request(modulation=None) -> dict:
             "stages": [
                 {
                     "type": "split",
-                    "channels": 2,
+                    "channels": channels,
                     "strategy": "duplicate",
                     "normalisation": "energy",
                 },
@@ -130,12 +130,15 @@ def main():
         )
 
     # An included but otherwise empty Modulation object resolves the
-    # documented research baseline (depthMs 0.4, rateHz 0.7, lagrange3).
+    # documented research baseline (depthMs 0.4, rateHz 0.7,
+    # smoothed-random, channelFraction 1.0, lagrange3).
     baseline_resolved, _ = render("baseline", base_request({}))
     baseline_modulation = feedback_loop_stage(baseline_resolved)["modulation"]
     if (
         baseline_modulation["depthMs"] != 0.4
         or baseline_modulation["rateHz"] != 0.7
+        or baseline_modulation["shape"] != "smoothed-random"
+        or baseline_modulation["channelFraction"] != 1.0
         or baseline_modulation["interpolation"] != "lagrange3"
     ):
         raise AssertionError(
@@ -258,6 +261,124 @@ def main():
         raise AssertionError(
             f"unknown Modulation field was not named in the rejection: "
             f"{unknown_field.stderr}"
+        )
+
+    # sine and triangle shapes resolve and render end to end (issue #90),
+    # each producing output that actually differs from the unmodulated
+    # baseline.
+    for shape in ("sine", "triangle"):
+        shape_resolved, shape_wav = render(
+            f"shape-{shape}",
+            base_request({"depthMs": 5.0, "rateHz": 3.0, "shape": shape}),
+        )
+        shape_modulation = feedback_loop_stage(shape_resolved)["modulation"]
+        if shape_modulation["shape"] != shape:
+            raise AssertionError(
+                f"requested shape {shape!r} did not round-trip: "
+                f"{shape_modulation}"
+            )
+        if shape_wav == omitted_wav:
+            raise AssertionError(
+                f"{shape} Modulation rendered output identical to the "
+                f"unmodulated baseline"
+            )
+
+    # An unsupported shape value is rejected by name.
+    bad_shape_request = base_request({"shape": "square"})
+    bad_shape_path = workspace / "bad-shape-request.json"
+    bad_shape_path.write_text(json.dumps(bad_shape_request))
+    bad_shape = run(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        bad_shape_path,
+        "--output",
+        workspace / "bad-shape-result",
+    )
+    if bad_shape.returncode == 0:
+        raise AssertionError("renderer accepted an unsupported shape")
+    if "smoothed-random" not in bad_shape.stderr:
+        raise AssertionError(
+            f"unsupported shape was not rejected by name: {bad_shape.stderr}"
+        )
+
+    # channelFraction resolves the modulated Channels as the first
+    # ceil(fraction * N) entries of a positionally seeded fixed
+    # permutation (issue #90): raising the fraction only adds Channels,
+    # never reshuffling ones already selected.
+    quarter_resolved, _ = render(
+        "quarter-fraction",
+        base_request(
+            {"depthMs": 1.0, "channelFraction": 0.25}, channels=8
+        ),
+    )
+    quarter_loop = feedback_loop_stage(quarter_resolved)
+    quarter_mask = quarter_loop["modulation"]["channelModulated"]
+    if len(quarter_mask) != quarter_loop["channels"] or sum(quarter_mask) != 2:
+        raise AssertionError(
+            f"channelFraction 0.25 over 8 Channels did not resolve "
+            f"ceil(0.25 * 8) = 2 modulated Channels: {quarter_mask}"
+        )
+
+    half_resolved, _ = render(
+        "half-fraction",
+        base_request({"depthMs": 1.0, "channelFraction": 0.5}, channels=8),
+    )
+    half_mask = feedback_loop_stage(half_resolved)["modulation"][
+        "channelModulated"
+    ]
+    if sum(half_mask) != 4:
+        raise AssertionError(
+            f"channelFraction 0.5 over 8 Channels did not resolve "
+            f"ceil(0.5 * 8) = 4 modulated Channels: {half_mask}"
+        )
+    for channel, was_modulated in enumerate(quarter_mask):
+        if was_modulated and not half_mask[channel]:
+            raise AssertionError(
+                f"raising channelFraction dropped Channel {channel} that "
+                f"a smaller fraction had selected"
+            )
+
+    # channelFraction of 0 disables Modulation for the stage, bit-
+    # identical to Modulation omitted.
+    zero_fraction_resolved, zero_fraction_wav = render(
+        "zero-fraction",
+        base_request({"depthMs": 5.0, "channelFraction": 0.0}),
+    )
+    zero_fraction_modulation = feedback_loop_stage(zero_fraction_resolved)[
+        "modulation"
+    ]
+    if zero_fraction_modulation["channelModulated"]:
+        raise AssertionError(
+            f"channelFraction of 0 still resolved a non-empty bypass "
+            f"mask: {zero_fraction_modulation}"
+        )
+    if zero_fraction_wav != omitted_wav:
+        raise AssertionError(
+            "channelFraction of 0 rendered output was not bit-identical "
+            "to Modulation omitted"
+        )
+
+    # An out-of-range channelFraction is rejected.
+    bad_fraction_request = base_request({"channelFraction": 1.5})
+    bad_fraction_path = workspace / "bad-fraction-request.json"
+    bad_fraction_path.write_text(json.dumps(bad_fraction_request))
+    bad_fraction = run(
+        renderer,
+        "--input",
+        fixture,
+        "--config",
+        bad_fraction_path,
+        "--output",
+        workspace / "bad-fraction-result",
+    )
+    if bad_fraction.returncode == 0:
+        raise AssertionError("renderer accepted a channelFraction above 1")
+    if "channelFraction" not in bad_fraction.stderr:
+        raise AssertionError(
+            f"out-of-range channelFraction was not named in the "
+            f"rejection: {bad_fraction.stderr}"
         )
 
     # Repeat renders of an identical active-Modulation configuration are
