@@ -1957,6 +1957,7 @@ int main() {
     rvrbotron::dsp::ResolvedModulation boundaryModulationConfig;
     boundaryModulationConfig.channelSeeds = {987654321ULL};
     boundaryModulationConfig.channelTargetsPerSample = {0.9};
+    boundaryModulationConfig.channelPhases = {0.37};
     boundaryModulationConfig.excursionSamples = excursionSamples;
     rvrbotron::dsp::Modulation boundaryModulation(boundaryModulationConfig);
 
@@ -1986,6 +1987,7 @@ int main() {
     rvrbotron::dsp::ResolvedModulation frozenModulationConfig;
     frozenModulationConfig.channelSeeds = {12345ULL};
     frozenModulationConfig.channelTargetsPerSample = {0.0};
+    frozenModulationConfig.channelPhases = {0.61};
     frozenModulationConfig.excursionSamples = 7.5;
     rvrbotron::dsp::Modulation frozenModulation(frozenModulationConfig);
     const auto firstLookback = frozenModulation.lookbackSamples(0, 100);
@@ -2002,6 +2004,55 @@ int main() {
       std::cerr << "Zero-rate Modulation trajectory landed exactly on the "
                    "nominal delay; this fixture's seed did not exercise "
                    "the static detune spread\n";
+      return 1;
+    }
+  }
+
+  // An extreme, but validly resolved (finite, >= 0), per-Channel rate
+  // pushes the target counter far beyond what int64_t can represent
+  // after only a handful of frames (issue #89, PR #97 review): the
+  // lookback must stay finite rather than inheriting undefined behavior
+  // from an out-of-range double-to-int64_t conversion.
+  {
+    rvrbotron::dsp::ResolvedModulation extremeRateConfig;
+    extremeRateConfig.channelSeeds = {7ULL};
+    extremeRateConfig.channelTargetsPerSample = {1.0e20};
+    extremeRateConfig.channelPhases = {0.0};
+    extremeRateConfig.excursionSamples = 3.0;
+    rvrbotron::dsp::Modulation extremeRateModulation(extremeRateConfig);
+    for (int frame = 0; frame < 5; ++frame) {
+      const auto lookback =
+          extremeRateModulation.lookbackSamples(0, 50);
+      if (!std::isfinite(lookback)) {
+        std::cerr << "An extreme resolved rate produced a non-finite "
+                     "lookback at frame " << frame << '\n';
+        return 1;
+      }
+      extremeRateModulation.advanceFrame();
+    }
+  }
+
+  // Per-Channel phase decorrelation (issue #89, PR #97 review): two
+  // Channels sharing the same trajectory seed and rate but resolved to
+  // different phases must read different lookbacks at the very first
+  // frame, isolating the phase term's own effect from the seed's --
+  // proof that phase actually shifts each Channel's starting position on
+  // its own trajectory rather than being a documented no-op.
+  {
+    rvrbotron::dsp::ResolvedModulation sharedSeedConfig;
+    sharedSeedConfig.channelSeeds = {42ULL, 42ULL};
+    sharedSeedConfig.channelTargetsPerSample = {0.05, 0.05};
+    sharedSeedConfig.channelPhases = {0.0, 0.5};
+    sharedSeedConfig.excursionSamples = 10.0;
+    rvrbotron::dsp::Modulation sharedSeedModulation(sharedSeedConfig);
+    const auto firstChannelLookback =
+        sharedSeedModulation.lookbackSamples(0, 200);
+    const auto secondChannelLookback =
+        sharedSeedModulation.lookbackSamples(1, 200);
+    if (firstChannelLookback == secondChannelLookback) {
+      std::cerr << "Channels with the same trajectory seed and rate but "
+                   "different resolved phases read identical lookbacks "
+                   "at frame 0\n";
       return 1;
     }
   }

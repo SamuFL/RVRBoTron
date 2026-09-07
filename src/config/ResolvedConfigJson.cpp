@@ -229,6 +229,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"interpolationMarginSamples", modulation.interpolationMarginSamples},
         {"channelSeeds", modulation.channelSeeds},
         {"channelTargetsPerSample", modulation.channelTargetsPerSample},
+        {"channelPhases", modulation.channelPhases},
     };
   }
   return document;

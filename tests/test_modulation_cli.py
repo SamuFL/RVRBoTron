@@ -109,10 +109,14 @@ def main():
     zero_modulation = zero_loop["modulation"]
     if zero_modulation["depthMs"] != 0.0:
         raise AssertionError(f"unexpected resolved depthMs: {zero_modulation}")
-    if zero_modulation["channelSeeds"] or zero_modulation["channelTargetsPerSample"]:
+    if (
+        zero_modulation["channelSeeds"]
+        or zero_modulation["channelTargetsPerSample"]
+        or zero_modulation["channelPhases"]
+    ):
         raise AssertionError(
-            f"zero-depth Modulation resolved per-Channel seeds/rates it "
-            f"should have bypassed: {zero_modulation}"
+            f"zero-depth Modulation resolved per-Channel seeds/rates/phases "
+            f"it should have bypassed: {zero_modulation}"
         )
     if zero_loop["bufferSizes"] != omitted_loop["bufferSizes"]:
         raise AssertionError(
@@ -152,10 +156,11 @@ def main():
     if (
         len(active_modulation["channelSeeds"]) != channels
         or len(active_modulation["channelTargetsPerSample"]) != channels
+        or len(active_modulation["channelPhases"]) != channels
     ):
         raise AssertionError(
-            f"active Modulation did not resolve one seed/rate per Channel: "
-            f"{active_modulation}"
+            f"active Modulation did not resolve one seed/rate/phase per "
+            f"Channel: {active_modulation}"
         )
     expected_excursion = 5.0 * 48000 / 1000.0
     if abs(active_modulation["excursionSamples"] - expected_excursion) > 1e-9:

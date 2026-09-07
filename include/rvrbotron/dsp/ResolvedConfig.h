@@ -168,14 +168,19 @@ struct ResolvedModulation {
   // the method changes.
   std::uint64_t interpolationMarginSamples = 0;
   // Per-Channel derived trajectory seed (a pure function of this
-  // Composition's own seed and the Channel index) and per-Channel
-  // resolved trajectory rate -- rateHz times that Channel's own fixed
-  // +-10% seeded spread, already divided by the sample rate so the DSP
-  // layer works in per-sample units like every other resolved rate in
-  // this codebase. Both empty when depthMs is 0 (the resolved bypass;
-  // see "Identity is guaranteed by construction, not by arithmetic").
+  // Composition's own seed and the Channel index), per-Channel resolved
+  // trajectory rate -- rateHz times that Channel's own fixed +-10%
+  // seeded spread, already divided by the sample rate so the DSP layer
+  // works in per-sample units like every other resolved rate in this
+  // codebase -- and per-Channel resolved phase, a positionally seeded
+  // offset in [0, 1) added to that Channel's target-grid position (see
+  // "Decorrelation and shape"'s "Phase, rate spread and Channel
+  // selection each get their own usage tag"). All three empty when
+  // depthMs is 0 (the resolved bypass; see "Identity is guaranteed by
+  // construction, not by arithmetic").
   std::vector<std::uint64_t> channelSeeds;
   std::vector<double> channelTargetsPerSample;
+  std::vector<double> channelPhases;
 };
 
 struct ResolvedFeedbackLoop {

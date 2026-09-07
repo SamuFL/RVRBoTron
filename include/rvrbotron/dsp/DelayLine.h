@@ -40,16 +40,18 @@ public:
   // Computed from this Channel's own delay rather than by directly
   // indexing the write position, so this stays correct even for a
   // Channel whose resolved buffer reserves headroom beyond its delay
-  // (Modulation's Excursion and Interpolation margin) -- callers that
-  // never touch a headroomed Channel's integer path pay for exactly one
-  // cheap wrap-around subtraction more than a bare index, not for
-  // tracking which Channels happen to have headroom. For a Channel with
-  // no headroom (buffer size == delay), the wrap is a no-op and this
-  // reads the same slot write() will next occupy, as it always has.
+  // (Modulation's Excursion and Interpolation margin). A branch and a
+  // subtraction, not a runtime division: the constructor's own invariant
+  // (buffer size >= delay) guarantees `position - delay` wraps around at
+  // most once, so a single comparison covers it exactly, keeping this
+  // path as cheap as a bare index for the common case of no headroom
+  // (buffer size == delay), where the wrap never triggers at all.
   [[nodiscard]] Sample read(const std::size_t channel) const noexcept {
     const auto ring = bufferSizes_[channel];
+    const auto delay = delays_[channel];
+    const auto position = positions_[channel];
     const auto readPosition =
-        (positions_[channel] + ring - delays_[channel]) % ring;
+        position >= delay ? position - delay : ring - (delay - position);
     return storage_[offsets_[channel] + readPosition];
   }
 

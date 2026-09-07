@@ -873,7 +873,8 @@ dsp::ResolvedModulation parseResolvedModulation(
        "excursionSamples",
        "interpolationMarginSamples",
        "channelSeeds",
-       "channelTargetsPerSample"});
+       "channelTargetsPerSample",
+       "channelPhases"});
   for (const auto field :
        {"depthMs",
         "rateHz",
@@ -881,7 +882,8 @@ dsp::ResolvedModulation parseResolvedModulation(
         "excursionSamples",
         "interpolationMarginSamples",
         "channelSeeds",
-        "channelTargetsPerSample"}) {
+        "channelTargetsPerSample",
+        "channelPhases"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedModulation modulation;
@@ -901,6 +903,8 @@ dsp::ResolvedModulation parseResolvedModulation(
   modulation.channelTargetsPerSample = parseNumberArray(
       value.at("channelTargetsPerSample"),
       std::string(path) + "/channelTargetsPerSample");
+  modulation.channelPhases = parseNumberArray(
+      value.at("channelPhases"), std::string(path) + "/channelPhases");
   return modulation;
 }
 

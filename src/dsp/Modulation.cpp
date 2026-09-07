@@ -52,30 +52,37 @@ double catmullRom(
 Modulation::Modulation(const ResolvedModulation& config)
     : channelSeeds_(config.channelSeeds),
       channelTargetsPerSample_(config.channelTargetsPerSample),
+      channelPhases_(config.channelPhases),
       excursionSamples_(config.excursionSamples) {}
 
 double Modulation::lookbackSamples(
     const std::size_t channel, const std::uint64_t nominalDelaySamples) const noexcept {
-  // Every Channel's target grid starts node-aligned at frame 0 (t == 0
-  // for every Channel); there is no separate phase offset. For
-  // `smoothed-random` that costs nothing: each Channel already draws
-  // from its own distinct seed (see resolution's kModulationSeedUsage),
-  // so its target *values* are independent of every other Channel's at
-  // every grid point, which is the whole of what decorrelation means for
-  // control points drawn from noise rather than from a periodic
-  // waveform. A dedicated phase usage tag, as the design doc's "Phase,
-  // rate spread and Channel selection each get their own usage tag"
-  // anticipates, becomes meaningful once a periodic shape (`sine`,
-  // `triangle`) exists to be out of phase -- added in #90.
+  // Each Channel's target grid is offset by its own positionally seeded
+  // phase (see resolution's kModulationPhaseUsage) before the +-10% rate
+  // spread ever separates the grids further, so no two Channels ever
+  // start reading the same point of their own (independently seeded)
+  // trajectory -- the third of the design doc's "Phase, rate spread and
+  // Channel selection each get their own usage tag" axes.
   //
-  // rateHz >= 0 and frameIndex_ >= 0, so `t` is never negative; the only
-  // target index ever needed below zero is exactly -1, at the very start
-  // of a render (see targetValue's derivation).
+  // rateHz >= 0 and frameIndex_ >= 0, so the rate term is never negative;
+  // adding a phase in [0, 1) cannot make `t` negative either, so the
+  // only target index ever needed below zero is exactly -1 (see
+  // targetValue's derivation).
   const auto t =
-      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel];
+      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
+      channelPhases_[channel];
   const auto base = std::floor(t);
   const auto frac = t - base;
-  const auto index = static_cast<std::int64_t>(base);
+  // `rateHz` is only bounded below (>= 0); resolution places no upper
+  // bound on it, so `base` could in principle exceed what an int64_t can
+  // represent. Clamping keeps the cast (and the +1/+2 stencil offsets
+  // below) well-defined for every resolved value rather than relying on
+  // a `rateHz` no reasonable render would ever reach staying in range by
+  // chance (see PR #97 review) -- comfortably inside int64_t's range on
+  // both sides, with headroom for the stencil's own +2.
+  constexpr double kMaxTargetIndex = 9.0e18;
+  const auto index = static_cast<std::int64_t>(
+      std::clamp(base, -kMaxTargetIndex, kMaxTargetIndex));
   const auto seed = channelSeeds_[channel];
   const auto p0 = targetValue(seed, index - 1);
   const auto p1 = targetValue(seed, index);
@@ -97,8 +104,14 @@ void Modulation::advanceFrame() noexcept {
 }
 
 std::size_t Modulation::ownedBytes() const noexcept {
-  return sizeof(*this) + ownedVectorBytes(channelSeeds_) +
-      ownedVectorBytes(channelTargetsPerSample_);
+  // Backing-vector allocations only, mirroring DelayLine::
+  // ownedStorageBytes() -- a containing FeedbackLoop owns this object's
+  // own in-place storage (it holds Modulation by value inside an
+  // std::optional, not by pointer) through its own sizeof(*this), so
+  // adding sizeof(*this) here as well would double-count it.
+  return ownedVectorBytes(channelSeeds_) +
+      ownedVectorBytes(channelTargetsPerSample_) +
+      ownedVectorBytes(channelPhases_);
 }
 
 } // namespace rvrbotron::dsp

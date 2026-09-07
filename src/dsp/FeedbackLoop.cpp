@@ -142,19 +142,22 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
         lowShelfPrevOutput_);
   }
 
-  // Resolution's own bypass (config::modulationFitsDelay et al.): depth
-  // zero and an omitted object both resolve to a Modulation whose
-  // `depthMs` is zero, so a single check here covers both, exactly like
-  // Damping's unity-ratio bypasses above. `modulation_` staying
-  // unconstructed *is* the bypass flag -- every read/write below asks
-  // it directly rather than tracking a second, always-consistent bool.
+  // Resolution's own bypass (config::modulationFitsDelay et al.): an
+  // omitted Modulation object (config.modulation is nullopt) and an
+  // explicit zero depth (config.modulation holds a Modulation whose
+  // `depthMs` is zero) are different resolved representations, but they
+  // share the same runtime outcome here -- `modulation_` stays
+  // unconstructed either way, exactly like Damping's unity-ratio
+  // bypasses above. Every read/write below asks `modulation_` directly
+  // rather than tracking a second, always-consistent bool.
   if (config.modulation.has_value() && config.modulation->depthMs > 0.0) {
     const auto& modulation = *config.modulation;
     if (modulation.channelSeeds.size() != channels_ ||
-        modulation.channelTargetsPerSample.size() != channels_) {
+        modulation.channelTargetsPerSample.size() != channels_ ||
+        modulation.channelPhases.size() != channels_) {
       throw std::invalid_argument(
-          "Feedback Loop requires one resolved Modulation seed and rate "
-          "per Channel");
+          "Feedback Loop requires one resolved Modulation seed, rate, and "
+          "phase per Channel");
     }
     modulation_.emplace(modulation);
   }

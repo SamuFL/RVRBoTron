@@ -940,12 +940,15 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
 
         modulation.channelSeeds.reserve(channels);
         modulation.channelTargetsPerSample.reserve(channels);
+        modulation.channelPhases.reserve(channels);
         for (std::uint32_t channel = 0; channel < channels; ++channel) {
           modulation.channelSeeds.push_back(dsp::positionalSplitMix64V1(
               seed, kModulationSeedUsage, 0, channel));
           const auto spread = resolveModulationRateSpread(seed, channel);
           modulation.channelTargetsPerSample.push_back(
               modulation.rateHz * spread / sampleRate);
+          modulation.channelPhases.push_back(
+              resolveModulationPhase(seed, channel));
         }
 
         // Delay buffers reserve Excursion plus the fixed Interpolation
@@ -2059,6 +2062,8 @@ void validateFeedbackLoopStage(
       requireModulationChannelValues(
           modulation.channelTargetsPerSample.size(),
           "/channelTargetsPerSample");
+      requireModulationChannelValues(
+          modulation.channelPhases.size(), "/channelPhases");
       const auto headroomSamples =
           resolveModulationHeadroomSamples(modulation.excursionSamples);
       for (std::uint32_t channel = 0; channel < channels; ++channel) {
@@ -2093,6 +2098,14 @@ void validateFeedbackLoopStage(
               "expected rateHz times that Channel's own fixed +-10% "
               "seeded spread, divided by the sample rate");
         }
+        const auto expectedPhase =
+            resolveModulationPhase(resolved.seed, channel);
+        if (!std::isfinite(modulation.channelPhases[channel]) ||
+            modulation.channelPhases[channel] != expectedPhase) {
+          fail(
+              modulationPath + "/channelPhases",
+              "expected the derived per-Channel positional phase");
+        }
         const auto expectedBufferSize =
             feedbackLoop.delaysSamples[channel] + headroomSamples;
         if (feedbackLoop.bufferSizes[channel] != expectedBufferSize) {
@@ -2114,11 +2127,12 @@ void validateFeedbackLoopStage(
       }
     } else {
       if (!modulation.channelSeeds.empty() ||
-          !modulation.channelTargetsPerSample.empty()) {
+          !modulation.channelTargetsPerSample.empty() ||
+          !modulation.channelPhases.empty()) {
         fail(
             modulationPath,
-            "expected no per-Channel trajectory seeds or rates when "
-            "depthMs is zero -- the resolved bypass");
+            "expected no per-Channel trajectory seeds, rates, or phases "
+            "when depthMs is zero -- the resolved bypass");
       }
       for (std::uint32_t channel = 0; channel < channels; ++channel) {
         if (feedbackLoop.bufferSizes[channel] !=

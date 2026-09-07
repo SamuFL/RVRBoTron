@@ -15,7 +15,8 @@ namespace rvrbotron::dsp {
 // targets drawn uniformly in [-1, +1], a new target every 1/rateHz --
 // reproducible from an integer target counter with no accumulated state.
 // Decorrelation across Channels is structural: each Channel draws from
-// its own seed (`channelSeeds`) and moves at its own resolved rate
+// its own seed (`channelSeeds`), starts at its own resolved phase
+// (`channelPhases`), and moves at its own resolved rate
 // (`channelTargetsPerSample`, already carrying the fixed +-10% seeded
 // spread), so trajectories are never pinned to a shared start value.
 //
@@ -26,10 +27,11 @@ namespace rvrbotron::dsp {
 // by construction, not by arithmetic").
 class Modulation {
 public:
-  // `config.channelSeeds` and `config.channelTargetsPerSample` must each
-  // carry one entry per Channel; construct this only for a stage whose
-  // Modulation is actually active (config.depthMs > 0), which is exactly
-  // when resolution populates both.
+  // `config.channelSeeds`, `config.channelTargetsPerSample` and
+  // `config.channelPhases` must each carry one entry per Channel;
+  // construct this only for a stage whose Modulation is actually active
+  // (config.depthMs > 0), which is exactly when resolution populates all
+  // three.
   explicit Modulation(const ResolvedModulation& config);
 
   // This Channel's current fractional lookback -- `nominalDelaySamples`
@@ -45,11 +47,16 @@ public:
   // that frame.
   void advanceFrame() noexcept;
 
+  // The backing-vector allocations only. A containing FeedbackLoop owns
+  // this object's own in-place storage (held by value inside an
+  // std::optional, not by pointer) through its own sizeof(*this), the
+  // same convention DelayLine::ownedStorageBytes() documents.
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:
   std::vector<std::uint64_t> channelSeeds_;
   std::vector<double> channelTargetsPerSample_;
+  std::vector<double> channelPhases_;
   double excursionSamples_;
   std::uint64_t frameIndex_ = 0;
 };

@@ -380,17 +380,18 @@ Movement is `smoothed-random`: Catmull-Rom interpolation between per-Channel
 targets drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`,
 reproducible from an integer target counter with no accumulated state. Every
 Channel carries a fixed, undocumented-as-a-parameter +-10% seeded rate
-spread so trajectories decorrelate across Channels; trajectories are not
-pinned at render start. Resolution reserves each modulated Channel's buffer
-as its nominal delay plus `depthMs` in samples (the Excursion) plus a fixed
-worst-case Interpolation margin, so DSP-owned memory does not move if a
-later ticket changes `interpolation`. A resolved delay too short to serve
-that Excursion plus margin is rejected before any audio is processed --
-naming `modulation/depthMs` -- rather than overrunning intermittently at the
+spread and a positionally seeded phase offset so trajectories decorrelate
+across Channels; trajectories are not pinned at render start. Resolution
+reserves each modulated Channel's buffer as its nominal delay plus
+`depthMs` in samples (the Excursion) plus a fixed worst-case Interpolation
+margin, so DSP-owned memory does not move if a later ticket changes
+`interpolation`. A resolved delay too short to serve that Excursion plus
+margin is rejected before any audio is processed -- naming
+`modulation/depthMs` -- rather than overrunning intermittently at the
 modulation peak; the Feedback Loop's Block-size bound is derived from the
 Excursion-adjusted delays the same way. Resolved per-Channel trajectory
-seeds and rates, the resolved Excursion, and the Interpolation margin are
-recorded in `resolved.json`.
+seeds, rates, and phases, the resolved Excursion, and the Interpolation
+margin are recorded in `resolved.json`.
 
 Each Channel's decay gain is solved independently from that Channel's own
 loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate

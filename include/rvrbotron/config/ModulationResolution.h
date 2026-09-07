@@ -28,6 +28,16 @@ constexpr std::uint64_t kModulationInterpolationMarginSamples = 3;
 [[nodiscard]] double resolveModulationRateSpread(
     std::uint64_t seed, std::uint32_t channel) noexcept;
 
+// This Channel's resolved phase: a positionally seeded offset in
+// [0, 1), added to that Channel's target-grid position before the rate
+// spread above ever separates the grids further (see "Decorrelation and
+// shape"'s "Phase, rate spread and Channel selection each get their own
+// usage tag"). Seeded independently of the rate spread and of the
+// trajectory seed itself, from this Composition's own seed and the
+// Channel index.
+[[nodiscard]] double resolveModulationPhase(
+    std::uint64_t seed, std::uint32_t channel) noexcept;
+
 // Whether a resolved per-Channel delay safely serves the requested
 // Excursion plus the fixed Interpolation margin above -- the rejection
 // gate for "The Block-size bound becomes modulation-aware": false means
