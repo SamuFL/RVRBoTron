@@ -83,6 +83,26 @@ struct DampingConfig {
   std::optional<double> lowHz;
 };
 
+// Research-baseline defaults for an included-but-empty Modulation object
+// on the Feedback Loop (see docs/design/reverb/stages/06-modulation.md
+// and issue #89): a meaningful research baseline rather than a neutral
+// product default -- explicit zero depth remains available for identity
+// experiments.
+constexpr double kDefaultModulationDepthMs = 0.4;
+constexpr double kDefaultModulationRateHz = 0.7;
+
+// Scope is deliberately narrowed to what issue #89 ships: `smoothed-
+// random` shape (not yet a settable field), `lagrange3` interpolation,
+// every Channel modulated. `interpolation` already exists as a settable
+// field -- and its resolved value is already recorded as evidence -- so
+// later tickets extend dsp::ModulationInterpolation and this parser's
+// accepted values without moving the field itself.
+struct ModulationConfig {
+  std::optional<double> depthMs;
+  std::optional<double> rateHz;
+  std::optional<dsp::ModulationInterpolation> interpolation;
+};
+
 struct FeedbackLoopConfig {
   std::optional<double> delayMinMs;
   std::optional<double> delayMaxMs;
@@ -98,6 +118,10 @@ struct FeedbackLoopConfig {
   // output; an included empty object resolves to the research baseline
   // (see DampingConfig and issue #75).
   std::optional<DampingConfig> damping;
+  // Omitted (nullopt) disables Modulation and preserves existing
+  // rendered output; an included empty object resolves to the research
+  // baseline above (see ModulationConfig and issue #89).
+  std::optional<ModulationConfig> modulation;
 };
 
 using StageConfig = std::

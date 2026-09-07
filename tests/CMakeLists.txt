@@ -11,7 +11,7 @@ add_executable(test_positional_random
   test_positional_random.cpp
 )
 
-target_link_libraries(test_positional_random PRIVATE rvrbotron_config)
+target_link_libraries(test_positional_random PRIVATE rvrbotron_dsp)
 target_compile_features(test_positional_random PRIVATE cxx_std_17)
 
 add_test(NAME positional_random_vectors COMMAND test_positional_random)
@@ -74,6 +74,16 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/feedback-loop-render
     ${RVRBOTRON_TEST_SAMPLE_BITS}
+)
+
+add_test(
+  NAME modulation_render
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_modulation_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/modulation-render
 )
 
 add_test(

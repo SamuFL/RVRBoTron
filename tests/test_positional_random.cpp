@@ -1,13 +1,13 @@
-#include "rvrbotron/config/PositionalRandom.h"
+#include "rvrbotron/dsp/PositionalRandom.h"
 
 #include <array>
 #include <cstdint>
 #include <iostream>
 
 int main() {
-  using rvrbotron::config::positionalSplitMix64V1;
-  using rvrbotron::config::positionalUnitDoubleV1;
-  using rvrbotron::config::splitMix64;
+  using rvrbotron::dsp::positionalSplitMix64V1;
+  using rvrbotron::dsp::positionalUnitDoubleV1;
+  using rvrbotron::dsp::splitMix64;
 
   const std::array<std::pair<std::uint64_t, std::uint64_t>, 4>
       splitMixVectors{{

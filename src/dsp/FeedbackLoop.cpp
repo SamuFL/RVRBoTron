@@ -141,6 +141,23 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
         lowShelfPrevInput_,
         lowShelfPrevOutput_);
   }
+
+  // Resolution's own bypass (config::modulationFitsDelay et al.): depth
+  // zero and an omitted object both resolve to a Modulation whose
+  // `depthMs` is zero, so a single check here covers both, exactly like
+  // Damping's unity-ratio bypasses above. `modulation_` staying
+  // unconstructed *is* the bypass flag -- every read/write below asks
+  // it directly rather than tracking a second, always-consistent bool.
+  if (config.modulation.has_value() && config.modulation->depthMs > 0.0) {
+    const auto& modulation = *config.modulation;
+    if (modulation.channelSeeds.size() != channels_ ||
+        modulation.channelTargetsPerSample.size() != channels_) {
+      throw std::invalid_argument(
+          "Feedback Loop requires one resolved Modulation seed and rate "
+          "per Channel");
+    }
+    modulation_.emplace(modulation);
+  }
 }
 
 FeedbackLoop::~FeedbackLoop() = default;
@@ -149,7 +166,15 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
                                 Sample* const outputs) noexcept {
   for (std::size_t channel = 0; channel < channels_; ++channel) {
     const auto delay = delayLine_.delaySamples(channel);
-    const auto delayed = delay == 0 ? Sample{0} : delayLine_.read(channel);
+    Sample delayed;
+    if (delay == 0) {
+      delayed = Sample{0};
+    } else if (modulation_.has_value()) {
+      const auto lookback = modulation_->lookbackSamples(channel, delay);
+      delayed = delayLine_.readFraction(channel, lookback);
+    } else {
+      delayed = delayLine_.read(channel);
+    }
     outputs[channel] = delayed;
     fedBack_[channel] = delayed * gains_[channel];
   }
@@ -191,6 +216,10 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
     delayLine_.write(
         channel, flushDenormal(inputs[channel] + fedBack_[channel]));
   }
+
+  if (modulation_.has_value()) {
+    modulation_->advanceFrame();
+  }
 }
 
 std::size_t FeedbackLoop::channelCount() const noexcept {
@@ -216,7 +245,8 @@ std::size_t FeedbackLoop::ownedBytes() const noexcept {
          ownedVectorBytes(lowShelfB0_) + ownedVectorBytes(lowShelfB1_) +
          ownedVectorBytes(lowShelfA1_) +
          ownedVectorBytes(lowShelfPrevInput_) +
-         ownedVectorBytes(lowShelfPrevOutput_);
+         ownedVectorBytes(lowShelfPrevOutput_) +
+         (modulation_.has_value() ? modulation_->ownedBytes() : 0);
 }
 
 } // namespace rvrbotron::dsp

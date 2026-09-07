@@ -1,12 +1,14 @@
 #pragma once
 
 #include "rvrbotron/dsp/DelayLine.h"
+#include "rvrbotron/dsp/Modulation.h"
 #include "rvrbotron/dsp/ResolvedConfig.h"
 #include "rvrbotron/dsp/Sample.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace rvrbotron::dsp {
@@ -67,6 +69,14 @@ private:
   std::vector<Sample> lowShelfA1_;
   std::vector<Sample> lowShelfPrevInput_;
   std::vector<Sample> lowShelfPrevOutput_;
+
+  // Seeded delay-time movement (see docs/design/reverb/stages/
+  // 06-modulation.md and issue #89): resolved bypass at zero depth or an
+  // omitted Modulation object, exactly like Damping's `*Bypassed_` flags
+  // above -- `modulation_` stays unconstructed and every read/write below
+  // takes the cheaper unmodulated DelayLine path entirely, rather than
+  // relying on Modulation's own arithmetic to collapse to identity.
+  std::optional<Modulation> modulation_;
 };
 
 } // namespace rvrbotron::dsp

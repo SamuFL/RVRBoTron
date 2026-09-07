@@ -1,0 +1,54 @@
+#pragma once
+
+#include <cstdint>
+
+namespace rvrbotron::config {
+
+// The fixed worst-case Interpolation margin, in samples (see docs/design/
+// reverb/stages/06-modulation.md's "What this forces on the
+// architecture"): third-order Lagrange's four-point stencil reaches 2
+// samples beyond the nominal Excursion bound on the far (longer-lookback)
+// side, plus 1 sample of floor()-rounding slack applied symmetrically on
+// both sides. Fixed regardless of the configured interpolation method,
+// so DSP-owned memory does not change when the method changes (`linear`
+// and `allpass` arrive in later tickets, both needing no more headroom
+// than this).
+constexpr std::uint64_t kModulationInterpolationMarginSamples = 3;
+
+// Peak per-Channel Excursion, in samples, for a requested `depthMs` at
+// this Composition's sample rate (see "Depth and rate multiply").
+// `depthMs` must be finite and >= 0; `sampleRateHz` finite and > 0.
+[[nodiscard]] double resolveExcursionSamples(
+    double depthMs, double sampleRateHz) noexcept;
+
+// The fixed +-10% per-Channel rate spread (see "Decorrelation and
+// shape"): a documented constant, not a parameter, seeded positionally
+// from this Composition's own seed and the Channel index so it never
+// reshuffles when unrelated configuration changes.
+[[nodiscard]] double resolveModulationRateSpread(
+    std::uint64_t seed, std::uint32_t channel) noexcept;
+
+// Whether a resolved per-Channel delay safely serves the requested
+// Excursion plus the fixed Interpolation margin above -- the rejection
+// gate for "The Block-size bound becomes modulation-aware": false means
+// the configuration must be rejected before construction rather than
+// risking an overrun at the modulation peak.
+[[nodiscard]] bool modulationFitsDelay(
+    std::uint64_t delaySamples, double excursionSamples) noexcept;
+
+// The per-Channel buffer headroom an active Modulation reserves beyond
+// its nominal resolved delay -- Excursion, rounded up, plus the fixed
+// Interpolation margin (see "Delay buffers need headroom"). Shared by
+// resolution and its own validation so the two formulas can never drift
+// apart.
+[[nodiscard]] std::uint64_t resolveModulationHeadroomSamples(
+    double excursionSamples) noexcept;
+
+// The modulation-aware Block-size bound: the shortest resolved
+// per-Channel delay less the Excursion applied to it (see "The
+// Block-size bound becomes modulation-aware"), rounded down so the bound
+// never overstates what is safely servable.
+[[nodiscard]] std::uint64_t resolveModulationBlockSizeBoundSamples(
+    std::uint64_t shortestDelaySamples, double excursionSamples) noexcept;
+
+} // namespace rvrbotron::config
