@@ -401,14 +401,24 @@ std::vector<bool> resolveModulationChannelMask(
     const double channelFraction) {
   const auto permutation = seededPermutation(
       seed, kModulationChannelSelectionUsage, 0, channels);
-  // ceil(channelFraction * channels): any non-zero fraction modulates at
-  // least one Channel (ceil of a positive value is never zero), and
-  // channelFraction == 1.0 modulates exactly `channels` -- both exact,
-  // since `channels` is small enough to represent losslessly as double.
+  // ceil(channelFraction * channels), with a small absolute tolerance
+  // subtracted first: multiplying by an integer can round the exact
+  // product a few ULPs above the intended integer (0.14 * 100 ==
+  // 14.000000000000002 in binary64), which would otherwise ceil to one
+  // Channel more than documented (PR #98 review). The tolerance is far
+  // too small to swallow any fractional intent a human would actually
+  // type. `std::max(1, ...)` keeps any non-zero fraction modulating at
+  // least one Channel even for a channelFraction small enough that the
+  // tolerance would otherwise round it below one; channelFraction ==
+  // 1.0 still modulates exactly `channels`.
+  constexpr double kChannelFractionTolerance = 1e-9;
+  const auto rawCount = channelFraction * static_cast<double>(channels);
   const auto modulatedCount = std::min(
       channels,
-      static_cast<std::uint32_t>(
-          std::ceil(channelFraction * static_cast<double>(channels))));
+      std::max(
+          std::uint32_t{1},
+          static_cast<std::uint32_t>(
+              std::ceil(rawCount - kChannelFractionTolerance))));
   std::vector<bool> mask(channels, false);
   for (std::uint32_t index = 0; index < modulatedCount; ++index) {
     mask[permutation[index]] = true;

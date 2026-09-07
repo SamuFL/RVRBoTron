@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -2125,21 +2126,31 @@ int main() {
   }
 
   // The fixed +-10% per-Channel rate spread applies to every shape
-  // (issue #90): resolving `sine` still gives distinct Channels distinct
-  // resolved rates.
+  // (issue #90): resolving each of the three shapes still gives distinct
+  // Channels distinct resolved rates -- checked per shape directly,
+  // rather than through only one of them, so a shape-specific
+  // resolution regression cannot pass unnoticed (PR #98 review).
   {
-    rvrbotron::config::ModulationConfig sineModulation;
-    sineModulation.depthMs = 0.5;
-    sineModulation.shape = rvrbotron::dsp::ModulationShape::sine;
-    const auto sineConfig =
-        resolvedModulatedLoopConfig(2, 1.5, 100.0, 200.0, sineModulation);
-    const auto& sineLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
-        sineConfig.composition.stages[1]);
-    const auto& sineRates = sineLoop.modulation->channelTargetsPerSample;
-    if (sineRates.size() != 2 || sineRates[0] == sineRates[1]) {
-      std::cerr << "sine shape did not resolve distinct per-Channel "
-                   "rates from the +-10% seeded spread\n";
-      return 1;
+    const rvrbotron::dsp::ModulationShape shapes[] = {
+        rvrbotron::dsp::ModulationShape::smoothedRandom,
+        rvrbotron::dsp::ModulationShape::sine,
+        rvrbotron::dsp::ModulationShape::triangle,
+    };
+    for (const auto shape : shapes) {
+      rvrbotron::config::ModulationConfig shapeModulation;
+      shapeModulation.depthMs = 0.5;
+      shapeModulation.shape = shape;
+      const auto shapeConfig = resolvedModulatedLoopConfig(
+          2, 1.5, 100.0, 200.0, shapeModulation);
+      const auto& shapeLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+          shapeConfig.composition.stages[1]);
+      const auto& shapeRates = shapeLoop.modulation->channelTargetsPerSample;
+      if (shapeRates.size() != 2 || shapeRates[0] == shapeRates[1]) {
+        std::cerr << "shape index " << static_cast<int>(shape)
+                  << " did not resolve distinct per-Channel rates from "
+                     "the +-10% seeded spread\n";
+        return 1;
+      }
     }
   }
 
@@ -2189,26 +2200,90 @@ int main() {
     }
   }
 
+  // channelFraction * N can land a few ULPs above the intended integer
+  // in binary64 (0.14 * 100 == 14.000000000000002; PR #98 review): the
+  // resolved count must still be exactly ceil's documented, mathematical
+  // result (14), not one Channel more from that rounding noise.
+  {
+    rvrbotron::config::ModulationConfig boundaryModulation;
+    boundaryModulation.depthMs = 0.5;
+    boundaryModulation.channelFraction = 0.14;
+    const auto boundaryConfig = resolvedModulatedLoopConfig(
+        100, 1.5, 100.0, 200.0, boundaryModulation);
+    const auto& boundaryMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        boundaryConfig.composition.stages[1])
+                                    .modulation->channelModulated;
+    const auto boundaryCount =
+        std::count(boundaryMask.begin(), boundaryMask.end(), true);
+    if (boundaryCount != 14) {
+      std::cerr << "channelFraction 0.14 over 100 Channels resolved "
+                << boundaryCount
+                << " modulated Channels, not the documented ceil(0.14 * "
+                   "100) = 14 (floating-point boundary regression)\n";
+      return 1;
+    }
+  }
+
   // Channel selection is independent of delay ordering (issue #90): the
   // same seed and channelFraction give the identical bypass mask
-  // regardless of the Feedback Loop's own delay range.
+  // regardless of how the Feedback Loop's own delays are ordered by
+  // Channel. Comparing two "even" configs at different delay ranges
+  // (as this fixture originally did) never actually exercises this --
+  // "even" always assigns Channel 0 the shortest delay and Channel N-1
+  // the longest, so the Channel-index-to-delay-rank mapping is identical
+  // either way, and a (buggy) implementation that selected by delay
+  // rank instead of Channel index would pass just as easily (PR #98
+  // review). Comparing "even" against "uniform-random" at the same
+  // delay range instead gives genuinely different index-to-rank
+  // mappings, verified explicitly below rather than assumed.
   {
     rvrbotron::config::ModulationConfig fractionModulation;
     fractionModulation.depthMs = 0.5;
     fractionModulation.channelFraction = 0.5;
-    const auto narrowDelayConfig = resolvedModulatedLoopConfig(
-        8, 1.5, 100.0, 105.0, fractionModulation);
-    const auto wideDelayConfig = resolvedModulatedLoopConfig(
-        8, 1.5, 50.0, 400.0, fractionModulation);
-    const auto& narrowMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
-        narrowDelayConfig.composition.stages[1])
-                                  .modulation->channelModulated;
-    const auto& wideMask = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
-        wideDelayConfig.composition.stages[1])
-                                .modulation->channelModulated;
-    if (narrowMask != wideMask) {
-      std::cerr << "Channel selection changed when only the delay range "
-                   "changed, correlating selection with delay ordering\n";
+    const auto evenConfig = resolvedModulatedLoopConfig(
+        8,
+        1.5,
+        100.0,
+        200.0,
+        fractionModulation,
+        rvrbotron::dsp::DelayStrategy::even);
+    const auto randomConfig = resolvedModulatedLoopConfig(
+        8,
+        1.5,
+        100.0,
+        200.0,
+        fractionModulation,
+        rvrbotron::dsp::DelayStrategy::uniformRandom);
+    const auto& evenLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        evenConfig.composition.stages[1]);
+    const auto& randomLoop = std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+        randomConfig.composition.stages[1]);
+
+    const auto delayRankOrder =
+        [](const std::vector<std::uint64_t>& delays) {
+          std::vector<std::uint32_t> order(delays.size());
+          std::iota(order.begin(), order.end(), 0U);
+          std::sort(
+              order.begin(),
+              order.end(),
+              [&delays](const std::uint32_t a, const std::uint32_t b) {
+                return delays[a] < delays[b];
+              });
+          return order;
+        };
+    if (delayRankOrder(evenLoop.delaysSamples) ==
+        delayRankOrder(randomLoop.delaysSamples)) {
+      std::cerr << "this fixture's \"even\" and \"uniform-random\" delays "
+                   "happened to share the same Channel rank order, so it "
+                   "did not actually exercise differing delay orderings\n";
+      return 1;
+    }
+
+    if (evenLoop.modulation->channelModulated !=
+        randomLoop.modulation->channelModulated) {
+      std::cerr << "Channel selection changed when only the delay "
+                   "ordering changed, correlating selection with delay "
+                   "ordering\n";
       return 1;
     }
   }
