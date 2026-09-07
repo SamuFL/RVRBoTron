@@ -2,6 +2,7 @@
 
 #include "rvrbotron/dsp/Sample.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -33,20 +34,86 @@ public:
       std::vector<std::uint64_t> delaysSamples,
       std::vector<std::uint64_t> bufferSizes);
 
-  // The sample currently at this Channel's read/write position; does not
-  // advance it. Only valid when delaySamples(channel) > 0.
+  // The value written exactly delaySamples(channel) frames ago; does not
+  // advance anything. Only valid when delaySamples(channel) > 0.
+  //
+  // Computed from this Channel's own delay rather than by directly
+  // indexing the write position, so this stays correct even for a
+  // Channel whose resolved buffer reserves headroom beyond its delay
+  // (Modulation's Excursion and Interpolation margin). A branch and a
+  // subtraction, not a runtime division: the constructor's own invariant
+  // (buffer size >= delay) guarantees `position - delay` wraps around at
+  // most once, so a single comparison covers it exactly, keeping this
+  // path as cheap as a bare index for the common case of no headroom
+  // (buffer size == delay), where the wrap never triggers at all.
   [[nodiscard]] Sample read(const std::size_t channel) const noexcept {
-    return storage_[offsets_[channel] + positions_[channel]];
+    const auto ring = bufferSizes_[channel];
+    const auto delay = delays_[channel];
+    const auto position = positions_[channel];
+    const auto readPosition =
+        position >= delay ? position - delay : ring - (delay - position);
+    return storage_[offsets_[channel] + readPosition];
   }
 
-  // Writes into the slot the last read() returned for this Channel, then
-  // advances that Channel's position by one, wrapping at its delay length.
-  // Only valid when delaySamples(channel) > 0.
+  // Writes into the slot "now" -- the position this Channel's cursor
+  // currently occupies -- then advances that Channel's position by one,
+  // wrapping at its resolved buffer size. Only valid when
+  // delaySamples(channel) > 0.
+  //
+  // Wrapping at the resolved buffer size rather than the delay itself is
+  // what lets readFraction() below serve a moving lookback anywhere
+  // within that headroom: for a Channel with no Modulation, resolution
+  // sizes the buffer to exactly its delay (see docs/design/reverb/stages/
+  // 06-modulation.md's "Delay buffers need headroom"), so this is
+  // numerically identical to wrapping at the delay, as it always has.
   void write(const std::size_t channel, const Sample value) noexcept {
     const auto index = offsets_[channel] + positions_[channel];
     storage_[index] = value;
-    const auto delay = static_cast<std::size_t>(delays_[channel]);
-    positions_[channel] = (positions_[channel] + 1) % delay;
+    const auto ring = static_cast<std::size_t>(bufferSizes_[channel]);
+    positions_[channel] = (positions_[channel] + 1) % ring;
+  }
+
+  // Third-order Lagrange interpolated read at an arbitrary, possibly
+  // fractional, lookback from "now" -- the position write() will next
+  // occupy (see docs/design/reverb/stages/06-modulation.md's "Fractional
+  // delay becomes mandatory"). `lookbackSamples` must be finite and, once
+  // its four-point stencil (lookback floor()-1 through floor()+2) is
+  // accounted for, stay within [1, this Channel's resolved buffer size]:
+  // Modulation's resolution rejects any configuration that would not
+  // (see the design doc's "The Block-size bound becomes
+  // modulation-aware"), so this never wraps into not-yet-written data.
+  [[nodiscard]] Sample readFraction(
+      const std::size_t channel,
+      const double lookbackSamples) const noexcept {
+    const auto ring = bufferSizes_[channel];
+    const auto offset = offsets_[channel];
+    const auto position = positions_[channel];
+    const auto base = std::floor(lookbackSamples);
+    const auto frac = static_cast<Sample>(lookbackSamples - base);
+    const auto baseLookback = static_cast<std::int64_t>(base);
+    const auto valueAt = [this, offset, ring, position](
+                             const std::int64_t lookback) noexcept {
+      const auto wrapped = static_cast<std::uint64_t>(lookback) % ring;
+      const auto readPosition = (position + ring - wrapped) % ring;
+      return storage_[offset + readPosition];
+    };
+    const auto p0 = valueAt(baseLookback - 1);
+    const auto p1 = valueAt(baseLookback);
+    const auto p2 = valueAt(baseLookback + 1);
+    const auto p3 = valueAt(baseLookback + 2);
+    // Cubic Lagrange interpolation through 4 equally spaced samples at
+    // relative positions -1, 0, 1, 2, evaluated at `frac` in [0, 1]
+    // between p1 (frac=0) and p2 (frac=1).
+    const auto c0 = -frac * (frac - Sample{1}) * (frac - Sample{2}) /
+        Sample{6};
+    const auto c1 =
+        (frac + Sample{1}) * (frac - Sample{1}) * (frac - Sample{2}) /
+        Sample{2};
+    const auto c2 =
+        -(frac + Sample{1}) * frac * (frac - Sample{2}) / Sample{2};
+    const auto c3 = (frac + Sample{1}) * frac * (frac - Sample{1}) /
+        Sample{6};
+    return c0 * p0 + c1 * p1 + c2 * p2 + c3 * p3;
   }
 
   [[nodiscard]] std::uint64_t delaySamples(
@@ -60,6 +127,11 @@ public:
 
 private:
   std::vector<std::uint64_t> delays_;
+  // Each Channel's resolved buffer size, exactly as passed to the
+  // constructor: write()'s wrap-around modulus and readFraction()'s
+  // lookback horizon. Equal to `delays_[channel]` for a Channel with no
+  // Modulation; larger once Modulation reserves headroom beyond it.
+  std::vector<std::uint64_t> bufferSizes_;
   std::vector<std::size_t> offsets_;
   std::vector<std::size_t> positions_;
   std::vector<Sample> storage_;

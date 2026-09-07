@@ -216,6 +216,16 @@ dsp::MixMatrixType parseMix(
   fail(path, "expected hadamard, householder, or random-orthogonal");
 }
 
+dsp::ModulationInterpolation parseModulationInterpolation(
+    const Json& value,
+    const std::string_view path) {
+  const auto name = parseString(value, path);
+  if (name == "lagrange3") {
+    return dsp::ModulationInterpolation::lagrange3;
+  }
+  fail(path, "expected lagrange3");
+}
+
 dsp::GainMode parseGainMode(
     const Json& value,
     const std::string_view path) {
@@ -439,6 +449,27 @@ config::DampingConfig parseRequestedDamping(
   return damping;
 }
 
+config::ModulationConfig parseRequestedModulation(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(value, path, {"depthMs", "rateHz", "interpolation"});
+  config::ModulationConfig modulation;
+  if (value.contains("depthMs")) {
+    modulation.depthMs =
+        parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
+  }
+  if (value.contains("rateHz")) {
+    modulation.rateHz =
+        parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  }
+  if (value.contains("interpolation")) {
+    modulation.interpolation = parseModulationInterpolation(
+        value.at("interpolation"), std::string(path) + "/interpolation");
+  }
+  return modulation;
+}
+
 config::FeedbackLoopConfig parseRequestedFeedbackLoop(
     const Json& value,
     const std::string_view path) {
@@ -454,7 +485,8 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
        "mix",
        "gainMode",
        "silenceFloorDb",
-       "damping"});
+       "damping",
+       "modulation"});
   config::FeedbackLoopConfig loop;
   if (value.contains("delayMinMs")) {
     loop.delayMinMs = parseNumber(
@@ -491,6 +523,10 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
   if (value.contains("damping")) {
     loop.damping = parseRequestedDamping(
         value.at("damping"), std::string(path) + "/damping");
+  }
+  if (value.contains("modulation")) {
+    loop.modulation = parseRequestedModulation(
+        value.at("modulation"), std::string(path) + "/modulation");
   }
   return loop;
 }
@@ -824,6 +860,54 @@ dsp::ResolvedDamping parseResolvedDamping(
   return damping;
 }
 
+dsp::ResolvedModulation parseResolvedModulation(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value,
+      path,
+      {"depthMs",
+       "rateHz",
+       "interpolation",
+       "excursionSamples",
+       "interpolationMarginSamples",
+       "channelSeeds",
+       "channelTargetsPerSample",
+       "channelPhases"});
+  for (const auto field :
+       {"depthMs",
+        "rateHz",
+        "interpolation",
+        "excursionSamples",
+        "interpolationMarginSamples",
+        "channelSeeds",
+        "channelTargetsPerSample",
+        "channelPhases"}) {
+    requireField(value, field, path);
+  }
+  dsp::ResolvedModulation modulation;
+  modulation.depthMs =
+      parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
+  modulation.rateHz =
+      parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  modulation.interpolation = parseModulationInterpolation(
+      value.at("interpolation"), std::string(path) + "/interpolation");
+  modulation.excursionSamples = parseNumber(
+      value.at("excursionSamples"), std::string(path) + "/excursionSamples");
+  modulation.interpolationMarginSamples = parseUnsigned64(
+      value.at("interpolationMarginSamples"),
+      std::string(path) + "/interpolationMarginSamples");
+  modulation.channelSeeds = parseUnsigned64Array(
+      value.at("channelSeeds"), std::string(path) + "/channelSeeds");
+  modulation.channelTargetsPerSample = parseNumberArray(
+      value.at("channelTargetsPerSample"),
+      std::string(path) + "/channelTargetsPerSample");
+  modulation.channelPhases = parseNumberArray(
+      value.at("channelPhases"), std::string(path) + "/channelPhases");
+  return modulation;
+}
+
 dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
     const Json& value,
     const std::string_view path) {
@@ -849,7 +933,8 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
        "tailBudgetSamples",
        "blockSizeBoundSamples",
        "silenceFloorDb",
-       "damping"});
+       "damping",
+       "modulation"});
   for (const auto field :
        {"channels",
         "delayMinSamples",
@@ -922,6 +1007,10 @@ dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(
   if (value.contains("damping")) {
     loop.damping = parseResolvedDamping(
         value.at("damping"), std::string(path) + "/damping");
+  }
+  if (value.contains("modulation")) {
+    loop.modulation = parseResolvedModulation(
+        value.at("modulation"), std::string(path) + "/modulation");
   }
   return loop;
 }

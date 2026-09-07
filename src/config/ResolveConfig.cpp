@@ -3,7 +3,8 @@
 #include "rvrbotron/HarnessError.h"
 #include "rvrbotron/config/DampingResolution.h"
 #include "rvrbotron/config/MixMatrixResolution.h"
-#include "rvrbotron/config/PositionalRandom.h"
+#include "rvrbotron/config/ModulationResolution.h"
+#include "rvrbotron/dsp/PositionalRandom.h"
 
 #include <algorithm>
 #include <array>
@@ -28,6 +29,10 @@ constexpr std::uint64_t kDiffusionPolarityUsage = 0x4453544550504f4cULL;
 // is one loop, not a chain of indexed steps -- so this usage tag's itemIndex
 // argument is always the fixed constant 0 (see resolveFeedbackLoop).
 constexpr std::uint64_t kFeedbackLoopDelayUsage = 0x464c4f4f5044454cULL;
+// Per-Channel Modulation trajectory seeds are derived from (seed, Channel
+// index) alone, mirroring kFeedbackLoopDelayUsage's fixed itemIndex-0
+// convention above (see resolveFeedbackLoop).
+constexpr std::uint64_t kModulationSeedUsage = 0x4d4f44554c534544ULL;
 
 [[noreturn]] void fail(const std::string_view path,
                        const std::string_view reason) {
@@ -338,7 +343,7 @@ std::uint64_t boundedRandom(const std::uint64_t seed,
                             const std::uint64_t bound) {
   const auto threshold = (std::uint64_t{0} - bound) % bound;
   for (std::uint64_t drawIndex = 0;; ++drawIndex) {
-    const auto value = positionalSplitMix64V1(
+    const auto value = dsp::positionalSplitMix64V1(
         seed, usage, itemIndex, valueIndex, drawIndex);
     if (value >= threshold) {
       return value % bound;
@@ -551,7 +556,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
       if (polarity == dsp::PolarityStrategy::none) {
         step.polaritySigns.push_back(1);
       } else {
-        const auto value = positionalSplitMix64V1(
+        const auto value = dsp::positionalSplitMix64V1(
             seed, kDiffusionPolarityUsage, step.index, channel);
         step.polaritySigns.push_back((value & 1U) == 0 ? 1 : -1);
       }
@@ -895,6 +900,78 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
           slowestResolvedRt60Sec, loop.decayMargin, sampleRate);
     }
     loop.damping = std::move(damping);
+  }
+
+  if (requested.modulation.has_value()) {
+    dsp::ResolvedModulation modulation;
+    modulation.depthMs =
+        requested.modulation->depthMs.value_or(kDefaultModulationDepthMs);
+    modulation.rateHz =
+        requested.modulation->rateHz.value_or(kDefaultModulationRateHz);
+    modulation.interpolation = requested.modulation->interpolation.value_or(
+        dsp::ModulationInterpolation::lagrange3);
+    modulation.interpolationMarginSamples =
+        kModulationInterpolationMarginSamples;
+
+    // Only solvable once every Channel's own resolved delay is known;
+    // finiteness/range validation of depthMs/rateHz runs regardless, in
+    // validateFeedbackLoopStage below (mirroring Damping's pattern).
+    if (std::isfinite(modulation.depthMs) && modulation.depthMs >= 0.0 &&
+        std::isfinite(modulation.rateHz) && modulation.rateHz >= 0.0) {
+      modulation.excursionSamples =
+          resolveExcursionSamples(modulation.depthMs, sampleRate);
+
+      // depthMs of 0 is the resolved bypass (see docs/design/reverb/
+      // stages/06-modulation.md's "Identity is guaranteed by
+      // construction, not by arithmetic"): no seeds, no rates, no
+      // buffer headroom, so an explicit zero depth and an omitted
+      // Modulation object leave every other field identical.
+      if (modulation.depthMs > 0.0) {
+        for (std::uint32_t channel = 0; channel < channels; ++channel) {
+          if (!modulationFitsDelay(
+                  loop.delaysSamples[channel], modulation.excursionSamples)) {
+            fail(
+                stagePath(stageIndex) + "/modulation/depthMs",
+                "Channel " + std::to_string(channel) +
+                    "'s resolved delay less Excursion does not exceed "
+                    "the fixed Interpolation margin");
+          }
+        }
+
+        modulation.channelSeeds.reserve(channels);
+        modulation.channelTargetsPerSample.reserve(channels);
+        modulation.channelPhases.reserve(channels);
+        for (std::uint32_t channel = 0; channel < channels; ++channel) {
+          modulation.channelSeeds.push_back(dsp::positionalSplitMix64V1(
+              seed, kModulationSeedUsage, 0, channel));
+          const auto spread = resolveModulationRateSpread(seed, channel);
+          modulation.channelTargetsPerSample.push_back(
+              modulation.rateHz * spread / sampleRate);
+          modulation.channelPhases.push_back(
+              resolveModulationPhase(seed, channel));
+        }
+
+        // Delay buffers reserve Excursion plus the fixed Interpolation
+        // margin, added only here -- an unmodulated or zero-depth
+        // Feedback Loop keeps its buffer sizes exactly equal to its
+        // delays, as today.
+        const auto headroomSamples =
+            resolveModulationHeadroomSamples(modulation.excursionSamples);
+        for (std::uint32_t channel = 0; channel < channels; ++channel) {
+          loop.bufferSizes[channel] =
+              loop.delaysSamples[channel] + headroomSamples;
+        }
+
+        // The Block-size bound becomes modulation-aware: the shortest
+        // resolved per-Channel delay less the Excursion applied to it
+        // (see "What this forces on the architecture").
+        const auto shortestDelay = *std::min_element(
+            loop.delaysSamples.begin(), loop.delaysSamples.end());
+        loop.blockSizeBoundSamples = resolveModulationBlockSizeBoundSamples(
+            shortestDelay, modulation.excursionSamples);
+      }
+    }
+    loop.modulation = std::move(modulation);
   }
 
   return loop;
@@ -1437,9 +1514,17 @@ void validateFeedbackLoopStage(
         path,
         "expected delayMaxSamples at least delayMinSamples");
   }
+  // Modulation's Excursion and Interpolation margin can grow a Channel's
+  // resolved buffer past delayMaxSamples; take whichever bound is larger
+  // so an unmodulated Feedback Loop's check is unchanged from before
+  // Modulation existed.
+  const auto maxResolvedBufferSamples = feedbackLoop.bufferSizes.empty()
+      ? feedbackLoop.delayMaxSamples
+      : *std::max_element(
+            feedbackLoop.bufferSizes.begin(), feedbackLoop.bufferSizes.end());
   checkFeedbackLoopMemoryBudget(
       channels,
-      feedbackLoop.delayMaxSamples,
+      std::max(feedbackLoop.delayMaxSamples, maxResolvedBufferSamples),
       memoryBudgetBytes,
       path);
   if (!(feedbackLoop.rt60Sec > 0.0) ||
@@ -1508,12 +1593,20 @@ void validateFeedbackLoopStage(
   requireChannelValues(feedbackLoop.bufferSizes.size(), "/bufferSizes");
   requireChannelValues(feedbackLoop.gains.size(), "/gains");
 
-  const auto expectedBlockSizeBound = *std::min_element(
-      feedbackLoop.delaysSamples.begin(), feedbackLoop.delaysSamples.end());
-  if (feedbackLoop.blockSizeBoundSamples != expectedBlockSizeBound) {
-    fail(
-        path + "/blockSizeBoundSamples",
-        "expected the minimum of the resolved per-Channel delays");
+  // Modulation-aware once Modulation actually moves delays (see "The
+  // Block-size bound becomes modulation-aware"); checked instead, against
+  // the Excursion-adjusted expectation, once Modulation is validated
+  // below.
+  const auto modulationActive = feedbackLoop.modulation.has_value() &&
+      feedbackLoop.modulation->depthMs > 0.0;
+  if (!modulationActive) {
+    const auto expectedBlockSizeBound = *std::min_element(
+        feedbackLoop.delaysSamples.begin(), feedbackLoop.delaysSamples.end());
+    if (feedbackLoop.blockSizeBoundSamples != expectedBlockSizeBound) {
+      fail(
+          path + "/blockSizeBoundSamples",
+          "expected the minimum of the resolved per-Channel delays");
+    }
   }
   if (feedbackLoop.blockSizeBoundSamples == 0) {
     fail(
@@ -1573,7 +1666,10 @@ void validateFeedbackLoopStage(
           path + "/delaysMs",
           "expected milliseconds derived from integer delays");
     }
-    if (feedbackLoop.bufferSizes[channel] != delay) {
+    // Modulation-aware once active (see "Delay buffers need headroom");
+    // checked instead, against the Excursion-plus-margin expectation,
+    // once Modulation is validated below.
+    if (!modulationActive && feedbackLoop.bufferSizes[channel] != delay) {
       fail(
           path + "/bufferSizes",
           "expected each buffer size to equal its integer delay");
@@ -1914,6 +2010,139 @@ void validateFeedbackLoopStage(
           path + "/tailBudgetSamples",
           "expected value derived from the slowest resolved RT60 and "
           "decayMargin");
+    }
+  }
+
+  if (feedbackLoop.modulation.has_value()) {
+    const auto& modulation = *feedbackLoop.modulation;
+    const auto modulationPath = path + "/modulation";
+    if (!std::isfinite(modulation.depthMs) || !(modulation.depthMs >= 0.0)) {
+      fail(
+          modulationPath + "/depthMs",
+          "expected finite value at least zero");
+    }
+    if (!std::isfinite(modulation.rateHz) || !(modulation.rateHz >= 0.0)) {
+      fail(
+          modulationPath + "/rateHz",
+          "expected finite value at least zero");
+    }
+    if (modulation.interpolation != dsp::ModulationInterpolation::lagrange3) {
+      fail(modulationPath + "/interpolation", "expected lagrange3");
+    }
+    if (modulation.interpolationMarginSamples !=
+        kModulationInterpolationMarginSamples) {
+      fail(
+          modulationPath + "/interpolationMarginSamples",
+          "expected the fixed worst-case Interpolation margin");
+    }
+    const auto expectedExcursionSamples =
+        resolveExcursionSamples(modulation.depthMs, resolved.sampleRate);
+    const auto excursionTolerance =
+        1e-9 * std::max(1.0, expectedExcursionSamples);
+    if (!std::isfinite(modulation.excursionSamples) ||
+        std::abs(modulation.excursionSamples - expectedExcursionSamples) >
+            excursionTolerance) {
+      fail(
+          modulationPath + "/excursionSamples",
+          "expected depthMs resolved to samples at this Composition's "
+          "sample rate");
+    }
+    if (modulation.depthMs > 0.0) {
+      const auto requireModulationChannelValues =
+          [channels, &modulationPath](
+              const std::size_t size, const std::string_view field) {
+            if (size != channels) {
+              fail(
+                  modulationPath + std::string(field),
+                  "expected one value per Channel");
+            }
+          };
+      requireModulationChannelValues(
+          modulation.channelSeeds.size(), "/channelSeeds");
+      requireModulationChannelValues(
+          modulation.channelTargetsPerSample.size(),
+          "/channelTargetsPerSample");
+      requireModulationChannelValues(
+          modulation.channelPhases.size(), "/channelPhases");
+      const auto headroomSamples =
+          resolveModulationHeadroomSamples(modulation.excursionSamples);
+      for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        if (!modulationFitsDelay(
+                feedbackLoop.delaysSamples[channel],
+                modulation.excursionSamples)) {
+          fail(
+              modulationPath + "/depthMs",
+              "Channel " + std::to_string(channel) +
+                  "'s resolved delay less Excursion does not exceed the "
+                  "fixed Interpolation margin");
+        }
+        const auto expectedSeed = dsp::positionalSplitMix64V1(
+            resolved.seed, kModulationSeedUsage, 0, channel);
+        if (modulation.channelSeeds[channel] != expectedSeed) {
+          fail(
+              modulationPath + "/channelSeeds",
+              "expected the derived per-Channel trajectory seed");
+        }
+        const auto expectedSpread =
+            resolveModulationRateSpread(resolved.seed, channel);
+        const auto expectedTargetPerSample =
+            modulation.rateHz * expectedSpread / resolved.sampleRate;
+        const auto targetTolerance =
+            1e-9 * std::max(1.0, std::abs(expectedTargetPerSample));
+        if (!std::isfinite(modulation.channelTargetsPerSample[channel]) ||
+            std::abs(
+                modulation.channelTargetsPerSample[channel] -
+                expectedTargetPerSample) > targetTolerance) {
+          fail(
+              modulationPath + "/channelTargetsPerSample",
+              "expected rateHz times that Channel's own fixed +-10% "
+              "seeded spread, divided by the sample rate");
+        }
+        const auto expectedPhase =
+            resolveModulationPhase(resolved.seed, channel);
+        if (!std::isfinite(modulation.channelPhases[channel]) ||
+            modulation.channelPhases[channel] != expectedPhase) {
+          fail(
+              modulationPath + "/channelPhases",
+              "expected the derived per-Channel positional phase");
+        }
+        const auto expectedBufferSize =
+            feedbackLoop.delaysSamples[channel] + headroomSamples;
+        if (feedbackLoop.bufferSizes[channel] != expectedBufferSize) {
+          fail(
+              path + "/bufferSizes",
+              "expected the resolved delay plus Excursion plus the fixed "
+              "Interpolation margin for a Channel actually modulated");
+        }
+      }
+      const auto shortestDelay = *std::min_element(
+          feedbackLoop.delaysSamples.begin(), feedbackLoop.delaysSamples.end());
+      const auto expectedBlockSizeBound = resolveModulationBlockSizeBoundSamples(
+          shortestDelay, modulation.excursionSamples);
+      if (feedbackLoop.blockSizeBoundSamples != expectedBlockSizeBound) {
+        fail(
+            path + "/blockSizeBoundSamples",
+            "expected the shortest resolved per-Channel delay less the "
+            "Excursion applied to it");
+      }
+    } else {
+      if (!modulation.channelSeeds.empty() ||
+          !modulation.channelTargetsPerSample.empty() ||
+          !modulation.channelPhases.empty()) {
+        fail(
+            modulationPath,
+            "expected no per-Channel trajectory seeds, rates, or phases "
+            "when depthMs is zero -- the resolved bypass");
+      }
+      for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        if (feedbackLoop.bufferSizes[channel] !=
+            feedbackLoop.delaysSamples[channel]) {
+          fail(
+              path + "/bufferSizes",
+              "expected buffer size equal to delay when depthMs is zero "
+              "-- the resolved bypass");
+        }
+      }
     }
   }
 }

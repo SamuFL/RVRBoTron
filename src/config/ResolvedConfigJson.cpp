@@ -54,6 +54,17 @@ const char* mixMatrixTypeName(const dsp::MixMatrixType mix) {
       "unsupported Diffusion Step mix");
 }
 
+const char* modulationInterpolationName(
+    const dsp::ModulationInterpolation interpolation) {
+  switch (interpolation) {
+  case dsp::ModulationInterpolation::lagrange3:
+    return "lagrange3";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Modulation interpolation");
+}
+
 const char* gainModeName(const dsp::GainMode gainMode) {
   switch (gainMode) {
   case dsp::GainMode::perChannel:
@@ -201,6 +212,24 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"contractionBoundFloat64", damping.contractionBoundFloat64},
         {"contractionMarginFloat64", damping.contractionMarginFloat64},
         {"slowestResolvedRt60Sec", damping.slowestResolvedRt60Sec},
+    };
+  }
+  // Omitted entirely (rather than emitted as null) when disabled, so an
+  // existing format-version-1 Resolved Configuration written before
+  // Modulation existed remains byte-identical to one produced with it
+  // disabled today, and loads back as disabled (see issue #89).
+  if (loop.modulation.has_value()) {
+    const auto& modulation = *loop.modulation;
+    document["modulation"] = {
+        {"depthMs", modulation.depthMs},
+        {"rateHz", modulation.rateHz},
+        {"interpolation",
+         modulationInterpolationName(modulation.interpolation)},
+        {"excursionSamples", modulation.excursionSamples},
+        {"interpolationMarginSamples", modulation.interpolationMarginSamples},
+        {"channelSeeds", modulation.channelSeeds},
+        {"channelTargetsPerSample", modulation.channelTargetsPerSample},
+        {"channelPhases", modulation.channelPhases},
     };
   }
   return document;

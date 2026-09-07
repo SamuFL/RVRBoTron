@@ -12,6 +12,7 @@ DelayLine::DelayLine(
     std::vector<std::uint64_t> delaysSamples,
     std::vector<std::uint64_t> bufferSizes)
     : delays_(std::move(delaysSamples)),
+      bufferSizes_(bufferSizes),
       offsets_(delays_.size()),
       positions_(delays_.size(), 0) {
   if (bufferSizes.size() != delays_.size()) {
@@ -43,8 +44,9 @@ DelayLine::DelayLine(
 }
 
 std::size_t DelayLine::ownedStorageBytes() const noexcept {
-  return ownedVectorBytes(delays_) + ownedVectorBytes(offsets_) +
-         ownedVectorBytes(positions_) + ownedVectorBytes(storage_);
+  return ownedVectorBytes(delays_) + ownedVectorBytes(bufferSizes_) +
+         ownedVectorBytes(offsets_) + ownedVectorBytes(positions_) +
+         ownedVectorBytes(storage_);
 }
 
 } // namespace rvrbotron::dsp

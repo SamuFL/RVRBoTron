@@ -1,8 +1,11 @@
+#include "rvrbotron/config/ModulationResolution.h"
 #include "rvrbotron/config/ResolveConfig.h"
+#include "rvrbotron/dsp/DelayLine.h"
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/MixMatrix.h"
+#include "rvrbotron/dsp/Modulation.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/dsp/Split.h"
 
@@ -306,6 +309,51 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   rvrbotron::config::ReverbConfig requested;
   requested.formatVersion = 1;
   requested.seed = 0x9e3779b97f4a7c15ULL;
+  requested.composition = std::move(composition);
+  return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
+}
+
+// Same shape as resolvedFeedbackLoopConfig above, with an optional
+// Modulation object attached to the Feedback Loop (issue #89).
+// `modulation` is nullopt when the caller wants Modulation omitted
+// entirely, as distinct from an included object at zero depth.
+rvrbotron::dsp::ResolvedConfig resolvedModulatedLoopConfig(
+    const std::uint32_t channels,
+    const double rt60Sec,
+    const double delayMinMs,
+    const double delayMaxMs,
+    const std::optional<rvrbotron::config::ModulationConfig>& modulation,
+    const rvrbotron::dsp::DelayStrategy delayStrategy =
+        rvrbotron::dsp::DelayStrategy::even,
+    const std::uint32_t sampleRate = 48000,
+    const std::uint64_t seed = 0x9e3779b97f4a7c15ULL) {
+  rvrbotron::config::SplitConfig split;
+  split.channels = channels;
+  split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+  split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::FeedbackLoopConfig loop;
+  loop.delayMinMs = delayMinMs;
+  loop.delayMaxMs = delayMaxMs;
+  loop.delayStrategy = delayStrategy;
+  loop.rt60Sec = rt60Sec;
+  loop.mix = rvrbotron::dsp::MixMatrixType::householder;
+  loop.gainMode = rvrbotron::dsp::GainMode::perChannel;
+  loop.modulation = modulation;
+
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::CompositionConfig composition;
+  composition.stagesSpecified = true;
+  composition.stages.emplace_back(split);
+  composition.stages.emplace_back(loop);
+  composition.stages.emplace_back(downmix);
+
+  rvrbotron::config::ReverbConfig requested;
+  requested.formatVersion = 1;
+  requested.seed = seed;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
 }
@@ -1735,6 +1783,276 @@ int main() {
     if (outputFrame != rvrbotron::dsp::Sample{0}) {
       std::cerr << "Denormal-flush fixture did not reach exact zero after "
                 << denormalFrames << " frames\n";
+      return 1;
+    }
+  }
+
+  // DelayLine::readFraction (issue #89): third-order Lagrange
+  // interpolation of a perfectly linear ramp must reproduce the line
+  // exactly, at both an integer lookback (frac=0, degenerating to a
+  // direct read) and a fractional one -- a property of Lagrange
+  // interpolation itself, independent of this class's implementation, so
+  // it is a real oracle rather than a self-consistency check.
+  {
+    rvrbotron::dsp::DelayLine ramp({5}, {10});
+    for (std::uint64_t frame = 0; frame < 10; ++frame) {
+      ramp.write(0, static_cast<rvrbotron::dsp::Sample>(frame + 1));
+    }
+    if (!close(ramp.readFraction(0, 5.0), 6.0)) {
+      std::cerr << "DelayLine::readFraction at an integer lookback did not "
+                   "match the value written that many frames ago\n";
+      return 1;
+    }
+    if (!close(ramp.readFraction(0, 5.5), 5.5)) {
+      std::cerr << "DelayLine::readFraction did not reproduce a linear "
+                   "ramp exactly at a fractional lookback\n";
+      return 1;
+    }
+  }
+
+  // Modulation (issue #89): zero depth must render bit-identical to
+  // Modulation omitted entirely, guaranteed by the resolved bypass
+  // (config::resolveConfig never reserves buffer headroom or derives
+  // per-Channel seeds/rates at depthMs == 0) rather than by arithmetic
+  // collapsing to identity.
+  {
+    const auto omittedConfig =
+        resolvedModulatedLoopConfig(2, 1.5, 40.0, 60.0, std::nullopt);
+    rvrbotron::config::ModulationConfig zeroModulation;
+    zeroModulation.depthMs = 0.0;
+    const auto zeroDepthConfig =
+        resolvedModulatedLoopConfig(2, 1.5, 40.0, 60.0, zeroModulation);
+
+    const auto& omittedLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            omittedConfig.composition.stages[1]);
+    const auto& zeroDepthLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            zeroDepthConfig.composition.stages[1]);
+    if (zeroDepthLoopStage.bufferSizes != omittedLoopStage.bufferSizes) {
+      std::cerr
+          << "Zero-depth Modulation grew the resolved buffer sizes\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::FeedbackLoop omittedLoop(omittedLoopStage);
+    rvrbotron::dsp::FeedbackLoop zeroDepthLoop(zeroDepthLoopStage);
+    constexpr std::size_t identityFrames = 400;
+    const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, -1.0F};
+    const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
+    for (std::size_t frame = 0; frame < identityFrames; ++frame) {
+      std::array<rvrbotron::dsp::Sample, 2> omittedOutput{};
+      std::array<rvrbotron::dsp::Sample, 2> zeroDepthOutput{};
+      const auto& in = frame == 0 ? impulse : silence;
+      omittedLoop.processFrame(in.data(), omittedOutput.data());
+      zeroDepthLoop.processFrame(in.data(), zeroDepthOutput.data());
+      if (omittedOutput != zeroDepthOutput) {
+        std::cerr << "Zero-depth Modulation output diverged from "
+                     "Modulation omitted at frame " << frame << '\n';
+        return 1;
+      }
+    }
+  }
+
+  // Active Modulation (issue #89): resolved buffer headroom matches
+  // Excursion plus the fixed Interpolation margin, repeat renders of an
+  // identical configuration are exact, and every rendered sample stays
+  // finite -- the "no buffer overrun" invariant, exercised over a long
+  // render rather than a handful of frames.
+  {
+    constexpr std::uint32_t sampleRate = 48000;
+    rvrbotron::config::ModulationConfig activeModulation;
+    activeModulation.depthMs = 5.0;
+    activeModulation.rateHz = 3.0;
+    const auto activeConfig = resolvedModulatedLoopConfig(
+        2,
+        1.5,
+        40.0,
+        60.0,
+        activeModulation,
+        rvrbotron::dsp::DelayStrategy::even,
+        sampleRate);
+    const auto& activeLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            activeConfig.composition.stages[1]);
+    if (!activeLoopStage.modulation.has_value()) {
+      std::cerr << "Active Modulation did not resolve a Modulation "
+                   "object\n";
+      return 1;
+    }
+    const auto expectedExcursion = rvrbotron::config::resolveExcursionSamples(
+        activeModulation.depthMs.value(), sampleRate);
+    for (std::uint32_t channel = 0; channel < activeLoopStage.channels;
+         ++channel) {
+      const auto expectedHeadroom =
+          static_cast<std::uint64_t>(std::ceil(expectedExcursion)) +
+          rvrbotron::config::kModulationInterpolationMarginSamples;
+      const auto expectedBufferSize =
+          activeLoopStage.delaysSamples[channel] + expectedHeadroom;
+      if (activeLoopStage.bufferSizes[channel] != expectedBufferSize) {
+        std::cerr << "Active Modulation did not reserve Excursion plus "
+                     "the fixed Interpolation margin for Channel "
+                  << channel << '\n';
+        return 1;
+      }
+    }
+
+    const auto renderModulated = [&]() {
+      rvrbotron::dsp::FeedbackLoop loop(activeLoopStage);
+      constexpr std::size_t modulatedFrames = 20000;
+      std::vector<std::array<rvrbotron::dsp::Sample, 2>> outputs(
+          modulatedFrames);
+      const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, -1.0F};
+      const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
+      for (std::size_t frame = 0; frame < modulatedFrames; ++frame) {
+        const auto& in = frame == 0 ? impulse : silence;
+        loop.processFrame(in.data(), outputs[frame].data());
+      }
+      return outputs;
+    };
+
+    const auto firstRun = renderModulated();
+    for (const auto& frame : firstRun) {
+      for (const auto sample : frame) {
+        if (!std::isfinite(static_cast<double>(sample))) {
+          std::cerr
+              << "Modulated Feedback Loop produced a non-finite sample\n";
+          return 1;
+        }
+      }
+    }
+    const auto secondRun = renderModulated();
+    if (firstRun != secondRun) {
+      std::cerr << "Modulated Feedback Loop was not deterministic across "
+                   "repeat renders\n";
+      return 1;
+    }
+  }
+
+  // Modulation at the resolution boundary (issue #89): construct
+  // DelayLine/Modulation directly at the shortest delay resolution's own
+  // rejection rule (config::modulationFitsDelay) still permits, drive the
+  // trajectory hard every frame, and confirm every read stays finite --
+  // "no buffer overrun at maximum depth, verified at the extreme of the
+  // permitted range."
+  {
+    constexpr double excursionSamples = 4.0;
+    constexpr auto margin =
+        rvrbotron::config::kModulationInterpolationMarginSamples;
+    const auto minimumRejectedDelay =
+        static_cast<std::uint64_t>(std::ceil(excursionSamples)) + margin;
+    const auto minimumSafeDelay = minimumRejectedDelay + 1;
+    if (rvrbotron::config::modulationFitsDelay(
+            minimumRejectedDelay, excursionSamples) ||
+        !rvrbotron::config::modulationFitsDelay(
+            minimumSafeDelay, excursionSamples)) {
+      std::cerr << "modulationFitsDelay's rejection boundary was not where "
+                   "this fixture expected\n";
+      return 1;
+    }
+    const auto bufferSize = minimumSafeDelay +
+        static_cast<std::uint64_t>(std::ceil(excursionSamples)) + margin;
+    rvrbotron::dsp::DelayLine boundaryDelayLine(
+        {minimumSafeDelay}, {bufferSize});
+    rvrbotron::dsp::ResolvedModulation boundaryModulationConfig;
+    boundaryModulationConfig.channelSeeds = {987654321ULL};
+    boundaryModulationConfig.channelTargetsPerSample = {0.9};
+    boundaryModulationConfig.channelPhases = {0.37};
+    boundaryModulationConfig.excursionSamples = excursionSamples;
+    rvrbotron::dsp::Modulation boundaryModulation(boundaryModulationConfig);
+
+    for (std::uint64_t frame = 0; frame < 5000; ++frame) {
+      const auto lookback =
+          boundaryModulation.lookbackSamples(0, minimumSafeDelay);
+      const auto value = boundaryDelayLine.readFraction(0, lookback);
+      if (!std::isfinite(static_cast<double>(value))) {
+        std::cerr << "Modulation at the resolution boundary produced a "
+                     "non-finite read at frame " << frame << '\n';
+        return 1;
+      }
+      boundaryDelayLine.write(
+          0,
+          static_cast<rvrbotron::dsp::Sample>(
+              std::sin(0.3 * static_cast<double>(frame))));
+      boundaryModulation.advanceFrame();
+    }
+  }
+
+  // rateHz of 0 freezes each Channel's fractional offset as a static
+  // per-Channel detune spread (issue #89): the trajectory must stay
+  // exactly constant across many advanced frames, and away from the
+  // nominal delay (otherwise this fixture's seed would not be exercising
+  // the static offset at all).
+  {
+    rvrbotron::dsp::ResolvedModulation frozenModulationConfig;
+    frozenModulationConfig.channelSeeds = {12345ULL};
+    frozenModulationConfig.channelTargetsPerSample = {0.0};
+    frozenModulationConfig.channelPhases = {0.61};
+    frozenModulationConfig.excursionSamples = 7.5;
+    rvrbotron::dsp::Modulation frozenModulation(frozenModulationConfig);
+    const auto firstLookback = frozenModulation.lookbackSamples(0, 100);
+    for (int frame = 0; frame < 50; ++frame) {
+      frozenModulation.advanceFrame();
+    }
+    const auto laterLookback = frozenModulation.lookbackSamples(0, 100);
+    if (firstLookback != laterLookback) {
+      std::cerr << "Zero-rate Modulation trajectory drifted instead of "
+                   "staying frozen\n";
+      return 1;
+    }
+    if (firstLookback == 100.0) {
+      std::cerr << "Zero-rate Modulation trajectory landed exactly on the "
+                   "nominal delay; this fixture's seed did not exercise "
+                   "the static detune spread\n";
+      return 1;
+    }
+  }
+
+  // An extreme, but validly resolved (finite, >= 0), per-Channel rate
+  // pushes the target counter far beyond what int64_t can represent
+  // after only a handful of frames (issue #89, PR #97 review): the
+  // lookback must stay finite rather than inheriting undefined behavior
+  // from an out-of-range double-to-int64_t conversion.
+  {
+    rvrbotron::dsp::ResolvedModulation extremeRateConfig;
+    extremeRateConfig.channelSeeds = {7ULL};
+    extremeRateConfig.channelTargetsPerSample = {1.0e20};
+    extremeRateConfig.channelPhases = {0.0};
+    extremeRateConfig.excursionSamples = 3.0;
+    rvrbotron::dsp::Modulation extremeRateModulation(extremeRateConfig);
+    for (int frame = 0; frame < 5; ++frame) {
+      const auto lookback =
+          extremeRateModulation.lookbackSamples(0, 50);
+      if (!std::isfinite(lookback)) {
+        std::cerr << "An extreme resolved rate produced a non-finite "
+                     "lookback at frame " << frame << '\n';
+        return 1;
+      }
+      extremeRateModulation.advanceFrame();
+    }
+  }
+
+  // Per-Channel phase decorrelation (issue #89, PR #97 review): two
+  // Channels sharing the same trajectory seed and rate but resolved to
+  // different phases must read different lookbacks at the very first
+  // frame, isolating the phase term's own effect from the seed's --
+  // proof that phase actually shifts each Channel's starting position on
+  // its own trajectory rather than being a documented no-op.
+  {
+    rvrbotron::dsp::ResolvedModulation sharedSeedConfig;
+    sharedSeedConfig.channelSeeds = {42ULL, 42ULL};
+    sharedSeedConfig.channelTargetsPerSample = {0.05, 0.05};
+    sharedSeedConfig.channelPhases = {0.0, 0.5};
+    sharedSeedConfig.excursionSamples = 10.0;
+    rvrbotron::dsp::Modulation sharedSeedModulation(sharedSeedConfig);
+    const auto firstChannelLookback =
+        sharedSeedModulation.lookbackSamples(0, 200);
+    const auto secondChannelLookback =
+        sharedSeedModulation.lookbackSamples(1, 200);
+    if (firstChannelLookback == secondChannelLookback) {
+      std::cerr << "Channels with the same trajectory seed and rate but "
+                   "different resolved phases read identical lookbacks "
+                   "at frame 0\n";
       return 1;
     }
   }

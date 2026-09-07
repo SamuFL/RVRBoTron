@@ -36,6 +36,8 @@ add_library(rvrbotron_dsp
   src/dsp/Downmix.cpp
   src/dsp/FeedbackLoop.cpp
   src/dsp/MixMatrix.cpp
+  src/dsp/Modulation.cpp
+  src/dsp/PositionalRandom.cpp
   src/dsp/Reverb.cpp
   src/dsp/Split.cpp
   src/dsp/SplitStrategy.cpp
@@ -55,7 +57,7 @@ endif()
 add_library(rvrbotron_config
   src/config/DampingResolution.cpp
   src/config/MixMatrixResolution.cpp
-  src/config/PositionalRandom.cpp
+  src/config/ModulationResolution.cpp
   src/config/ResolveConfig.cpp
   src/config/ResolvedConfigJson.cpp
 )

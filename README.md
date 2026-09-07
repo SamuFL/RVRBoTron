@@ -328,6 +328,7 @@ build/default/rvrbotron render \
 | `gainMode` | `"per-channel"` \| `"uniform"` | `"per-channel"` | `"per-channel"` solves each Channel's gain from its own loop time; `"uniform"` solves one shared gain from the mean loop time across Channels instead (the reference design's approach), measurably less accurate at a wide delay spread. |
 | `silenceFloorDb` | finite number, or `null`/omitted | `null` (disabled) | Reserved seam for the eventual plugin's runtime idle behavior; dormant here -- disabled output is bit-identical to a build without the field. |
 | `damping` | object, or omitted | omitted (disabled) | Two-shelf damping: independent per-Channel low and high shelves applied after decay gain and before mixing, on every circulation. Omitted preserves undamped output; an included empty object (`{}`) resolves the research baseline below. See the field table underneath. |
+| `modulation` | object, or omitted | omitted (disabled) | Seeded per-Channel delay-time movement, read through a fractional interpolator on every circulation. Omitted preserves existing rendered output; an included empty object (`{}`) resolves the research baseline below. See the field table underneath. |
 
 Omitting `damping` entirely preserves existing undamped output, and an
 existing `resolved.json` written before Damping existed loads back as
@@ -363,6 +364,34 @@ could prove safe -- an accepted trade-off for a cheap, deterministic proof.
 When a shelf boosts, the Tail budget follows the slower of `rt60Sec`, that
 shelf's own conservative feedback-decay estimate, and its state-settling
 time, so the renderer always drains the complete authorized response.
+
+Omitting `modulation` entirely preserves existing rendered output, and an
+existing `resolved.json` written before Modulation existed loads back as
+disabled. An included `modulation` object resolves any missing nested field
+to the baseline shown here:
+
+| `modulation` field | Values | Default | Notes |
+| --- | --- | --- | --- |
+| `depthMs` | finite number >= 0 | `0.4` | Peak Excursion, in milliseconds, above and below each Channel's nominal resolved delay. `0` disables movement -- a resolved bypass, bit-identical to `modulation` omitted, rather than an interpolator collapsing to identity. |
+| `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. |
+| `interpolation` | `"lagrange3"` | `"lagrange3"` | The Feedback Loop delay line's fractional-read method. Only third-order Lagrange ships in this milestone (#89); `linear` and `allpass` are added by later tickets. |
+
+Movement is `smoothed-random`: Catmull-Rom interpolation between per-Channel
+targets drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`,
+reproducible from an integer target counter with no accumulated state. Every
+Channel carries a fixed, undocumented-as-a-parameter +-10% seeded rate
+spread and a positionally seeded phase offset so trajectories decorrelate
+across Channels; trajectories are not pinned at render start. Resolution
+reserves each modulated Channel's buffer as its nominal delay plus
+`depthMs` in samples (the Excursion) plus a fixed worst-case Interpolation
+margin, so DSP-owned memory does not move if a later ticket changes
+`interpolation`. A resolved delay too short to serve that Excursion plus
+margin is rejected before any audio is processed -- naming
+`modulation/depthMs` -- rather than overrunning intermittently at the
+modulation peak; the Feedback Loop's Block-size bound is derived from the
+Excursion-adjusted delays the same way. Resolved per-Channel trajectory
+seeds, rates, and phases, the resolved Excursion, and the Interpolation
+margin are recorded in `resolved.json`.
 
 Each Channel's decay gain is solved independently from that Channel's own
 loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate

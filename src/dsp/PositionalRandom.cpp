@@ -1,8 +1,8 @@
-#include "rvrbotron/config/PositionalRandom.h"
+#include "rvrbotron/dsp/PositionalRandom.h"
 
 #include <cmath>
 
-namespace rvrbotron::config {
+namespace rvrbotron::dsp {
 
 std::uint64_t splitMix64(const std::uint64_t input) noexcept {
   auto value = input + 0x9e3779b97f4a7c15ULL;
@@ -34,4 +34,4 @@ double positionalUnitDoubleV1(
   return std::ldexp(static_cast<double>(bits >> 11U), -53);
 }
 
-} // namespace rvrbotron::config
+} // namespace rvrbotron::dsp

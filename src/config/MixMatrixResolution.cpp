@@ -1,6 +1,6 @@
 #include "rvrbotron/config/MixMatrixResolution.h"
 
-#include "rvrbotron/config/PositionalRandom.h"
+#include "rvrbotron/dsp/PositionalRandom.h"
 
 #include <cmath>
 #include <limits>
@@ -78,7 +78,7 @@ std::vector<double> fillRandomOrthogonalSeed(
       static_cast<std::size_t>(channels) * channels);
   for (std::uint32_t row = 0; row < channels; ++row) {
     for (std::uint32_t column = 0; column < channels; ++column) {
-      const auto unit = positionalUnitDoubleV1(
+      const auto unit = dsp::positionalUnitDoubleV1(
           seed, kRandomOrthogonalFillUsage, row, column);
       matrix[static_cast<std::size_t>(row) * channels + column] =
           -1.0 + 2.0 * unit;

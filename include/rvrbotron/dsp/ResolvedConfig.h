@@ -129,6 +129,60 @@ struct ResolvedDamping {
   double slowestResolvedRt60Sec = 0.0;
 };
 
+// The Feedback Loop delay line's fractional-read method (see docs/design/
+// reverb/stages/06-modulation.md's "Fractional delay becomes mandatory"):
+// third-order Lagrange today; `linear` and `allpass` are added by later
+// tickets.
+enum class ModulationInterpolation {
+  lagrange3,
+};
+
+// Resolved Modulation (see docs/design/reverb/stages/06-modulation.md,
+// issue #89): seeded per-Channel delay-time movement inside the Feedback
+// Loop, read through a fractional DelayLine interpolator. Disabled
+// (nullopt) on the owning stage by default: omission preserves existing
+// rendered output and leaves the Resolved Configuration byte-identical to
+// one written without it.
+//
+// There is no `target` field (see the design doc's "Placement"): which
+// stage a resolved Modulation belongs to is already recorded by where
+// this struct is nested (on the Feedback Loop today; a Diffusion Step is
+// added by a later ticket), not by a second field naming the same
+// decision. Likewise, "nominal and maximum buffer bounds" -- called for
+// in issue #89's acceptance criteria -- are the owning stage's own
+// `delaysSamples` and `bufferSizes`, not duplicated here.
+struct ResolvedModulation {
+  // Peak Excursion, in milliseconds, and the LFO rate, in Hz, that
+  // together govern the Detune product (see "Depth and rate multiply").
+  // 0.4ms / 0.7Hz is the documented research baseline for an included but
+  // otherwise empty Modulation object -- not a neutral default.
+  double depthMs = 0.4;
+  double rateHz = 0.7;
+  ModulationInterpolation interpolation = ModulationInterpolation::lagrange3;
+  // depthMs resolved to samples at this Composition's sample rate; 0 when
+  // depthMs is 0.
+  double excursionSamples = 0.0;
+  // The fixed worst-case Interpolation margin (see "What this forces on
+  // the architecture"), in samples, sized for the worst of all three
+  // eventual interpolation methods so DSP-owned memory does not move when
+  // the method changes.
+  std::uint64_t interpolationMarginSamples = 0;
+  // Per-Channel derived trajectory seed (a pure function of this
+  // Composition's own seed and the Channel index), per-Channel resolved
+  // trajectory rate -- rateHz times that Channel's own fixed +-10%
+  // seeded spread, already divided by the sample rate so the DSP layer
+  // works in per-sample units like every other resolved rate in this
+  // codebase -- and per-Channel resolved phase, a positionally seeded
+  // offset in [0, 1) added to that Channel's target-grid position (see
+  // "Decorrelation and shape"'s "Phase, rate spread and Channel
+  // selection each get their own usage tag"). All three empty when
+  // depthMs is 0 (the resolved bypass; see "Identity is guaranteed by
+  // construction, not by arithmetic").
+  std::vector<std::uint64_t> channelSeeds;
+  std::vector<double> channelTargetsPerSample;
+  std::vector<double> channelPhases;
+};
+
 struct ResolvedFeedbackLoop {
   std::uint32_t channels = 0;
   std::uint64_t delayMinSamples = 0;
@@ -174,6 +228,12 @@ struct ResolvedFeedbackLoop {
   // preserves undamped output, and existing format-version-1 Resolved
   // Configurations without this field load as disabled.
   std::optional<ResolvedDamping> damping;
+  // Seeded delay-time movement (see docs/design/reverb/stages/
+  // 06-modulation.md and issue #89). Disabled (nullopt) by default:
+  // omission preserves existing rendered output, and existing
+  // format-version-1 Resolved Configurations without this field load as
+  // disabled.
+  std::optional<ResolvedModulation> modulation;
 };
 
 struct ResolvedDownmix {
