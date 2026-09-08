@@ -9,8 +9,19 @@
 namespace rvrbotron::config {
 namespace {
 
-constexpr std::uint64_t kModulationRateSpreadUsage = 0x4d4f445241544553ULL;
-constexpr std::uint64_t kModulationPhaseUsage = 0x4d4f445048415345ULL;
+// Feedback Loop tags are unchanged from issue #89/#90 (existing
+// resolved.json files and their rendered audio must not shift). Diffusion
+// Step tags (issue #91) are new, distinct constants -- not the same tag
+// with a repurposed itemIndex -- mirroring kDiffusionDelayUsage's own
+// separation from kFeedbackLoopDelayUsage in ResolveConfig.cpp.
+constexpr std::uint64_t kFeedbackLoopModulationRateSpreadUsage =
+    0x4d4f445241544553ULL;
+constexpr std::uint64_t kDiffusionModulationRateSpreadUsage =
+    0x44535445504d5254ULL;
+constexpr std::uint64_t kFeedbackLoopModulationPhaseUsage =
+    0x4d4f445048415345ULL;
+constexpr std::uint64_t kDiffusionModulationPhaseUsage =
+    0x44535445504d5048ULL;
 
 } // namespace
 
@@ -20,15 +31,27 @@ double resolveExcursionSamples(
 }
 
 double resolveModulationRateSpread(
-    const std::uint64_t seed, const std::uint32_t channel) noexcept {
+    const std::uint64_t seed,
+    const ModulationOwner owner,
+    const std::uint64_t itemIndex,
+    const std::uint32_t channel) noexcept {
+  const auto usage = owner == ModulationOwner::feedbackLoop
+      ? kFeedbackLoopModulationRateSpreadUsage
+      : kDiffusionModulationRateSpreadUsage;
   const auto unit =
-      dsp::positionalUnitDoubleV1(seed, kModulationRateSpreadUsage, 0, channel);
+      dsp::positionalUnitDoubleV1(seed, usage, itemIndex, channel);
   return 1.0 + 0.1 * (2.0 * unit - 1.0);
 }
 
 double resolveModulationPhase(
-    const std::uint64_t seed, const std::uint32_t channel) noexcept {
-  return dsp::positionalUnitDoubleV1(seed, kModulationPhaseUsage, 0, channel);
+    const std::uint64_t seed,
+    const ModulationOwner owner,
+    const std::uint64_t itemIndex,
+    const std::uint32_t channel) noexcept {
+  const auto usage = owner == ModulationOwner::feedbackLoop
+      ? kFeedbackLoopModulationPhaseUsage
+      : kDiffusionModulationPhaseUsage;
+  return dsp::positionalUnitDoubleV1(seed, usage, itemIndex, channel);
 }
 
 bool modulationFitsDelay(

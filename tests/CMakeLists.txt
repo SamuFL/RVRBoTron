@@ -87,6 +87,16 @@ add_test(
 )
 
 add_test(
+  NAME diffusion_step_modulation_render
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_diffusion_step_modulation_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/diffusion-step-modulation-render
+)
+
+add_test(
   NAME diffuser_loop_render
   COMMAND
     ${Python3_EXECUTABLE}

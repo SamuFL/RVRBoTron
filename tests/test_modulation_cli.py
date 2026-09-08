@@ -186,6 +186,37 @@ def main():
             "unmodulated baseline"
         )
 
+    # An exact resolved rerender of an active Feedback Loop Modulation
+    # reproduces output.wav and resolved.json byte-for-byte -- the
+    # resolved-configuration round-trip invariant applied to an active
+    # Modulation object specifically, not just to the surrounding stage
+    # fields every other resolved-rerender test already covers.
+    active_result = workspace / "active-result"
+    active_rerendered = workspace / "active-rerendered"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        active_result / "resolved.json",
+        "--output",
+        active_rerendered,
+    )
+    if (active_rerendered / "output.wav").read_bytes() != (
+        active_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed active Feedback Loop Modulation "
+            "output"
+        )
+    if (active_rerendered / "resolved.json").read_bytes() != (
+        active_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed active Feedback Loop Modulation "
+            "resolved.json"
+        )
+
     # A resolved delay too short to serve the requested Excursion plus the
     # fixed Interpolation margin is rejected before any audio is
     # processed, naming the responsible Modulation parameter path, rather
