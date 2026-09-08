@@ -223,7 +223,10 @@ dsp::ModulationInterpolation parseModulationInterpolation(
   if (name == "lagrange3") {
     return dsp::ModulationInterpolation::lagrange3;
   }
-  fail(path, "expected lagrange3");
+  if (name == "linear") {
+    return dsp::ModulationInterpolation::linear;
+  }
+  fail(path, "expected lagrange3 or linear");
 }
 
 dsp::ModulationShape parseModulationShape(

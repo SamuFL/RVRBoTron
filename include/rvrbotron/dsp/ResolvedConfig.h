@@ -55,11 +55,18 @@ struct ResolvedSplit {
 
 // The delay line's fractional-read method for a Modulation-bearing stage
 // (see docs/design/reverb/stages/06-modulation.md's "Fractional delay
-// becomes mandatory"): third-order Lagrange today; `linear` and `allpass`
-// are added by later tickets. Shared by the Feedback Loop and a Diffusion
-// Step alike.
+// becomes mandatory"): third-order Lagrange is the default; `linear` is
+// a deliberate ablation -- it darkens a modulated tail as depth rises,
+// the unintended lowpass this milestone exists to quantify, made
+// available for exactly that comparison rather than hidden as a bug
+// (issue #92). `allpass` is added by a later ticket. Shared by the
+// Feedback Loop and a Diffusion Step alike, and identically sized: the
+// fixed Interpolation margin is sized for the worst case across all
+// three methods, so DSP-owned memory never moves when this choice
+// changes.
 enum class ModulationInterpolation {
   lagrange3,
+  linear,
 };
 
 // A Modulation's per-Channel trajectory waveform (see docs/design/

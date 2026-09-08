@@ -197,6 +197,30 @@ std::string_view mixMatrixTypeName(const dsp::MixMatrixType mix) noexcept {
   return "unknown";
 }
 
+std::string_view modulationInterpolationName(
+    const dsp::ModulationInterpolation interpolation) noexcept {
+  switch (interpolation) {
+  case dsp::ModulationInterpolation::lagrange3:
+    return "lagrange3";
+  case dsp::ModulationInterpolation::linear:
+    return "linear";
+  }
+  return "unknown";
+}
+
+// Whether a resolved Modulation object actually moves at least one
+// Channel (see docs/design/reverb/stages/06-modulation.md's "Identity is
+// guaranteed by construction, not by arithmetic"): an omitted object, an
+// explicit zero depth, and a zero channelFraction all resolve to an empty
+// `channelModulated` and therefore never reach the interpolated read path
+// this benchmark exists to cost -- reporting an interpolation method for
+// any of those would name a choice that made no difference to the
+// measured time.
+bool modulationActive(
+    const std::optional<dsp::ResolvedModulation>& modulation) noexcept {
+  return modulation.has_value() && !modulation->channelModulated.empty();
+}
+
 // Deterministic nonzero pseudo-random block generator (xorshift64*), so
 // benchmark runs are reproducible and no measured block is silently zero.
 class DeterministicSource {
@@ -272,10 +296,14 @@ void runBenchmark(const int argc, char** const argv) {
   const auto& split =
       std::get<dsp::ResolvedSplit>(config.composition.stages[0]);
   const dsp::ResolvedDiffuser* diffuser = nullptr;
+  const dsp::ResolvedFeedbackLoop* feedbackLoop = nullptr;
   for (const auto& stage : config.composition.stages) {
     if (const auto* const candidate = std::get_if<dsp::ResolvedDiffuser>(&stage)) {
       diffuser = candidate;
-      break;
+    } else if (
+        const auto* const loopCandidate =
+            std::get_if<dsp::ResolvedFeedbackLoop>(&stage)) {
+      feedbackLoop = loopCandidate;
     }
   }
 
@@ -366,11 +394,29 @@ void runBenchmark(const int argc, char** const argv) {
   const auto dspOwnedBytes = reverb.ownedBytes();
 
   nlohmann::json matrixByStep = nlohmann::json::array();
+  // One entry per Diffusion Step, null unless that step's own Modulation
+  // actually moves at least one Channel -- so a benchmark run against a
+  // resolved.json is self-describing about which interpolation method(s)
+  // its own timing evidence actually cost, and two runs (say lagrange3
+  // against linear) stay directly comparable without the caller having to
+  // separately track which resolved.json produced which report (issue
+  // #92's "DSP benchmark reports this method's own processing cost").
+  nlohmann::json modulationInterpolationByStep = nlohmann::json::array();
   if (diffuser != nullptr) {
     for (const auto& step : diffuser->steps) {
       matrixByStep.push_back(mixMatrixTypeName(step.mix));
+      modulationInterpolationByStep.push_back(
+          modulationActive(step.modulation)
+              ? nlohmann::json(
+                    modulationInterpolationName(step.modulation->interpolation))
+              : nlohmann::json(nullptr));
     }
   }
+  const nlohmann::json feedbackLoopModulationInterpolation =
+      feedbackLoop != nullptr && modulationActive(feedbackLoop->modulation)
+          ? nlohmann::json(modulationInterpolationName(
+                feedbackLoop->modulation->interpolation))
+          : nlohmann::json(nullptr);
 
   const nlohmann::json report{
       {"formatVersion", 1},
@@ -387,6 +433,9 @@ void runBenchmark(const int argc, char** const argv) {
            {"channels", split.channels},
            {"stepCount", diffuser != nullptr ? diffuser->steps.size() : std::size_t{0}},
            {"matrixByStep", matrixByStep},
+           {"modulationInterpolationByStep", modulationInterpolationByStep},
+           {"feedbackLoopModulationInterpolation",
+            feedbackLoopModulationInterpolation},
        }},
       {"warmupSeconds", arguments.warmupSeconds},
       {"measureSeconds", arguments.measureSeconds},

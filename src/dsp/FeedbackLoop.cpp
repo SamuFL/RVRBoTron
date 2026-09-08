@@ -163,6 +163,7 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
           "phase, and bypass flag per Channel");
     }
     modulation_.emplace(modulation);
+    interpolation_ = modulation.interpolation;
   }
 }
 
@@ -177,7 +178,9 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
       delayed = Sample{0};
     } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
       const auto lookback = modulation_->lookbackSamples(channel, delay);
-      delayed = delayLine_.readFraction(channel, lookback);
+      delayed = interpolation_ == ModulationInterpolation::linear
+          ? delayLine_.readFractionLinear(channel, lookback)
+          : delayLine_.readFraction(channel, lookback);
     } else {
       delayed = delayLine_.read(channel);
     }

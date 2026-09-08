@@ -250,9 +250,9 @@ def main():
         raise AssertionError("rejected configuration created a Render Result")
 
     # An unsupported interpolation value is rejected by name, not silently
-    # substituted -- only lagrange3 ships in this milestone (#89); linear
-    # and allpass are added by later tickets.
-    bad_interpolation_request = base_request({"interpolation": "linear"})
+    # substituted -- only lagrange3 and linear ship as of this milestone
+    # (#89/#92); allpass is added by a later ticket.
+    bad_interpolation_request = base_request({"interpolation": "allpass"})
     bad_interpolation_path = workspace / "bad-interpolation-request.json"
     bad_interpolation_path.write_text(json.dumps(bad_interpolation_request))
     bad_interpolation = run(
@@ -266,10 +266,69 @@ def main():
     )
     if bad_interpolation.returncode == 0:
         raise AssertionError("renderer accepted an unsupported interpolation")
-    if "lagrange3" not in bad_interpolation.stderr:
+    if "lagrange3 or linear" not in bad_interpolation.stderr:
         raise AssertionError(
             f"unsupported interpolation was not rejected by name: "
             f"{bad_interpolation.stderr}"
+        )
+
+    # linear resolves and renders end to end (issue #92): a deliberate
+    # ablation exposing the unintended, depth-dependent lowpass a moving
+    # linear-interpolated read produces inside a circulating loop.
+    linear_resolved, linear_wav = render(
+        "linear",
+        base_request({"depthMs": 5.0, "rateHz": 3.0, "interpolation": "linear"}),
+    )
+    linear_loop = feedback_loop_stage(linear_resolved)
+    if linear_loop["modulation"]["interpolation"] != "linear":
+        raise AssertionError(
+            f"requested linear interpolation did not round-trip: "
+            f"{linear_loop['modulation']}"
+        )
+    if linear_wav == omitted_wav:
+        raise AssertionError(
+            "linear-interpolated Modulation rendered output identical to "
+            "the unmodulated baseline"
+        )
+    if linear_wav == active_wav:
+        raise AssertionError(
+            "linear-interpolated Modulation rendered output identical to "
+            "lagrange3 at the same depthMs/rateHz"
+        )
+    # The Interpolation margin -- and therefore every resolved buffer
+    # size -- does not move when the interpolation method changes: it is
+    # sized for the worst case across all methods, not the configured
+    # one.
+    if linear_loop["bufferSizes"] != active_loop["bufferSizes"]:
+        raise AssertionError(
+            f"linear interpolation resolved different buffer sizes than "
+            f"lagrange3 at the same depthMs: {linear_loop['bufferSizes']} "
+            f"!= {active_loop['bufferSizes']}"
+        )
+
+    # depthMs of 0 remains bit-identical to Modulation omitted under
+    # linear too -- the resolved bypass is independent of interpolation
+    # method.
+    _, linear_zero_wav = render(
+        "linear-zero-depth",
+        base_request({"depthMs": 0.0, "interpolation": "linear"}),
+    )
+    if linear_zero_wav != omitted_wav:
+        raise AssertionError(
+            "zero-depth linear-interpolated Modulation rendered output "
+            "was not bit-identical to Modulation omitted"
+        )
+
+    # Repeat renders of an identical linear-interpolated configuration
+    # are exact.
+    linear_repeat_resolved, linear_repeat_wav = render(
+        "linear-repeat",
+        base_request({"depthMs": 5.0, "rateHz": 3.0, "interpolation": "linear"}),
+    )
+    if linear_repeat_wav != linear_wav:
+        raise AssertionError(
+            "repeat renders of an identical linear-interpolated "
+            "Modulation configuration were not exact"
         )
 
     # An unknown field inside modulation is rejected like every other
