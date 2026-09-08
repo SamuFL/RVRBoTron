@@ -169,15 +169,31 @@ std::optional<std::uint64_t> checkedAdd(
 
 // Conservative (worst-case double-precision Sample) estimate of the
 // DSP-owned bytes a resolved Diffuser will occupy: one delay line per
-// Channel sized to the shared sample budget, plus a full NxN matrix and
-// small per-Channel metadata for every step.
+// Channel sized to `maxBufferSamples`, plus a full NxN matrix and small
+// per-Channel metadata for every step, plus `modulationBytes` for every
+// active Diffusion Step Modulation's own owned per-Channel vectors
+// (channelSeeds/channelTargetsPerSample/channelPhases/channelModulated;
+// see issue #91) -- nullopt (from estimateDiffuserModulationBytes's own
+// overflow) propagates as an unrepresentable, and therefore rejected,
+// estimate, exactly like every other overflow below. `maxBufferSamples`
+// is the nominal shared sample budget before any step is resolved (the
+// caller has nothing better yet), or the largest actually-resolved
+// per-Channel buffer size across every step once resolved -- Diffusion
+// Step Modulation's Excursion and Interpolation margin can grow a
+// Channel's buffer past the nominal budget (see docs/design/reverb/
+// stages/06-modulation.md's "Delay buffers need headroom"), so a
+// post-resolution caller must pass whichever of the two is larger to
+// keep this estimate conservative (mirrors
+// estimateFeedbackLoopMemoryBytes's own `max(delayMaxSamples,
+// maxResolvedBufferSamples)` pattern).
 std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
     const std::uint32_t channels,
-    const std::uint64_t totalSamples,
-    const std::uint64_t stepCount) noexcept {
+    const std::uint64_t maxBufferSamples,
+    const std::uint64_t stepCount,
+    const std::optional<std::uint64_t> modulationBytes) noexcept {
   constexpr std::uint64_t kSampleBytes = 8;
   constexpr std::uint64_t kMetadataBytesPerChannel = 24;
-  auto delayBytes = checkedMul(channels, totalSamples);
+  auto delayBytes = checkedMul(channels, maxBufferSamples);
   delayBytes =
       delayBytes ? checkedMul(*delayBytes, kSampleBytes) : std::nullopt;
   const auto matrixElements = checkedMul(channels, channels);
@@ -192,29 +208,69 @@ std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
                            ? checkedMul(*metadataBytesPerStep, stepCount)
                            : std::nullopt;
   if (!delayBytes.has_value() || !matrixBytes.has_value() ||
-      !metadataBytes.has_value()) {
+      !metadataBytes.has_value() || !modulationBytes.has_value()) {
     return std::nullopt;
   }
   auto total = checkedAdd(*delayBytes, *matrixBytes);
   total = total.has_value() ? checkedAdd(*total, *metadataBytes)
+                             : std::nullopt;
+  total = total.has_value() ? checkedAdd(*total, *modulationBytes)
                              : std::nullopt;
   return total;
 }
 
 void checkDiffuserMemoryBudget(
     const std::uint32_t channels,
-    const std::uint64_t totalSamples,
+    const std::uint64_t maxBufferSamples,
     const std::uint64_t stepCount,
+    const std::optional<std::uint64_t> modulationBytes,
     const std::uint64_t budgetBytes,
     const std::string_view path) {
-  const auto estimate =
-      estimateDiffuserMemoryBytes(channels, totalSamples, stepCount);
+  const auto estimate = estimateDiffuserMemoryBytes(
+      channels, maxBufferSamples, stepCount, modulationBytes);
   if (!estimate.has_value() || *estimate > budgetBytes) {
     fail(
         path,
         "resolved Diffuser DSP memory footprint exceeds the configured "
         "memory budget");
   }
+}
+
+// Conservative per-Channel byte estimate for one active Modulation
+// object's own owned vectors (see dsp::Modulation::ownedBytes(), which
+// this deliberately over-approximates rather than imports exactly, to
+// keep this estimator's own arithmetic simple and self-contained):
+// channelSeeds (uint64_t), channelTargetsPerSample and channelPhases
+// (double each), and channelModulated (rounded up to a full byte per
+// Channel even though std::vector<bool> packs bits).
+constexpr std::uint64_t kModulationBytesPerChannel = 25;
+
+// Sums `kModulationBytesPerChannel * channels` for every Diffusion Step
+// whose own Modulation actually moved at least one Channel (empty
+// `channelModulated` is the resolved bypass -- no vectors allocated; see
+// docs/design/reverb/stages/06-modulation.md's "Identity is guaranteed by
+// construction, not by arithmetic"). Returns nullopt on overflow, treated
+// by `checkDiffuserMemoryBudget`'s caller the same as any other
+// unrepresentable estimate -- conservatively rejected rather than
+// silently underestimated.
+std::optional<std::uint64_t> estimateDiffuserModulationBytes(
+    const std::uint32_t channels,
+    const std::vector<dsp::ResolvedDiffusionStep>& steps) noexcept {
+  std::uint64_t total = 0;
+  for (const auto& step : steps) {
+    if (!step.modulation.has_value() ||
+        step.modulation->channelModulated.empty()) {
+      continue;
+    }
+    const auto stepBytes = checkedMul(channels, kModulationBytesPerChannel);
+    const auto accumulated =
+        stepBytes ? checkedAdd(total, *stepBytes) : std::nullopt;
+    if (!accumulated.has_value()) {
+      return std::nullopt;
+    }
+    total = *accumulated;
+  }
+  return total;
 }
 
 // Conservative estimate of the DSP-owned bytes a resolved Feedback Loop
@@ -1299,10 +1355,17 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                     stageConfig, derivation.stepCount);
                 if (weights.has_value() &&
                     weights->size() == derivation.stepCount) {
+                  // Fast, approximate pre-resolution gate: no step is
+                  // resolved yet, so no Modulation headroom is known
+                  // (modulationBytes = 0) -- the authoritative,
+                  // headroom-aware check runs post-resolution in
+                  // validateDiffuserStage, which always runs before this
+                  // Diffuser reaches DSP construction.
                   checkDiffuserMemoryBudget(
                       channels,
                       derivation.sampleBudget.samples,
                       derivation.stepCount,
+                      /*modulationBytes=*/0,
                       memoryBudgetBytes,
                       "/composition/stages/1");
                   derivation.expectedStepLengths = apportionStepSamples(
@@ -1653,10 +1716,27 @@ void validateDiffuserStage(
   if (diffuser.totalSamples == 0) {
     fail(path + "/totalSamples", "expected value greater than zero");
   }
+  // Diffusion Step Modulation's Excursion and Interpolation margin can
+  // grow a Channel's resolved buffer past the nominal shared sample
+  // budget (see docs/design/reverb/stages/06-modulation.md's "Delay
+  // buffers need headroom"); take whichever bound is larger so an
+  // unmodulated Diffuser's check is unchanged from before Modulation
+  // existed (mirrors validateFeedbackLoopStage's own
+  // `maxResolvedBufferSamples` pattern).
+  auto maxResolvedBufferSamples = diffuser.totalSamples;
+  for (const auto& step : diffuser.steps) {
+    if (!step.bufferSizes.empty()) {
+      maxResolvedBufferSamples = std::max(
+          maxResolvedBufferSamples,
+          *std::max_element(
+              step.bufferSizes.begin(), step.bufferSizes.end()));
+    }
+  }
   checkDiffuserMemoryBudget(
       channels,
-      diffuser.totalSamples,
+      maxResolvedBufferSamples,
       diffuser.steps.size(),
+      estimateDiffuserModulationBytes(channels, diffuser.steps),
       memoryBudgetBytes,
       path);
   if (validatingRequest &&

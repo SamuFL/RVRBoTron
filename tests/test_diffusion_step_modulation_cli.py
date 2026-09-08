@@ -286,6 +286,38 @@ def main():
             "unmodulated baseline"
         )
 
+    # An exact resolved rerender of an active Diffusion Step Modulation
+    # reproduces output.wav and resolved.json byte-for-byte -- exercising
+    # parseResolvedStep's new "modulation" branch and the per-step
+    # validateResolvedModulation path on the --resolved reload, not just
+    # the --config resolution path every render() call above already
+    # takes.
+    active_result = workspace / "active-result"
+    active_rerendered = workspace / "active-rerendered"
+    run_ok(
+        renderer,
+        "--input",
+        fixture,
+        "--resolved",
+        active_result / "resolved.json",
+        "--output",
+        active_rerendered,
+    )
+    if (active_rerendered / "output.wav").read_bytes() != (
+        active_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed active Diffusion Step Modulation "
+            "output"
+        )
+    if (active_rerendered / "resolved.json").read_bytes() != (
+        active_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "resolved rerender changed active Diffusion Step Modulation "
+            "resolved.json"
+        )
+
     # Diffusion Step trajectories are seeded per step and per Channel:
     # two steps modulated with identical parameters never share a
     # trajectory, and neither does a modulated step share one with the
