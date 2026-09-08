@@ -60,6 +60,7 @@ DiffusionStep::DiffusionStep(const ResolvedDiffusionStep& config)
           "phase, and bypass flag per Channel");
     }
     modulation_.emplace(modulation);
+    interpolation_ = modulation.interpolation;
   }
 }
 
@@ -75,7 +76,9 @@ void DiffusionStep::processFrame(const Sample* const inputs,
     }
     if (modulation_.has_value() && modulation_->isModulated(channel)) {
       const auto lookback = modulation_->lookbackSamples(channel, delay);
-      delayedValues_[channel] = delayLine_.readFraction(channel, lookback);
+      delayedValues_[channel] = interpolation_ == ModulationInterpolation::linear
+          ? delayLine_.readFractionLinear(channel, lookback)
+          : delayLine_.readFraction(channel, lookback);
     } else {
       delayedValues_[channel] = delayLine_.read(channel);
     }

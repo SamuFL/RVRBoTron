@@ -1871,6 +1871,32 @@ int main() {
     }
   }
 
+  // DelayLine::readFractionLinear (issue #92): the deliberate ablation
+  // alongside readFraction's third-order Lagrange. A ramp cannot
+  // distinguish the two methods -- linear interpolation reproduces any
+  // linear function exactly too, the same property the oracle above
+  // relies on -- so this checks the two-point formula directly against
+  // hand-computed values on a single-impulse signal instead.
+  {
+    rvrbotron::dsp::DelayLine impulse({5}, {10});
+    const std::array<rvrbotron::dsp::Sample, 10> impulseSequence{
+        0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    for (const auto value : impulseSequence) {
+      impulse.write(0, value);
+    }
+    if (!close(impulse.readFractionLinear(0, 6.0), 1.0) ||
+        !close(impulse.readFractionLinear(0, 5.0), 0.0)) {
+      std::cerr << "DelayLine::readFractionLinear at an integer lookback "
+                   "did not match the value written that many frames ago\n";
+      return 1;
+    }
+    if (!close(impulse.readFractionLinear(0, 5.5), 0.5)) {
+      std::cerr << "DelayLine::readFractionLinear did not average its two "
+                   "neighboring samples at a half-integer lookback\n";
+      return 1;
+    }
+  }
+
   // Modulation (issue #89): zero depth must render bit-identical to
   // Modulation omitted entirely, guaranteed by the resolved bypass
   // (config::resolveConfig never reserves buffer headroom or derives
@@ -1991,6 +2017,66 @@ int main() {
     if (firstRun != secondRun) {
       std::cerr << "Modulated Feedback Loop was not deterministic across "
                    "repeat renders\n";
+      return 1;
+    }
+
+    // linear interpolation (issue #92): the deliberate ablation, at the
+    // same depthMs/rateHz/seed as the lagrange3 case just above, so the
+    // two are directly comparable. The Interpolation margin -- and
+    // therefore the resolved buffer size -- does not move when the
+    // method changes, but the rendered output does, proving processFrame
+    // actually dispatched to DelayLine::readFractionLinear rather than
+    // silently reusing Lagrange3's path.
+    auto linearModulation = activeModulation;
+    linearModulation.interpolation = rvrbotron::dsp::ModulationInterpolation::linear;
+    const auto linearConfig = resolvedModulatedLoopConfig(
+        2,
+        1.5,
+        40.0,
+        60.0,
+        linearModulation,
+        rvrbotron::dsp::DelayStrategy::even,
+        sampleRate);
+    const auto& linearLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            linearConfig.composition.stages[1]);
+    if (!linearLoopStage.modulation.has_value() ||
+        linearLoopStage.modulation->interpolation !=
+            rvrbotron::dsp::ModulationInterpolation::linear) {
+      std::cerr << "Requested linear interpolation did not resolve onto "
+                   "the Modulation object\n";
+      return 1;
+    }
+    if (linearLoopStage.bufferSizes != activeLoopStage.bufferSizes) {
+      std::cerr << "linear interpolation resolved different buffer sizes "
+                   "than lagrange3 at the same depthMs\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::FeedbackLoop linearLoop(linearLoopStage);
+    constexpr std::size_t modulatedFrames = 20000;
+    std::vector<std::array<rvrbotron::dsp::Sample, 2>> linearRun(
+        modulatedFrames);
+    const std::array<rvrbotron::dsp::Sample, 2> impulse{1.0F, -1.0F};
+    const std::array<rvrbotron::dsp::Sample, 2> silence{0.0F, 0.0F};
+    auto linearOutputDiffered = false;
+    for (std::size_t frame = 0; frame < modulatedFrames; ++frame) {
+      const auto& in = frame == 0 ? impulse : silence;
+      linearLoop.processFrame(in.data(), linearRun[frame].data());
+      for (const auto sample : linearRun[frame]) {
+        if (!std::isfinite(static_cast<double>(sample))) {
+          std::cerr << "linear-interpolated Feedback Loop produced a "
+                       "non-finite sample\n";
+          return 1;
+        }
+      }
+      if (linearRun[frame] != firstRun[frame]) {
+        linearOutputDiffered = true;
+      }
+    }
+    if (!linearOutputDiffered) {
+      std::cerr << "linear interpolation rendered output identical to "
+                   "lagrange3 at every frame\n";
       return 1;
     }
   }
@@ -2763,6 +2849,68 @@ int main() {
       if (!activeOutputDiffered) {
         std::cerr << "active Diffusion Step Modulation rendered output "
                      "identical to the unmodulated baseline\n";
+        return 1;
+      }
+    }
+
+    // linear interpolation on a Diffusion Step (issue #92): the
+    // deliberate ablation, at the same depthMs/rateHz/seed as the
+    // lagrange3 case just above, so the two are directly comparable. The
+    // Interpolation margin -- and therefore the resolved buffer size --
+    // does not move when the method changes, but the rendered output
+    // does, proving processFrame actually dispatched to
+    // DelayLine::readFractionLinear rather than silently reusing
+    // Lagrange3's path.
+    {
+      auto linearModulation = activeModulation;
+      linearModulation.interpolation =
+          rvrbotron::dsp::ModulationInterpolation::linear;
+      const auto linearConfig = resolvedDiffuserStepModulatedConfig(
+          channels,
+          totalMs,
+          stepCount,
+          std::nullopt,
+          std::make_pair(std::uint32_t{0}, linearModulation));
+      const auto& linearDiffuser = std::get<rvrbotron::dsp::ResolvedDiffuser>(
+          linearConfig.composition.stages[1]);
+      const auto& linearStep0 = linearDiffuser.steps[0];
+      if (!linearStep0.modulation.has_value() ||
+          linearStep0.modulation->interpolation !=
+              rvrbotron::dsp::ModulationInterpolation::linear) {
+        std::cerr << "Requested linear interpolation did not resolve onto "
+                     "the Diffusion Step's Modulation object\n";
+        return 1;
+      }
+      if (linearStep0.bufferSizes != activeStep0.bufferSizes) {
+        std::cerr << "linear interpolation resolved different buffer "
+                     "sizes than lagrange3 at the same depthMs on a "
+                     "Diffusion Step\n";
+        return 1;
+      }
+
+      rvrbotron::dsp::Diffuser lagrange3Diffuser(activeDiffuser);
+      rvrbotron::dsp::Diffuser linearDiffuserDsp(linearDiffuser);
+      auto linearOutputDiffered = false;
+      for (std::size_t frame = 0; frame < 4000; ++frame) {
+        std::vector<rvrbotron::dsp::Sample> lagrange3Output(channels);
+        std::vector<rvrbotron::dsp::Sample> linearOutput(channels);
+        const auto& in = frame == 0 ? impulse : silence;
+        lagrange3Diffuser.processFrame(in.data(), lagrange3Output.data());
+        linearDiffuserDsp.processFrame(in.data(), linearOutput.data());
+        for (const auto sample : linearOutput) {
+          if (!std::isfinite(static_cast<double>(sample))) {
+            std::cerr << "linear-interpolated Diffusion Step produced a "
+                         "non-finite sample\n";
+            return 1;
+          }
+        }
+        if (lagrange3Output != linearOutput) {
+          linearOutputDiffered = true;
+        }
+      }
+      if (!linearOutputDiffered) {
+        std::cerr << "linear interpolation on a Diffusion Step rendered "
+                     "output identical to lagrange3 at every frame\n";
         return 1;
       }
     }

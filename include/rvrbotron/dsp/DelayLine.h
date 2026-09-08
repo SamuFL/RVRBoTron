@@ -116,6 +116,40 @@ public:
     return c0 * p0 + c1 * p1 + c2 * p2 + c3 * p3;
   }
 
+  // Linear interpolated read at an arbitrary, possibly fractional,
+  // lookback from "now" -- the deliberate ablation alongside
+  // readFraction()'s third-order Lagrange (see docs/design/reverb/
+  // stages/06-modulation.md's "Fractional delay becomes mandatory" and
+  // issue #92): linear interpolation is a lowpass whose cutoff depends
+  // on the fractional read position, so inside a circulating loop it
+  // acts as unintended, depth-dependent damping -- made available on
+  // purpose, to be heard and later measured, rather than hidden.
+  // `lookbackSamples` must be finite and, once its two-point stencil
+  // (lookback floor() and floor()+1) is accounted for, stay within
+  // [0, this Channel's resolved buffer size]: strictly less demanding
+  // than readFraction()'s own four-point stencil, so the same resolved
+  // buffer -- sized for Lagrange3's worst case -- always has enough
+  // headroom for this method too (see "Delay buffers need headroom").
+  [[nodiscard]] Sample readFractionLinear(
+      const std::size_t channel,
+      const double lookbackSamples) const noexcept {
+    const auto ring = bufferSizes_[channel];
+    const auto offset = offsets_[channel];
+    const auto position = positions_[channel];
+    const auto base = std::floor(lookbackSamples);
+    const auto frac = static_cast<Sample>(lookbackSamples - base);
+    const auto baseLookback = static_cast<std::int64_t>(base);
+    const auto valueAt = [this, offset, ring, position](
+                             const std::int64_t lookback) noexcept {
+      const auto wrapped = static_cast<std::uint64_t>(lookback) % ring;
+      const auto readPosition = (position + ring - wrapped) % ring;
+      return storage_[offset + readPosition];
+    };
+    const auto p1 = valueAt(baseLookback);
+    const auto p2 = valueAt(baseLookback + 1);
+    return p1 + frac * (p2 - p1);
+  }
+
   [[nodiscard]] std::uint64_t delaySamples(
       const std::size_t channel) const noexcept {
     return delays_[channel];

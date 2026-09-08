@@ -44,6 +44,12 @@ private:
   // channelFraction) leaves `modulation_` unconstructed, exactly
   // mirroring FeedbackLoop's own `modulation_`.
   std::optional<Modulation> modulation_;
+  // Which DelayLine fractional-read method modulated Channels use (issue
+  // #92): meaningful only while `modulation_` holds a value. Interpolation
+  // is a property of the read, not of the trajectory Modulation generates,
+  // so it lives here rather than inside Modulation itself (mirrors
+  // FeedbackLoop's own `interpolation_`).
+  ModulationInterpolation interpolation_ = ModulationInterpolation::lagrange3;
 };
 
 } // namespace rvrbotron::dsp

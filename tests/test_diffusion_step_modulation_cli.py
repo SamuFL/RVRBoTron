@@ -318,6 +318,91 @@ def main():
             "resolved.json"
         )
 
+    # linear resolves and renders end to end on a Diffusion Step too
+    # (issue #92), at the same depthMs/rateHz as the lagrange3 "active"
+    # case above: the Interpolation margin -- and therefore every
+    # resolved buffer size -- does not move when interpolation changes,
+    # so the two are directly comparable.
+    linear_resolved, linear_wav = render(
+        "linear",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {
+                        "depthMs": 0.4,
+                        "rateHz": 5.0,
+                        "interpolation": "linear",
+                    },
+                },
+            ]
+        ),
+    )
+    linear_step0 = diffuser_stage(linear_resolved)["steps"][0]
+    if linear_step0["modulation"]["interpolation"] != "linear":
+        raise AssertionError(
+            f"requested linear interpolation did not round-trip on a "
+            f"Diffusion Step: {linear_step0['modulation']}"
+        )
+    if linear_step0["bufferSizes"] != active_step0["bufferSizes"]:
+        raise AssertionError(
+            f"linear interpolation resolved different buffer sizes than "
+            f"lagrange3 at the same depthMs on a Diffusion Step: "
+            f"{linear_step0['bufferSizes']} != {active_step0['bufferSizes']}"
+        )
+    if linear_wav == omitted_wav:
+        raise AssertionError(
+            "linear-interpolated step Modulation rendered output "
+            "identical to the unmodulated baseline"
+        )
+    if linear_wav == active_wav:
+        raise AssertionError(
+            "linear-interpolated step Modulation rendered output "
+            "identical to lagrange3 at the same depthMs/rateHz"
+        )
+
+    # depthMs of 0 remains bit-identical to Modulation omitted under
+    # linear too.
+    _, linear_zero_wav = render(
+        "linear-zero-depth",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {"depthMs": 0.0, "interpolation": "linear"},
+                },
+            ]
+        ),
+    )
+    if linear_zero_wav != omitted_wav:
+        raise AssertionError(
+            "zero-depth linear-interpolated step Modulation rendered "
+            "output was not bit-identical to Modulation omitted"
+        )
+
+    # Repeat renders of an identical linear-interpolated configuration
+    # are exact.
+    _, linear_repeat_wav = render(
+        "linear-repeat",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {
+                        "depthMs": 0.4,
+                        "rateHz": 5.0,
+                        "interpolation": "linear",
+                    },
+                },
+            ]
+        ),
+    )
+    if linear_repeat_wav != linear_wav:
+        raise AssertionError(
+            "repeat renders of an identical linear-interpolated step "
+            "Modulation configuration were not exact"
+        )
+
     # Diffusion Step trajectories are seeded per step and per Channel:
     # two steps modulated with identical parameters never share a
     # trajectory, and neither does a modulated step share one with the

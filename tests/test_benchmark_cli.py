@@ -130,6 +130,8 @@ def main():
         "channels",
         "stepCount",
         "matrixByStep",
+        "modulationInterpolationByStep",
+        "feedbackLoopModulationInterpolation",
     }
     if set(report["provenance"]) != expected_provenance_keys:
         raise AssertionError(
@@ -153,6 +155,17 @@ def main():
         raise AssertionError(f"unexpected channels/stepCount: {provenance}")
     if provenance["matrixByStep"] != ["hadamard", "hadamard"]:
         raise AssertionError(f"unexpected matrixByStep: {provenance}")
+    # No Modulation is configured on either step or the (absent) Feedback
+    # Loop, so this method's own arithmetic cost (issue #92) is not part
+    # of what this particular report measures.
+    if provenance["modulationInterpolationByStep"] != [None, None]:
+        raise AssertionError(
+            f"unexpected modulationInterpolationByStep: {provenance}"
+        )
+    if provenance["feedbackLoopModulationInterpolation"] is not None:
+        raise AssertionError(
+            f"unexpected feedbackLoopModulationInterpolation: {provenance}"
+        )
 
     if report["warmupSeconds"] != 0.02 or report["measureSeconds"] != 0.02:
         raise AssertionError(f"requested durations did not round-trip: {report}")
@@ -200,6 +213,110 @@ def main():
     elif "WARNING" in completed.stderr:
         raise AssertionError(
             f"optimized build unexpectedly warned: {completed.stderr!r}"
+        )
+
+    # A Composition with active Modulation on both a Diffusion Step and
+    # the Feedback Loop, one interpolation method each, reports each
+    # stage's own resolved method (issue #92) -- so two benchmark runs
+    # against different interpolation choices stay directly comparable
+    # without the caller separately tracking which resolved.json produced
+    # which report.
+    modulation_request = workspace / "modulation-request.json"
+    modulation_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 8,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 2,
+                            "totalMs": 300.0,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "hadamard",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                            "stepOverrides": [
+                                {
+                                    "index": 0,
+                                    "modulation": {
+                                        "depthMs": 0.3,
+                                        "rateHz": 4.0,
+                                        "interpolation": "linear",
+                                    },
+                                },
+                            ],
+                        },
+                        {
+                            "type": "feedback-loop",
+                            "delayMinMs": 40.0,
+                            "delayMaxMs": 60.0,
+                            "delayStrategy": "even",
+                            "rt60Sec": 1.0,
+                            "mix": "householder",
+                            "modulation": {"depthMs": 0.4, "rateHz": 0.7},
+                        },
+                        {"type": "downmix", "strategy": "select"},
+                    ]
+                },
+            }
+        )
+    )
+    modulation_render_result = workspace / "modulation-render-result"
+    modulation_rendered = run(
+        renderer,
+        "render",
+        "--input",
+        fixture,
+        "--config",
+        modulation_request,
+        "--output",
+        modulation_render_result,
+    )
+    if modulation_rendered.returncode != 0:
+        raise AssertionError(modulation_rendered.stderr)
+
+    modulation_report_path = workspace / "modulation-report.json"
+    modulation_completed = run(
+        renderer,
+        "benchmark",
+        "--resolved",
+        modulation_render_result / "resolved.json",
+        "--block-size",
+        "64",
+        "--warmup-seconds",
+        "0.02",
+        "--measure-seconds",
+        "0.02",
+        "--json",
+        modulation_report_path,
+    )
+    if modulation_completed.returncode != 0:
+        raise AssertionError(modulation_completed.stderr)
+    modulation_provenance = json.loads(modulation_completed.stdout)["provenance"]
+    # Step 0 was actively modulated with linear; step 1 carries no
+    # Modulation at all.
+    if modulation_provenance["modulationInterpolationByStep"] != ["linear", None]:
+        raise AssertionError(
+            f"unexpected modulationInterpolationByStep for an active "
+            f"Diffusion Step Modulation: {modulation_provenance}"
+        )
+    # The Feedback Loop's Modulation was configured with no explicit
+    # interpolation, resolving the lagrange3 default.
+    if modulation_provenance["feedbackLoopModulationInterpolation"] != "lagrange3":
+        raise AssertionError(
+            f"unexpected feedbackLoopModulationInterpolation for an "
+            f"active Feedback Loop Modulation: {modulation_provenance}"
         )
 
     # Parameter handling and invalid-argument diagnostics.

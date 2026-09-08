@@ -391,7 +391,7 @@ to the baseline shown here:
 | `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. Means the same thing for every `shape`. |
 | `shape` | `"smoothed-random"` / `"sine"` / `"triangle"` | `"smoothed-random"` | The per-Channel trajectory waveform. `sine`'s periodicity becomes an audible regular wobble at a larger Excursion; `smoothed-random` (band-limited noise) has no period to lock onto. `triangle` shares `sine`'s zero crossings and peak locations, so comparing the two at a fixed `rateHz` compares only the shape. |
 | `channelFraction` | finite number in `[0, 1]` | `1.0` | Proportion of Channels modulated, rounded up. `0` disables Modulation for the stage, exactly like `depthMs: 0`. The modulated Channels are the first `ceil(channelFraction * N)` entries of a positionally seeded fixed permutation, independent of delay ordering -- raising the fraction only adds Channels, never reshuffling ones already selected. |
-| `interpolation` | `"lagrange3"` | `"lagrange3"` | The Feedback Loop delay line's fractional-read method. Only third-order Lagrange ships in this milestone (#89); `linear` and `allpass` are added by later tickets. |
+| `interpolation` | `"lagrange3"` / `"linear"` | `"lagrange3"` | The delay line's fractional-read method. `linear` is a deliberate ablation: it darkens a modulated tail as depth rises, an unintended depth-dependent lowpass, made available on purpose to be heard and compared against `lagrange3` (#92). `allpass` is added by a later ticket. |
 
 `smoothed-random` is Catmull-Rom interpolation between per-Channel targets
 drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`, reproducible
@@ -405,8 +405,9 @@ applies to modulated Channels only -- an excluded Channel may carry a delay
 too short to ever serve the requested Excursion without being rejected.
 Resolution reserves each *modulated* Channel's buffer as its nominal delay
 plus `depthMs` in samples (the Excursion) plus a fixed worst-case
-Interpolation margin, so DSP-owned memory does not move if a later ticket
-changes `interpolation`. A modulated Channel's resolved delay too short to
+Interpolation margin, so DSP-owned memory does not move when `interpolation`
+changes -- the margin is sized for the worst case across every method, not
+the configured one. A modulated Channel's resolved delay too short to
 serve that Excursion plus margin is rejected before any audio is processed
 -- naming `modulation/depthMs` -- rather than overrunning intermittently at
 the modulation peak; the Feedback Loop's Block-size bound is derived from
@@ -647,9 +648,13 @@ the resolved sample rate and requested block size; exact DSP-owned bytes
 best-effort process resident-set-size delta, labeled separately as
 allocator/runtime-noisy evidence; and provenance -- renderer version,
 platform, architecture, compiler, build type, Sample precision, sample rate,
-block size, Channel count, step count, and the mixing matrix used by every
-Diffusion Step. Benchmarking a Debug binary prints a prominent warning to
-stderr but is not refused.
+block size, Channel count, step count, the mixing matrix used by every
+Diffusion Step, and -- per Diffusion Step and for the Feedback Loop --
+the resolved Modulation interpolation method actually exercised (`null`
+when that stage's Modulation is absent or inactive), so two reports from
+different `interpolation` choices stay directly comparable (#92).
+Benchmarking a Debug binary prints a prominent warning to stderr but is
+not refused.
 
 ### Run the Canonical Diffusion Experiment Catalog
 

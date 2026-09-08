@@ -59,6 +59,8 @@ const char* modulationInterpolationName(
   switch (interpolation) {
   case dsp::ModulationInterpolation::lagrange3:
     return "lagrange3";
+  case dsp::ModulationInterpolation::linear:
+    return "linear";
   }
   throw HarnessError(
       ErrorCategory::invalidConfiguration,
