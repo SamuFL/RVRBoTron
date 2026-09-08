@@ -7,7 +7,13 @@ several depth/rate/interpolation combinations, and reports each render's
 peak amplitude and tail RMS (the stability table) plus, for a second set
 at matched depth/rate across all three interpolation methods, the
 sample-to-sample discontinuity a moving allpass-interpolated read produces
-relative to lagrange3 and linear (the transient-artefact table).
+relative to lagrange3 and linear (the transient-artefact table). Every
+reported figure is the worst case across every output Channel, not just
+Channel 0 -- the `select` Downmix these Compositions use maps each
+internal Channel straight to its own output Channel with no mixing, and
+Modulation trajectories are deliberately decorrelated per Channel, so a
+single-Channel analysis could miss a divergence or transient confined to
+a Channel it never looked at (PR #101 review).
 
 This is a standalone evidence-reproduction script, not a general movement-
 measurement tool -- Stage 6's own "Measurement" section already names that
@@ -115,10 +121,18 @@ def render(renderer, fixture, workspace, name, depth_ms, rate_hz, interpolation,
     return result / "output.wav"
 
 
-def channel_zero(wav_path):
+def decode_all_channels(wav_path):
+    """Every output Channel, de-interleaved -- `select` Downmix maps each
+    internal Feedback Loop Channel straight to its own output Channel with
+    no mixing (src/dsp/Downmix.cpp), and Modulation trajectories are
+    deliberately decorrelated per Channel, so Channel 1 is an independent
+    signal, not a duplicate of Channel 0: a single-Channel analysis could
+    miss a divergence or transient confined to the Channel it never looks
+    at (PR #101 review)."""
     wav = analyze_render.inspect_wav(wav_path)
     all_samples = list(analyze_render.decoded_samples(wav))
-    return wav["sampleRate"], all_samples[0 :: wav["channels"]]
+    channels = wav["channels"]
+    return wav["sampleRate"], [all_samples[c::channels] for c in range(channels)]
 
 
 def peak_and_tail_rms(samples, tail_fraction=0.1):
@@ -127,6 +141,14 @@ def peak_and_tail_rms(samples, tail_fraction=0.1):
     tail = samples[tail_start:]
     rms = math.sqrt(sum(s * s for s in tail) / len(tail)) if tail else 0.0
     return peak, rms
+
+
+def worst_case_peak_and_tail_rms(channel_samples, tail_fraction=0.1):
+    """The larger of every Channel's own peak, and the larger of every
+    Channel's own tail RMS -- not necessarily from the same Channel --
+    so a render is reported as bounded only when *every* Channel is."""
+    per_channel = [peak_and_tail_rms(samples, tail_fraction) for samples in channel_samples]
+    return max(p for p, _ in per_channel), max(r for _, r in per_channel)
 
 
 def jump_statistics(samples, start_fraction=0.05, end_fraction=0.6):
@@ -139,6 +161,14 @@ def jump_statistics(samples, start_fraction=0.05, end_fraction=0.6):
     max_jump = max(jumps)
     mean_square_jump = sum(j * j for j in jumps) / len(jumps)
     return max_jump, mean_square_jump
+
+
+def worst_case_jump_statistics(channel_samples, start_fraction=0.05, end_fraction=0.6):
+    per_channel = [
+        jump_statistics(samples, start_fraction, end_fraction)
+        for samples in channel_samples
+    ]
+    return max(m for m, _ in per_channel), max(s for _, s in per_channel)
 
 
 def decay_windows(samples, sample_rate, window_seconds=5.0):
@@ -154,6 +184,24 @@ def decay_windows(samples, sample_rate, window_seconds=5.0):
     return windows
 
 
+def worst_case_decay_windows(channel_samples, sample_rate, window_seconds=5.0):
+    """Per-window peak/RMS, aggregated across every Channel by taking the
+    larger of each Channel's own value at that window -- windows share the
+    same time axis (same sample_rate/window_seconds) across Channels, so
+    element-wise zip lines them up correctly."""
+    per_channel = [
+        decay_windows(samples, sample_rate, window_seconds)
+        for samples in channel_samples
+    ]
+    worst = []
+    for windows_at_this_time in zip(*per_channel):
+        t = windows_at_this_time[0][0]
+        peak = max(w[1] for w in windows_at_this_time)
+        rms = max(w[2] for w in windows_at_this_time)
+        worst.append((t, peak, rms))
+    return worst
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("renderer", type=Path)
@@ -164,7 +212,8 @@ def main():
     workspace = arguments.workspace
     workspace.mkdir(parents=True, exist_ok=True)
 
-    print("## Stability: peak amplitude and tail RMS\n")
+    print("## Stability: peak amplitude and tail RMS (worst case across "
+          "every output Channel)\n")
     print(f"{'scenario':20s} {'interp':10s} {'depthMs':>8s} {'rateHz':>7s} "
           f"{'peak':>12s} {'rms_tail':>12s}")
     for name, depth_ms, rate_hz, interpolation, rt60_sec in STABILITY_SCENARIOS:
@@ -172,25 +221,27 @@ def main():
             arguments.renderer, arguments.fixture, workspace,
             name, depth_ms, rate_hz, interpolation, rt60_sec,
         )
-        _, samples = channel_zero(wav_path)
-        peak, rms_tail = peak_and_tail_rms(samples)
+        _, channel_samples = decode_all_channels(wav_path)
+        peak, rms_tail = worst_case_peak_and_tail_rms(channel_samples)
         print(f"{name:20s} {interpolation:10s} {depth_ms:8.2f} {rate_hz:7.2f} "
               f"{peak:12.6f} {rms_tail:12.3e}")
 
     print(f"\n## Long render ({LONG_RENDER[3]}, {LONG_RENDER[1]} ms / "
-          f"{LONG_RENDER[2]} Hz, {LONG_RENDER[4]}s RT60): decay by 5s window\n")
+          f"{LONG_RENDER[2]} Hz, {LONG_RENDER[4]}s RT60): peak/RMS by 5s "
+          f"window (worst case across every output Channel)\n")
     name, depth_ms, rate_hz, interpolation, rt60_sec = LONG_RENDER
     wav_path = render(
         arguments.renderer, arguments.fixture, workspace,
         name, depth_ms, rate_hz, interpolation, rt60_sec,
     )
-    sample_rate, samples = channel_zero(wav_path)
-    print(f"frames={len(samples)} duration_sec={len(samples) / sample_rate:.1f}")
-    for t, peak, rms in decay_windows(samples, sample_rate):
+    sample_rate, channel_samples = decode_all_channels(wav_path)
+    print(f"frames={len(channel_samples[0])} "
+          f"duration_sec={len(channel_samples[0]) / sample_rate:.1f}")
+    for t, peak, rms in worst_case_decay_windows(channel_samples, sample_rate):
         print(f"  t={t:6.1f}s  peak={peak:.6e}  rms={rms:.6e}")
 
     print("\n## Transient artefact: sample-to-sample discontinuity at "
-          "matched depth/rate\n")
+          "matched depth/rate (worst case across every output Channel)\n")
     print(f"{'interpolation':15s} {'depthMs':>8s} {'rateHz':>7s} "
           f"{'max|jump|':>12s} {'mean_sq_jump':>14s}")
     for interpolation, depth_ms, rate_hz in TRANSIENT_SCENARIOS:
@@ -198,8 +249,8 @@ def main():
             arguments.renderer, arguments.fixture, workspace,
             f"transient_{interpolation}", depth_ms, rate_hz, interpolation, 3.0,
         )
-        _, samples = channel_zero(wav_path)
-        max_jump, mean_square_jump = jump_statistics(samples)
+        _, channel_samples = decode_all_channels(wav_path)
+        max_jump, mean_square_jump = worst_case_jump_statistics(channel_samples)
         print(f"{interpolation:15s} {depth_ms:8.2f} {rate_hz:7.2f} "
               f"{max_jump:12.6f} {mean_square_jump:14.4e}")
     for name, depth_ms, rate_hz in TRANSIENT_ALLPASS_EXTRA:
@@ -207,8 +258,8 @@ def main():
             arguments.renderer, arguments.fixture, workspace,
             f"transient_{name}", depth_ms, rate_hz, "allpass", 3.0,
         )
-        _, samples = channel_zero(wav_path)
-        max_jump, mean_square_jump = jump_statistics(samples)
+        _, channel_samples = decode_all_channels(wav_path)
+        max_jump, mean_square_jump = worst_case_jump_statistics(channel_samples)
         print(f"{'allpass (' + name.split('_')[1] + ')':15s} {depth_ms:8.2f} "
               f"{rate_hz:7.2f} {max_jump:12.6f} {mean_square_jump:14.4e}")
 

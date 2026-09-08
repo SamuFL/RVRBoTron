@@ -42,8 +42,12 @@ def main():
 
     # Every reported peak/rms/jump value is a finite, non-negative number:
     # a NaN or negative figure here would mean the evaluation itself is
-    # broken, not just that this render happened to sound different.
-    numbers = re.findall(r"[-+]?\d*\.\d+(?:[eE][-+]?\d+)?", output)
+    # broken, not just that this render happened to sound different. The
+    # alternation also matches Python's own non-finite spellings (`nan`,
+    # `inf`, `-inf`) -- the decimal-only pattern this started as would
+    # silently drop those tokens instead of catching them below (PR #101
+    # review).
+    numbers = re.findall(r"[-+]?(?:\d*\.\d+(?:[eE][-+]?\d+)?|nan|inf)", output)
     if not numbers:
         raise AssertionError(f"no numeric evidence was reported: {output}")
     for token in numbers:
