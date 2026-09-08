@@ -1897,6 +1897,58 @@ int main() {
     }
   }
 
+  // DelayLine::readFractionAllpass (issue #93): the third deliberate
+  // ablation, checked directly against the hand-computed first-order
+  // Thiran allpass difference equation -- y = a*x0 + x1 - a*state, with
+  // a = (1-frac)/(1+frac) -- rather than relying on convergence
+  // behavior, since this filter carries state across calls and its
+  // *instantaneous* (not just steady-state) output is what the DSP
+  // layer actually reads every frame.
+  {
+    rvrbotron::dsp::DelayLine allpassLine({5}, {10});
+    const std::array<rvrbotron::dsp::Sample, 10> sequence{
+        0, 0, 0, 0, 1, 3, 0, 0, 0, 0};
+    for (const auto value : sequence) {
+      allpassLine.write(0, value);
+    }
+    // lookback 5 -> sequence[10-5] = sequence[5] = 3 (x0); lookback 6 ->
+    // sequence[10-6] = sequence[4] = 1 (x1); see the ramp oracle above
+    // for the lookback-k -> sequence[N-k] correspondence.
+    rvrbotron::dsp::Sample state = 0.25F;
+    const auto expectedCoefficient = (1.0 - 0.5) / (1.0 + 0.5);
+    const auto expectedOutput =
+        expectedCoefficient * 3.0 + 1.0 - expectedCoefficient * 0.25;
+    const auto output = allpassLine.readFractionAllpass(0, 5.5, state);
+    if (!close(output, expectedOutput)) {
+      std::cerr << "DelayLine::readFractionAllpass did not match the "
+                   "hand-computed first-order Thiran allpass output "
+                   "(expected "
+                << expectedOutput << ", got " << output << ")\n";
+      return 1;
+    }
+    if (!close(state, expectedOutput)) {
+      std::cerr << "DelayLine::readFractionAllpass did not overwrite its "
+                   "caller-owned state with its own new output\n";
+      return 1;
+    }
+    // At an integer lookback (frac=0), the coefficient is exactly 1: the
+    // formula still carries state (y = x0 + x1 - state), never
+    // collapsing to a bare read the way readFraction/readFractionLinear
+    // do -- the documented reason zero-depth Modulation must bypass by
+    // construction rather than rely on allpass arithmetic to reach
+    // identity.
+    rvrbotron::dsp::Sample integerState = 0.0F;
+    const auto integerOutput =
+        allpassLine.readFractionAllpass(0, 5.0, integerState);
+    if (close(integerOutput, 3.0)) {
+      std::cerr << "DelayLine::readFractionAllpass unexpectedly collapsed "
+                   "to a bare read at an integer lookback -- the resolved "
+                   "bypass this class relies on may no longer be "
+                   "necessary\n";
+      return 1;
+    }
+  }
+
   // Modulation (issue #89): zero depth must render bit-identical to
   // Modulation omitted entirely, guaranteed by the resolved bypass
   // (config::resolveConfig never reserves buffer headroom or derives
@@ -2077,6 +2129,97 @@ int main() {
     if (!linearOutputDiffered) {
       std::cerr << "linear interpolation rendered output identical to "
                    "lagrange3 at every frame\n";
+      return 1;
+    }
+
+    // allpass interpolation (issue #93): the third deliberate ablation,
+    // at the same depthMs/rateHz/seed as lagrange3 and linear above, so
+    // all three are directly comparable. Resolved buffer sizes stay
+    // unchanged, but DSP-owned memory grows -- allpass's own per-Channel
+    // filter state, counted toward the owning FeedbackLoop -- and the
+    // rendered output differs from both other methods, over a long
+    // enough drive (20000 frames at a nonzero rate) to cross many
+    // integer-lookback boundaries, where the filter's coefficient sits
+    // exactly at its marginally-stable extreme (see
+    // DelayLine::readFractionAllpass). Every sample must still stay
+    // finite and bounded: an unbounded run here would be exactly the
+    // evidence issue #93 permits recording as "not viable inside the
+    // Feedback Loop."
+    auto allpassModulation = activeModulation;
+    allpassModulation.interpolation =
+        rvrbotron::dsp::ModulationInterpolation::allpass;
+    const auto allpassConfig = resolvedModulatedLoopConfig(
+        2,
+        1.5,
+        40.0,
+        60.0,
+        allpassModulation,
+        rvrbotron::dsp::DelayStrategy::even,
+        sampleRate);
+    const auto& allpassLoopStage =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            allpassConfig.composition.stages[1]);
+    if (!allpassLoopStage.modulation.has_value() ||
+        allpassLoopStage.modulation->interpolation !=
+            rvrbotron::dsp::ModulationInterpolation::allpass) {
+      std::cerr << "Requested allpass interpolation did not resolve onto "
+                   "the Modulation object\n";
+      return 1;
+    }
+    if (allpassLoopStage.bufferSizes != activeLoopStage.bufferSizes) {
+      std::cerr << "allpass interpolation resolved different buffer "
+                   "sizes than lagrange3 at the same depthMs\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::FeedbackLoop lagrange3LoopForBytes(activeLoopStage);
+    rvrbotron::dsp::FeedbackLoop allpassLoop(allpassLoopStage);
+    if (allpassLoop.ownedBytes() <= lagrange3LoopForBytes.ownedBytes()) {
+      std::cerr << "an allpass-modulated Feedback Loop did not own more "
+                   "bytes than an identically shaped lagrange3 one ("
+                << allpassLoop.ownedBytes()
+                << " <= " << lagrange3LoopForBytes.ownedBytes() << ")\n";
+      return 1;
+    }
+
+    std::vector<std::array<rvrbotron::dsp::Sample, 2>> allpassRun(
+        modulatedFrames);
+    auto allpassOutputDiffered = false;
+    double allpassMaxAbsSample = 0.0;
+    for (std::size_t frame = 0; frame < modulatedFrames; ++frame) {
+      const auto& in = frame == 0 ? impulse : silence;
+      allpassLoop.processFrame(in.data(), allpassRun[frame].data());
+      for (const auto sample : allpassRun[frame]) {
+        const auto magnitude = std::abs(static_cast<double>(sample));
+        if (!std::isfinite(magnitude)) {
+          std::cerr << "allpass-interpolated Feedback Loop produced a "
+                       "non-finite sample at frame "
+                    << frame << '\n';
+          return 1;
+        }
+        allpassMaxAbsSample = std::max(allpassMaxAbsSample, magnitude);
+      }
+      if (allpassRun[frame] != firstRun[frame] &&
+          allpassRun[frame] != linearRun[frame]) {
+        allpassOutputDiffered = true;
+      }
+    }
+    if (!allpassOutputDiffered) {
+      std::cerr << "allpass interpolation rendered output identical to "
+                   "both lagrange3 and linear at every frame\n";
+      return 1;
+    }
+    // The driving impulse has magnitude 1.0 per Channel; a healthy
+    // decaying tail should never exceed a handful of multiples of that,
+    // let alone grow toward the marginal pole's own theoretical ceiling.
+    // This is a coarse smoke bound, not the full evidence recorded in
+    // the design doc (see docs/design/reverb/stages/06-modulation.md's
+    // "allpass viability inside the Feedback Loop").
+    if (allpassMaxAbsSample > 100.0) {
+      std::cerr << "allpass-interpolated Feedback Loop output grew far "
+                   "past the driving impulse's own magnitude (max |sample| "
+                << allpassMaxAbsSample
+                << ") -- possible instability at the marginal pole\n";
       return 1;
     }
   }

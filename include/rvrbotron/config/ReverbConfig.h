@@ -117,10 +117,9 @@ constexpr double kDefaultModulationRateHz = 0.7;
 // modulated; issue #90 adds `shape` (all three waveforms) and
 // `channelFraction` (partial-Channel modulation); issue #91 places the
 // same ModulationConfig (defined above, alongside DiffusionStepConfig) on
-// a Diffusion Step; issue #92 adds `linear` -- a deliberate ablation,
-// not the default -- alongside `lagrange3`. `allpass` is added by a
-// later ticket that extends dsp::ModulationInterpolation and this
-// parser's accepted values without moving the field itself.
+// a Diffusion Step; issue #92 adds `linear`, and issue #93 adds
+// `allpass` -- both deliberate ablations, neither the default --
+// alongside `lagrange3`.
 
 struct FeedbackLoopConfig {
   std::optional<double> delayMinMs;

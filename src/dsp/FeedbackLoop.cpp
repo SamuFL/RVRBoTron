@@ -1,5 +1,6 @@
 #include "rvrbotron/dsp/FeedbackLoop.h"
 
+#include "rvrbotron/dsp/AllpassState.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 
@@ -164,6 +165,18 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     }
     modulation_.emplace(modulation);
     interpolation_ = modulation.interpolation;
+
+    // Allpass interpolator state is allocated only for the Channels
+    // this Modulation actually moves, and only when allpass is the
+    // chosen method -- see FeedbackLoop.h's own `allpassState_` and
+    // "no allpass state at all" for a bypassed Channel. Every unmodulated
+    // Channel's own `allpassStateIndex_` entry is left at its default
+    // and never read, since every read site below is already guarded by
+    // `isModulated()`.
+    if (interpolation_ == ModulationInterpolation::allpass) {
+      buildAllpassState(
+          modulation.channelModulated, allpassState_, allpassStateIndex_);
+    }
   }
 }
 
@@ -178,9 +191,18 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
       delayed = Sample{0};
     } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
       const auto lookback = modulation_->lookbackSamples(channel, delay);
-      delayed = interpolation_ == ModulationInterpolation::linear
-          ? delayLine_.readFractionLinear(channel, lookback)
-          : delayLine_.readFraction(channel, lookback);
+      switch (interpolation_) {
+      case ModulationInterpolation::linear:
+        delayed = delayLine_.readFractionLinear(channel, lookback);
+        break;
+      case ModulationInterpolation::allpass:
+        delayed = delayLine_.readFractionAllpass(
+            channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+        break;
+      case ModulationInterpolation::lagrange3:
+        delayed = delayLine_.readFraction(channel, lookback);
+        break;
+      }
     } else {
       delayed = delayLine_.read(channel);
     }
@@ -255,7 +277,8 @@ std::size_t FeedbackLoop::ownedBytes() const noexcept {
          ownedVectorBytes(lowShelfA1_) +
          ownedVectorBytes(lowShelfPrevInput_) +
          ownedVectorBytes(lowShelfPrevOutput_) +
-         (modulation_.has_value() ? modulation_->ownedBytes() : 0);
+         (modulation_.has_value() ? modulation_->ownedBytes() : 0) +
+         ownedVectorBytes(allpassState_) + ownedVectorBytes(allpassStateIndex_);
 }
 
 } // namespace rvrbotron::dsp

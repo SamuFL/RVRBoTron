@@ -1525,8 +1525,11 @@ void validateResolvedModulation(
         "expected finite value in [0, 1]");
   }
   if (modulation.interpolation != dsp::ModulationInterpolation::lagrange3 &&
-      modulation.interpolation != dsp::ModulationInterpolation::linear) {
-    fail(modulationPath + "/interpolation", "expected lagrange3 or linear");
+      modulation.interpolation != dsp::ModulationInterpolation::linear &&
+      modulation.interpolation != dsp::ModulationInterpolation::allpass) {
+    fail(
+        modulationPath + "/interpolation",
+        "expected lagrange3, linear, or allpass");
   }
   if (modulation.interpolationMarginSamples !=
       kModulationInterpolationMarginSamples) {

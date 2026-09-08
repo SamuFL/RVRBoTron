@@ -24,6 +24,18 @@ def run_ok(renderer: Path, *arguments):
     return completed
 
 
+def run_benchmark_ok(renderer: Path, *arguments):
+    completed = subprocess.run(
+        [str(renderer), "benchmark", *map(str, arguments)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr)
+    return completed
+
+
 def feedback_loop_stage(resolved: dict) -> dict:
     return next(
         stage
@@ -250,9 +262,9 @@ def main():
         raise AssertionError("rejected configuration created a Render Result")
 
     # An unsupported interpolation value is rejected by name, not silently
-    # substituted -- only lagrange3 and linear ship as of this milestone
-    # (#89/#92); allpass is added by a later ticket.
-    bad_interpolation_request = base_request({"interpolation": "allpass"})
+    # substituted -- lagrange3, linear, and allpass are the complete set
+    # as of this milestone (#89/#92/#93).
+    bad_interpolation_request = base_request({"interpolation": "sinc"})
     bad_interpolation_path = workspace / "bad-interpolation-request.json"
     bad_interpolation_path.write_text(json.dumps(bad_interpolation_request))
     bad_interpolation = run(
@@ -266,7 +278,7 @@ def main():
     )
     if bad_interpolation.returncode == 0:
         raise AssertionError("renderer accepted an unsupported interpolation")
-    if "lagrange3 or linear" not in bad_interpolation.stderr:
+    if "lagrange3, linear, or allpass" not in bad_interpolation.stderr:
         raise AssertionError(
             f"unsupported interpolation was not rejected by name: "
             f"{bad_interpolation.stderr}"
@@ -329,6 +341,126 @@ def main():
         raise AssertionError(
             "repeat renders of an identical linear-interpolated "
             "Modulation configuration were not exact"
+        )
+
+    # allpass resolves and renders end to end (issue #93): a deliberate
+    # ablation exposing the transient artefacts a moving allpass-
+    # interpolated read produces inside a circulating loop -- flat
+    # magnitude at any fixed fractional delay, but the filter's own
+    # persistent state is repeatedly invalidated by a moving one.
+    allpass_resolved, allpass_wav = render(
+        "allpass",
+        base_request({"depthMs": 5.0, "rateHz": 3.0, "interpolation": "allpass"}),
+    )
+    allpass_loop = feedback_loop_stage(allpass_resolved)
+    if allpass_loop["modulation"]["interpolation"] != "allpass":
+        raise AssertionError(
+            f"requested allpass interpolation did not round-trip: "
+            f"{allpass_loop['modulation']}"
+        )
+    if allpass_wav == omitted_wav:
+        raise AssertionError(
+            "allpass-interpolated Modulation rendered output identical to "
+            "the unmodulated baseline"
+        )
+    if allpass_wav == active_wav or allpass_wav == linear_wav:
+        raise AssertionError(
+            "allpass-interpolated Modulation rendered output identical to "
+            "lagrange3 or linear at the same depthMs/rateHz"
+        )
+    # Resolved buffer sizes are unchanged from the other interpolation
+    # methods: allpass's own per-Channel filter *state* is separate from
+    # (and does not grow) the delay-line *buffer*.
+    if allpass_loop["bufferSizes"] != active_loop["bufferSizes"]:
+        raise AssertionError(
+            f"allpass interpolation resolved different buffer sizes than "
+            f"lagrange3 at the same depthMs: {allpass_loop['bufferSizes']} "
+            f"!= {active_loop['bufferSizes']}"
+        )
+
+    # depthMs of 0 remains bit-identical to Modulation omitted under
+    # allpass too -- this is the case that makes bypass-by-construction
+    # necessary, since allpass state cannot collapse to identity
+    # arithmetically the way lagrange3 and linear do.
+    _, allpass_zero_wav = render(
+        "allpass-zero-depth",
+        base_request({"depthMs": 0.0, "interpolation": "allpass"}),
+    )
+    if allpass_zero_wav != omitted_wav:
+        raise AssertionError(
+            "zero-depth allpass-interpolated Modulation rendered output "
+            "was not bit-identical to Modulation omitted"
+        )
+
+    # Repeat renders of an identical allpass-interpolated configuration
+    # are exact.
+    _, allpass_repeat_wav = render(
+        "allpass-repeat",
+        base_request({"depthMs": 5.0, "rateHz": 3.0, "interpolation": "allpass"}),
+    )
+    if allpass_repeat_wav != allpass_wav:
+        raise AssertionError(
+            "repeat renders of an identical allpass-interpolated "
+            "Modulation configuration were not exact"
+        )
+
+    # Per-Channel allpass interpolator state is allocated at
+    # configuration and counts toward the owning stage's DSP-owned
+    # memory (via the benchmark tool's exact dspOwnedBytes accounting),
+    # and bypassed Channels allocate none of it at all: a fully modulated
+    # allpass Composition owns more bytes than an identically shaped
+    # lagrange3 one, and a half-modulated allpass Composition owns fewer
+    # bytes than a fully modulated one at the same Channel count.
+    def dsp_owned_bytes(name):
+        resolved_path = workspace / f"{name}-result" / "resolved.json"
+        report_path = workspace / f"{name}-benchmark-report.json"
+        completed = run_benchmark_ok(
+            renderer,
+            "--resolved",
+            resolved_path,
+            "--block-size",
+            "64",
+            "--warmup-seconds",
+            "0",
+            "--measure-seconds",
+            "0.01",
+            "--json",
+            report_path,
+        )
+        return json.loads(completed.stdout)["dspOwnedBytes"]
+
+    render(
+        "allpass-full-fraction",
+        base_request(
+            {"depthMs": 1.0, "interpolation": "allpass", "channelFraction": 1.0},
+            channels=8,
+        ),
+    )
+    render(
+        "allpass-half-fraction",
+        base_request(
+            {"depthMs": 1.0, "interpolation": "allpass", "channelFraction": 0.5},
+            channels=8,
+        ),
+    )
+    render(
+        "lagrange3-full-fraction",
+        base_request({"depthMs": 1.0, "channelFraction": 1.0}, channels=8),
+    )
+    allpass_full_bytes = dsp_owned_bytes("allpass-full-fraction")
+    allpass_half_bytes = dsp_owned_bytes("allpass-half-fraction")
+    lagrange3_full_bytes = dsp_owned_bytes("lagrange3-full-fraction")
+    if allpass_full_bytes <= lagrange3_full_bytes:
+        raise AssertionError(
+            f"a fully modulated allpass Composition did not own more "
+            f"bytes than an identically shaped lagrange3 one: "
+            f"{allpass_full_bytes} <= {lagrange3_full_bytes}"
+        )
+    if allpass_half_bytes >= allpass_full_bytes:
+        raise AssertionError(
+            f"a half-modulated allpass Composition did not own fewer "
+            f"bytes than a fully modulated one at the same Channel "
+            f"count: {allpass_half_bytes} >= {allpass_full_bytes}"
         )
 
     # An unknown field inside modulation is rejected like every other

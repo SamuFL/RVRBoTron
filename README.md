@@ -391,7 +391,7 @@ to the baseline shown here:
 | `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. Means the same thing for every `shape`. |
 | `shape` | `"smoothed-random"` / `"sine"` / `"triangle"` | `"smoothed-random"` | The per-Channel trajectory waveform. `sine`'s periodicity becomes an audible regular wobble at a larger Excursion; `smoothed-random` (band-limited noise) has no period to lock onto. `triangle` shares `sine`'s zero crossings and peak locations, so comparing the two at a fixed `rateHz` compares only the shape. |
 | `channelFraction` | finite number in `[0, 1]` | `1.0` | Proportion of Channels modulated, rounded up. `0` disables Modulation for the stage, exactly like `depthMs: 0`. The modulated Channels are the first `ceil(channelFraction * N)` entries of a positionally seeded fixed permutation, independent of delay ordering -- raising the fraction only adds Channels, never reshuffling ones already selected. |
-| `interpolation` | `"lagrange3"` / `"linear"` | `"lagrange3"` | The delay line's fractional-read method. `linear` is a deliberate ablation: it darkens a modulated tail as depth rises, an unintended depth-dependent lowpass, made available on purpose to be heard and compared against `lagrange3` (#92). `allpass` is added by a later ticket. |
+| `interpolation` | `"lagrange3"` / `"linear"` / `"allpass"` | `"lagrange3"` | The delay line's fractional-read method. `linear` (#92) is a deliberate ablation: it darkens a modulated tail as depth rises, an unintended depth-dependent lowpass. `allpass` (#93) has flat magnitude at any fixed fractional delay but carries persistent per-Channel filter state a moving delay repeatedly invalidates -- stable and bounded at every depth/rate tested, but measurably rougher (more sample-to-sample discontinuity) than the other two; see [the design doc's recorded finding](docs/design/reverb/stages/06-modulation.md#allpass-viability-inside-the-feedback-loop-issue-93). Both are made available on purpose, to be heard and compared against `lagrange3`, not hidden. |
 
 `smoothed-random` is Catmull-Rom interpolation between per-Channel targets
 drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`, reproducible
@@ -405,10 +405,15 @@ applies to modulated Channels only -- an excluded Channel may carry a delay
 too short to ever serve the requested Excursion without being rejected.
 Resolution reserves each *modulated* Channel's buffer as its nominal delay
 plus `depthMs` in samples (the Excursion) plus a fixed worst-case
-Interpolation margin, so DSP-owned memory does not move when `interpolation`
-changes -- the margin is sized for the worst case across every method, not
-the configured one. A modulated Channel's resolved delay too short to
-serve that Excursion plus margin is rejected before any audio is processed
+Interpolation margin, so a Channel's *buffer size* does not move when
+`interpolation` changes -- the margin is sized for the worst case across
+every method, not the configured one. `allpass` alone also carries its own
+small per-Channel filter state (one persistent output sample), allocated
+only for a Channel actually modulated with `allpass` chosen and counted
+toward the owning stage's DSP-owned memory -- a bypassed stage or an
+excluded Channel allocates none of it. A modulated Channel's resolved
+delay too short to serve that Excursion plus margin is rejected before
+any audio is processed
 -- naming `modulation/depthMs` -- rather than overrunning intermittently at
 the modulation peak; the Feedback Loop's Block-size bound is derived from
 the shortest *instantaneous* per-Channel delay across every Channel, moved

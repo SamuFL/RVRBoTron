@@ -280,3 +280,14 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/damping-sweep-contract
 )
+
+add_test(
+  NAME allpass_evaluation_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_allpass_evaluation_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/evaluate_allpass_interpolation.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/allpass-evaluation-contract
+)
