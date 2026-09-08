@@ -30,6 +30,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 add_library(rvrbotron_dsp
+  src/dsp/AllpassState.cpp
   src/dsp/DelayLine.cpp
   src/dsp/DiffusionStep.cpp
   src/dsp/Diffuser.cpp

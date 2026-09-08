@@ -403,6 +403,151 @@ def main():
             "Modulation configuration were not exact"
         )
 
+    # allpass resolves and renders end to end on a Diffusion Step too
+    # (issue #93), at the same depthMs/rateHz as the lagrange3 "active"
+    # case above: resolved buffer sizes stay unchanged from the other
+    # interpolation methods, since allpass's own per-Channel filter state
+    # is separate from (and does not grow) the delay-line buffer.
+    allpass_resolved, allpass_wav = render(
+        "allpass",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {
+                        "depthMs": 0.4,
+                        "rateHz": 5.0,
+                        "interpolation": "allpass",
+                    },
+                },
+            ]
+        ),
+    )
+    allpass_step0 = diffuser_stage(allpass_resolved)["steps"][0]
+    if allpass_step0["modulation"]["interpolation"] != "allpass":
+        raise AssertionError(
+            f"requested allpass interpolation did not round-trip on a "
+            f"Diffusion Step: {allpass_step0['modulation']}"
+        )
+    if allpass_step0["bufferSizes"] != active_step0["bufferSizes"]:
+        raise AssertionError(
+            f"allpass interpolation resolved different buffer sizes than "
+            f"lagrange3 at the same depthMs on a Diffusion Step: "
+            f"{allpass_step0['bufferSizes']} != {active_step0['bufferSizes']}"
+        )
+    if allpass_wav == omitted_wav:
+        raise AssertionError(
+            "allpass-interpolated step Modulation rendered output "
+            "identical to the unmodulated baseline"
+        )
+    if allpass_wav == active_wav or allpass_wav == linear_wav:
+        raise AssertionError(
+            "allpass-interpolated step Modulation rendered output "
+            "identical to lagrange3 or linear at the same depthMs/rateHz"
+        )
+
+    # depthMs of 0 remains bit-identical to Modulation omitted under
+    # allpass too -- this is the case that makes bypass-by-construction
+    # necessary, since allpass state cannot collapse to identity
+    # arithmetically.
+    _, allpass_zero_wav = render(
+        "allpass-zero-depth",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {"depthMs": 0.0, "interpolation": "allpass"},
+                },
+            ]
+        ),
+    )
+    if allpass_zero_wav != omitted_wav:
+        raise AssertionError(
+            "zero-depth allpass-interpolated step Modulation rendered "
+            "output was not bit-identical to Modulation omitted"
+        )
+
+    # Repeat renders of an identical allpass-interpolated configuration
+    # are exact.
+    _, allpass_repeat_wav = render(
+        "allpass-repeat",
+        base_request(
+            step_overrides=[
+                {
+                    "index": 0,
+                    "modulation": {
+                        "depthMs": 0.4,
+                        "rateHz": 5.0,
+                        "interpolation": "allpass",
+                    },
+                },
+            ]
+        ),
+    )
+    if allpass_repeat_wav != allpass_wav:
+        raise AssertionError(
+            "repeat renders of an identical allpass-interpolated step "
+            "Modulation configuration were not exact"
+        )
+
+    # Per-Channel allpass interpolator state is allocated at
+    # configuration and counts toward the owning Diffusion Step's
+    # DSP-owned memory (via the benchmark tool's exact dspOwnedBytes
+    # accounting): an allpass-modulated Composition owns more bytes than
+    # an identically shaped lagrange3 one.
+    allpass_report = workspace / "allpass-benchmark-report.json"
+    allpass_benchmark = subprocess.run(
+        [
+            str(renderer),
+            "benchmark",
+            "--resolved",
+            workspace / "allpass-result" / "resolved.json",
+            "--block-size",
+            "64",
+            "--warmup-seconds",
+            "0",
+            "--measure-seconds",
+            "0.01",
+            "--json",
+            allpass_report,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if allpass_benchmark.returncode != 0:
+        raise AssertionError(allpass_benchmark.stderr)
+    active_report = workspace / "active-benchmark-report.json"
+    active_benchmark = subprocess.run(
+        [
+            str(renderer),
+            "benchmark",
+            "--resolved",
+            workspace / "active-result" / "resolved.json",
+            "--block-size",
+            "64",
+            "--warmup-seconds",
+            "0",
+            "--measure-seconds",
+            "0.01",
+            "--json",
+            active_report,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if active_benchmark.returncode != 0:
+        raise AssertionError(active_benchmark.stderr)
+    allpass_owned_bytes = json.loads(allpass_benchmark.stdout)["dspOwnedBytes"]
+    active_owned_bytes = json.loads(active_benchmark.stdout)["dspOwnedBytes"]
+    if allpass_owned_bytes <= active_owned_bytes:
+        raise AssertionError(
+            f"an allpass-modulated Diffusion Step Composition did not own "
+            f"more bytes than an identically shaped lagrange3 one: "
+            f"{allpass_owned_bytes} <= {active_owned_bytes}"
+        )
+
     # Diffusion Step trajectories are seeded per step and per Channel:
     # two steps modulated with identical parameters never share a
     # trajectory, and neither does a modulated step share one with the

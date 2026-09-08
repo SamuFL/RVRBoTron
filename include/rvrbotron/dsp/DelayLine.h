@@ -150,6 +150,57 @@ public:
     return p1 + frac * (p2 - p1);
   }
 
+  // First-order (Thiran) allpass interpolated read at an arbitrary,
+  // possibly fractional, lookback from "now" -- the third deliberate
+  // ablation alongside readFraction()'s Lagrange3 and
+  // readFractionLinear()'s two-point linear (see docs/design/reverb/
+  // stages/06-modulation.md's "Fractional delay becomes mandatory" and
+  // issue #93): flat magnitude response at any *fixed* fractional delay,
+  // but its own single pole sits at exactly the coefficient's magnitude,
+  // so the filter carries persistent memory across calls rather than
+  // computing purely from the ring buffer's own contents like the other
+  // two methods -- state a *moving* fractional delay repeatedly
+  // invalidates, which is exactly the transient artefact this ablation
+  // exists to expose. `state` is the caller's own per-Channel memory
+  // (this Channel's own previous output), read and overwritten in place;
+  // DelayLine itself stays stateless, owning none of it, so a Channel
+  // that never calls this method carries no allpass memory at all (see
+  // FeedbackLoop/DiffusionStep's own `allpassState_`).
+  //
+  // Coefficient a = (1 - frac) / (1 + frac) is the standard first-order
+  // Thiran allpass fractional-delay design for frac in [0, 1): a -> 0 as
+  // frac -> 1 (output converges to the next-integer tap alone), and
+  // a == 1 at frac == 0 exactly -- a pole on the unit circle, marginal
+  // rather than strictly stable, reached routinely as a continuously
+  // moving lookback crosses every integer boundary. `lookbackSamples`
+  // must be finite and, once its two-point stencil (lookback floor() and
+  // floor()+1) is accounted for, stay within [0, this Channel's resolved
+  // buffer size] -- identical reach to readFractionLinear(), so the same
+  // resolved buffer serves this method too.
+  [[nodiscard]] Sample readFractionAllpass(
+      const std::size_t channel,
+      const double lookbackSamples,
+      Sample& state) const noexcept {
+    const auto ring = bufferSizes_[channel];
+    const auto offset = offsets_[channel];
+    const auto position = positions_[channel];
+    const auto base = std::floor(lookbackSamples);
+    const auto frac = static_cast<Sample>(lookbackSamples - base);
+    const auto baseLookback = static_cast<std::int64_t>(base);
+    const auto valueAt = [this, offset, ring, position](
+                             const std::int64_t lookback) noexcept {
+      const auto wrapped = static_cast<std::uint64_t>(lookback) % ring;
+      const auto readPosition = (position + ring - wrapped) % ring;
+      return storage_[offset + readPosition];
+    };
+    const auto x0 = valueAt(baseLookback);
+    const auto x1 = valueAt(baseLookback + 1);
+    const auto coefficient = (Sample{1} - frac) / (Sample{1} + frac);
+    const auto output = coefficient * x0 + x1 - coefficient * state;
+    state = output;
+    return output;
+  }
+
   [[nodiscard]] std::uint64_t delaySamples(
       const std::size_t channel) const noexcept {
     return delays_[channel];

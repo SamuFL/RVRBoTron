@@ -154,6 +154,50 @@ Measurement happens at the Downmix output, not inside the loop: there is no Feed
 
 ---
 
+## Allpass viability inside the Feedback Loop (issue #93)
+
+Allpass interpolation ships, and empirically it is **viable**: numerically stable and bounded across every depth/rate combination tested, including well past realistic ranges, but it measurably confirms the predicted transient artefact — a real reason to prefer it deliberately, not a defect that rules it out.
+
+**Method.** A first-order (Thiran) allpass fractional-delay filter: coefficient *a* = (1 − frac) / (1 + frac) for the fractional lookback in [0, 1), one persistent state sample (the filter's own previous output) per modulated Channel. At an integer lookback, *a* = 1 exactly — a pole on the unit circle, marginal rather than strictly stable — reached routinely as a continuously moving lookback crosses every integer boundary, not just as a rare edge case. This is the structural reason the design predicted transient artefacts, and the reason `depthMs: 0` must bypass by construction rather than rely on the filter arithmetic collapsing to identity (unlike Lagrange3 and linear, which both reduce to an exact read of the nominal tap at a zero fractional offset).
+
+**Reproducing this evidence.** Every number below comes from `tools/evaluate_allpass_interpolation.py`, a standalone, deterministic (fixed seed) script -- not a one-off measurement taken and discarded. Regenerate it with:
+
+```bash
+python3 tools/evaluate_allpass_interpolation.py \
+  build/release/rvrbotron \
+  tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  build/allpass-evaluation
+```
+
+**Stability.** N=2, Householder mixing, 40–60 ms delays, `select` Downmix, driven by a single impulse, rendered end to end through the full Tail budget. `select` maps each internal Channel straight to its own output Channel with no mixing, and Modulation trajectories are deliberately decorrelated per Channel, so Channel 1 is an independent signal rather than a duplicate of Channel 0 -- every figure below is the *worst case across both output Channels*, not Channel 0 alone. Peak amplitude and tail RMS stay bounded at every tested depth/rate, including 8 ms / 6 Hz (well past the "extreme" musical regime):
+
+| Configuration | Peak \|sample\| | RMS (final 10%) |
+|---|---|---|
+| `lagrange3`, 0.4 ms / 0.7 Hz | 0.301 | 2.4×10⁻⁷ |
+| `linear`, 0.4 ms / 0.7 Hz | 0.278 | 1.4×10⁻⁷ |
+| `allpass`, 0.4 ms / 0.7 Hz | 0.251 | 5.1×10⁻⁷ |
+| `allpass`, 2 ms / 3 Hz | 0.315 | 4.6×10⁻⁷ |
+| `allpass`, 8 ms / 6 Hz | 0.245 | 4.5×10⁻⁷ |
+| `allpass`, 1 ms / 20 Hz | 0.353 | 5.3×10⁻⁷ |
+
+A 40-second render at 10 ms / 8 Hz with a 20 s RT60 -- far past the six settings above -- shows the same pattern holds over a much longer horizon: peak amplitude in successive 5-second windows (worst case across both Channels) falls from 0.35 at onset to 2.2×10⁻⁹ at 40 s with no window reversing the trend, no divergence, and no stalled decay. This is peak/RMS evidence only -- no RT60 (measured decay time) is computed here, so "tracks the RT60" would overstate what is checked; the pattern is consistent with the requested 20 s RT60 rather than a direct measurement of it. The marginal pole (`a = 1` at an integer lookback) passed through routinely never accumulates into instability, because the filter only sits there instantaneously, not persistently, and off that point every coefficient in [0, 1) is strictly stable.
+
+**The transient artefact is real and measurable.** Sample-to-sample discontinuity (a proxy for audible click content), worst case across both output Channels, measured over each render's steady middle section:
+
+| Interpolation | depthMs / rateHz | max \|Δsample\| | mean-square \|Δsample\| |
+|---|---|---|---|
+| `lagrange3` | 2 ms / 3 Hz | 0.134 | 7.0×10⁻⁷ |
+| `linear` | 2 ms / 3 Hz | 0.089 | 2.4×10⁻⁷ |
+| `allpass` | 2 ms / 3 Hz | 0.156 | 4.7×10⁻⁶ |
+| `allpass` (deeper) | 10 ms / 3 Hz | 0.184 | 5.8×10⁻⁶ |
+| `allpass` (faster) | 2 ms / 15 Hz | 0.175 | 5.3×10⁻⁶ |
+
+At matched depth/rate, `allpass` carries roughly 7× lagrange3's and 19× linear's mean-square sample-to-sample jump, growing further at higher depth or rate — this is the flat-magnitude-but-transient-artefact behavior the design predicted, now quantified rather than merely asserted.
+
+**Conclusion.** `allpass` is not disqualified from the Feedback Loop — its peak amplitude and tail RMS stay bounded, across both output Channels, at every setting tested — but it is audibly rougher than the other two methods at matched depth/rate, consistent with its own theory. This makes it a genuine research tool for demonstrating why interpolation choice matters more inside a compounding loop than in a one-shot chorus (Diffusion Step Modulation, where the artefact does not accumulate), rather than a candidate default. `lagrange3` remains the default for exactly this reason.
+
+---
+
 ## Invariants
 
 - **Identity at zero.** `depthMs: 0` gives output bit-identical to modulation disabled, by construction rather than by arithmetic.

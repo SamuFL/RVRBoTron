@@ -11,9 +11,9 @@ namespace rvrbotron::config {
 // samples beyond the nominal Excursion bound on the far (longer-lookback)
 // side, plus 1 sample of floor()-rounding slack applied symmetrically on
 // both sides. Fixed regardless of the configured interpolation method, so
-// DSP-owned memory does not change when the method changes -- `linear`'s
-// own two-point stencil (issue #92) needs strictly less headroom than
-// this, and `allpass` (a later ticket) is not expected to need more.
+// a Channel's buffer size does not change when the method changes --
+// `linear`'s (issue #92) and `allpass`'s (issue #93) own two-point
+// stencils both need strictly less headroom than this.
 constexpr std::uint64_t kModulationInterpolationMarginSamples = 3;
 
 // Which stage a Modulation draw belongs to (see docs/design/reverb/

@@ -82,6 +82,20 @@ private:
   // is a property of the read, not of the trajectory Modulation generates,
   // so it lives here rather than inside Modulation itself.
   ModulationInterpolation interpolation_ = ModulationInterpolation::lagrange3;
+  // Per-Channel allpass interpolator state (issue #93): one persistent
+  // output sample per Channel actually modulated, populated only while
+  // `interpolation_` is `allpass` -- allpass state cannot collapse to
+  // identity arithmetically the way Lagrange3 and linear do at a zero
+  // fractional offset (see DelayLine::readFractionAllpass), so a
+  // bypassed stage or a Channel `channelFraction` excludes allocates
+  // none of it at all, exactly like the resolved bypass above, rather
+  // than carrying an always-N-sized vector most of which is never
+  // evaluated. `allpassStateIndex_[channel]` is that Channel's own
+  // position in `allpassState_`; only ever read when `modulation_` is
+  // active, `interpolation_` is `allpass`, and that Channel is
+  // modulated, so an unused entry is never touched.
+  std::vector<Sample> allpassState_;
+  std::vector<std::size_t> allpassStateIndex_;
 };
 
 } // namespace rvrbotron::dsp

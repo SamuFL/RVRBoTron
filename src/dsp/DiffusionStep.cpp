@@ -1,5 +1,6 @@
 #include "rvrbotron/dsp/DiffusionStep.h"
 
+#include "rvrbotron/dsp/AllpassState.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 
@@ -61,6 +62,14 @@ DiffusionStep::DiffusionStep(const ResolvedDiffusionStep& config)
     }
     modulation_.emplace(modulation);
     interpolation_ = modulation.interpolation;
+
+    // Allpass interpolator state is allocated only for the Channels
+    // this Modulation actually moves, and only when allpass is the
+    // chosen method (mirrors FeedbackLoop's own construction).
+    if (interpolation_ == ModulationInterpolation::allpass) {
+      buildAllpassState(
+          modulation.channelModulated, allpassState_, allpassStateIndex_);
+    }
   }
 }
 
@@ -76,9 +85,18 @@ void DiffusionStep::processFrame(const Sample* const inputs,
     }
     if (modulation_.has_value() && modulation_->isModulated(channel)) {
       const auto lookback = modulation_->lookbackSamples(channel, delay);
-      delayedValues_[channel] = interpolation_ == ModulationInterpolation::linear
-          ? delayLine_.readFractionLinear(channel, lookback)
-          : delayLine_.readFraction(channel, lookback);
+      switch (interpolation_) {
+      case ModulationInterpolation::linear:
+        delayedValues_[channel] = delayLine_.readFractionLinear(channel, lookback);
+        break;
+      case ModulationInterpolation::allpass:
+        delayedValues_[channel] = delayLine_.readFractionAllpass(
+            channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+        break;
+      case ModulationInterpolation::lagrange3:
+        delayedValues_[channel] = delayLine_.readFraction(channel, lookback);
+        break;
+      }
     } else {
       delayedValues_[channel] = delayLine_.read(channel);
     }
@@ -105,7 +123,8 @@ std::size_t DiffusionStep::ownedBytes() const noexcept {
   return sizeof(*this) + delayLine_.ownedStorageBytes() +
          ownedVectorBytes(permutation_) + ownedVectorBytes(polarity_) +
          ownedVectorBytes(delayedValues_) + mix_->ownedBytes() +
-         (modulation_.has_value() ? modulation_->ownedBytes() : 0);
+         (modulation_.has_value() ? modulation_->ownedBytes() : 0) +
+         ownedVectorBytes(allpassState_) + ownedVectorBytes(allpassStateIndex_);
 }
 
 } // namespace rvrbotron::dsp

@@ -50,6 +50,13 @@ private:
   // so it lives here rather than inside Modulation itself (mirrors
   // FeedbackLoop's own `interpolation_`).
   ModulationInterpolation interpolation_ = ModulationInterpolation::lagrange3;
+  // Per-Channel allpass interpolator state (issue #93): mirrors
+  // FeedbackLoop's own `allpassState_`/`allpassStateIndex_` -- one
+  // persistent output sample per Channel actually modulated, populated
+  // only while `interpolation_` is `allpass`, so a bypassed step or a
+  // Channel `channelFraction` excludes allocates none of it at all.
+  std::vector<Sample> allpassState_;
+  std::vector<std::size_t> allpassStateIndex_;
 };
 
 } // namespace rvrbotron::dsp

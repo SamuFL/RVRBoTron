@@ -226,7 +226,10 @@ dsp::ModulationInterpolation parseModulationInterpolation(
   if (name == "linear") {
     return dsp::ModulationInterpolation::linear;
   }
-  fail(path, "expected lagrange3 or linear");
+  if (name == "allpass") {
+    return dsp::ModulationInterpolation::allpass;
+  }
+  fail(path, "expected lagrange3, linear, or allpass");
 }
 
 dsp::ModulationShape parseModulationShape(
