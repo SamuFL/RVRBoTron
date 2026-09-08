@@ -1,149 +1,149 @@
 {
   "formatVersion": 1,
-  "rationale": "Provisional, pending this PR's own cross-platform CI run (macOS arm64, macOS Intel, Windows x86_64; float32 and float64 presets) exercising tests/test_modulation_equivalence_cli.py's millisecond-scale Feedback Loop Modulation tracer -- see docs/adr/0001-cross-platform-reproducibility.md, which requires tolerances be set only from real empirical evidence across every supported platform, never guessed from one machine. Every entry below is committed at this same reasoning stage the tail-v1/tail-v2 tolerances files were before their own first CI run (see tail_tolerances_v2.json's rationale, which cites the specific CI run its final values came from) and MUST be replaced with values derived from this issue's own CI run before merge, each carrying its own observed delta and headroom the way tail_tolerances_v2.json's entries do. Until then: RT60-scale metrics (decayRt60Sec, predictedTargetRt60Sec, predictedRangeLow/HighRt60Sec) reuse tail_tolerances_v2.json's own float32/float64 values unchanged, because they are produced by the identical octave-band FFT/Schroeder/T20-T30 machinery this analyzer imports from analyze_tail_v2.py rather than recomputing -- the same arm64 FMA-contraction precedent documented there applies here unchanged. decayRelativeError likewise reuses that file's value directly (same ratio-of-decayRt60Sec-scale quantities). decayTiltSlopeRatioPerOctave and decayTiltInterceptRatio are new ratio-scale quantities (measured T30 divided by the loop's own rt60Sec, matching Damping's own ratio units) derived from the same underlying T30 fits, so they provisionally carry the same order-of-magnitude headroom as decayRelativeError. boundedEnergySlopeDbPerSegment reuses tail_tolerances_v2.json's eventualContractionSlopeDbPerSegment value unchanged: an identically-shaped late-tail log-energy regression slope over the same FMA-sensitive float32 DSP output. nonFiniteSampleCount reuses the exact-zero philosophy shared by every tolerances file in this repository (a discrete numerical-hygiene failure, not a floating-point accumulation). outputCorrelationMeanAbsoluteOffDiagonal and outputCorrelationMaxAbsoluteOffDiagonal are dimensionless [-1, 1] quantities computed by the same correlation_evidence() this repository's diffusion-equivalence tooling already carries cross-platform tolerances for (tools/diffusion_tolerances_v1.json), so they provisionally reuse that file's own correlation-metric headroom philosophy. coherentPitchMovementBroadbandMeanMagnitude and coherentPitchMovementMagnitude are new: raw (non-decibel) FFT magnitude sums over the render's own instantaneous-frequency signal, with no established scale precedent elsewhere in this repository -- their provisional tolerances are set as a small fraction of the value observed on this single local arm64 build (roughly 6.6e4 for the broadband mean and 5.2e6 for the configured-rate magnitude in the committed tracer), wide enough to tolerate the analogous float32-only FMA divergence tail-v2 observed at other stages of this same pipeline scaled up to this metric's much larger raw magnitude, and MUST be replaced first once this PR's own CI run reports real cross-platform deltas for exactly these two metrics.",
+  "rationale": "Reviewed against real cross-platform CI evidence for issue #94: PR #102, CI run https://github.com/SamuFL/RVRBoTron/actions/runs/34224039465 (macOS arm64 clang, macOS Intel clang, Windows x86_64 MSVC, float32 preset on all three; macOS arm64 and Windows x86_64 also on the float64 preset -- macOS Intel does not build the double preset, matching tail_tolerances_v2.json's own platform coverage), comparing every platform pair's compact modulation-v1-equivalence summary of the same millisecond-scale Feedback Loop Modulation tracer (tests/test_modulation_equivalence_cli.py) that carries a research-baseline Damping object too. Every exact-compared structural fact (modulationPresent, activeModulationCount, octave-band count, T20/T30 fit presence, withinPredictedTolerance, decay.withinAccuracyInvariant/significantDeviation, decayTilt.bandCount/significant, boundedEnergy.negativeTrend, each configured rate's own owner/rateHz/significant, and outputCorrelation.significant) reproduced exactly on every platform and precision. decayRt60Sec, decayRelativeError, decayTilt's slope/intercept, boundedEnergySlopeDbPerSegment, and outputCorrelation's two metrics all reproduced at the same scale tail_tolerances_v2.json's own equivalent entries document: same-architecture deltas at the 1e-16-to-1e-15 floor, float32 cross-architecture deltas up to ~1.6e-7 (decayRt60Sec, band=4000 T30) driven by the documented arm64 FMA-contraction divergence in the recursive shelf/delay-line arithmetic this analyzer's DSP output shares with tail-v2's, float64 cross-architecture deltas back down at the ~1e-14-to-1e-15 floor (a pure function of resolved.json's already-double-precision shelf coefficients for the predicted-RT60 entries, confirmed identical in magnitude at both DSP precisions exactly as tail_tolerances_v2.json's own float32/float64 entries observed). coherentPitchMovementBroadbandMeanMagnitude, coherentPitchMovementMagnitude and coherentPitchMovementRelativeMagnitude are new to this analyzer and behaved differently from every other metric here: at float32 their same-architecture delta (macOS Intel vs. Windows x86_64, both x86_64, observed up to 1350 out of a ~5.19e6 raw FFT magnitude for coherentPitchMovementMagnitude) was the SAME order of magnitude as their cross-architecture delta (up to 1920, arm64 vs. Windows). This is not the arm64-only FMA-boundary pattern every other metric in this file (and in tail_tolerances_v2.json) shows -- it means the instantaneous-frequency construction (analytic signal via FFT, unwrap(angle()), a phase derivative, a second FFT) is sensitive to ANY compiler's own float32 codegen choices for the underlying delay-line/shelf arithmetic, not specifically to arm64's default FMA contraction: unwrap(angle(...)) is a phase-unwrapping operation, and a perturbation as small as one ULP near a wrap boundary can flip a whole 2*pi turn in the unwrapped phase, which then propagates through the derivative and the second FFT as a much larger absolute change than the ULP that caused it. At float64 the same three metrics reproduced far tighter (coherentPitchMovementMagnitude's cross-architecture delta fell to 0.473, ~4000x smaller, consistent with a numerically sensitive but not fundamentally non-deterministic computation: doubling the DSP precision shrinks the perturbation that phase-unwrapping can amplify). Because same- and cross-architecture deltas were comparable for these three float32 metrics, their sameArchitectureAbsoluteTolerance is committed at the same order of magnitude as crossArchitectureAbsoluteTolerance rather than following every other metric's much-tighter same-architecture split; every other metric here keeps that split, matching tail_tolerances_v2.json's own documented reasoning. Each committed value below states its own observed evidence and headroom.",
   "byPrecision": {
     "float32": {
       "nonFiniteSampleCount": {
         "sameArchitectureAbsoluteTolerance": 0,
         "crossArchitectureAbsoluteTolerance": 0,
-        "rationale": "A non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation, matching every other tolerances file in this repository."
+        "rationale": "Observed: exactly 0 delta across macOS arm64, macOS Intel, and Windows x86_64 (CI run 34224039465) for the tracer's output.wav. A non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation, same basis as every other tolerances file in this repository."
       },
       "decayRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-4,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own decayRt60Sec entry unchanged -- the identical octave-band T20/T30 fit machinery, imported rather than recomputed. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 1.58e-07 (macOS arm64 vs. macOS Intel, band=4000 T30 fit, CI run 34224039465). The two x86_64 platforms differed by only 8.88e-16. Same basis and headroom as tail_tolerances_v2.json's own decayRt60Sec entry, reused unchanged: the identical octave-band T20/T30 fit machinery, imported rather than recomputed."
       },
       "predictedTargetRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own predictedTargetRt60Sec entry unchanged -- a pure function of resolved.json's already-double-precision shelf coefficients, independent of DSP sample precision. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.01e-14 (macOS arm64 vs. macOS Intel, band=125, CI run 34224039465) -- identical in scale to tail_tolerances_v2.json's own observation for this same computation, a pure function of resolved.json's already-double-precision shelf coefficients, independent of DSP sample precision (confirmed here too: the float64 preset observed the identical ~4e-14 scale)."
       },
       "predictedRangeLowRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own predictedRangeLowRt60Sec entry unchanged; see predictedTargetRt60Sec. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.02e-14 (macOS arm64 vs. macOS Intel, band=63, CI run 34224039465); see predictedTargetRt60Sec."
       },
       "predictedRangeHighRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own predictedRangeHighRt60Sec entry unchanged; see predictedTargetRt60Sec. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.82e-14 (macOS arm64 vs. macOS Intel, band=125, CI run 34224039465); see predictedTargetRt60Sec."
       },
       "decayRelativeError": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-4,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own decayRelativeError entry unchanged -- a ratio of two decayRt60Sec-scale quantities. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 1.47e-08 (macOS arm64 vs. macOS Intel, CI run 34224039465), while the two x86_64 platforms differed by 3.33e-16. A ratio of two decayRt60Sec-scale quantities; same basis as decayRt60Sec above and as tail_tolerances_v2.json's own entry."
       },
       "decayTiltSlopeRatioPerOctave": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-4,
-        "rationale": "Provisional: a new ratio-scale quantity (measured T30 divided by rt60Sec, fit against log-frequency) derived from the same T30 fits decayRelativeError uses, so it provisionally carries that entry's order-of-magnitude headroom. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 1.46e-08 (macOS arm64 vs. macOS Intel, CI run 34224039465), while the two x86_64 platforms differed by 3.12e-17. Derived from the same per-band T30 fits decayRelativeError uses, so it carries that entry's basis."
       },
       "decayTiltInterceptRatio": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-4,
-        "rationale": "Provisional: the same linear-regression fit's intercept term, same basis as decayTiltSlopeRatioPerOctave. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 1.36e-07 (macOS arm64 vs. macOS Intel, CI run 34224039465), while the two x86_64 platforms differed by 1.11e-16. The same linear-regression fit's intercept term; see decayTiltSlopeRatioPerOctave."
       },
       "boundedEnergySlopeDbPerSegment": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-4,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own eventualContractionSlopeDbPerSegment entry unchanged -- an identically-shaped late-tail log-energy regression slope over the same FMA-sensitive float32 DSP output. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 5.36e-07 (macOS arm64 vs. macOS Intel, CI run 34224039465), while the two x86_64 platforms differed by 4.44e-16. Same construction as tail_tolerances_v2.json's own eventualContractionSlopeDbPerSegment entry, reused unchanged."
       },
       "coherentPitchMovementBroadbandMeanMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-3,
-        "crossArchitectureAbsoluteTolerance": 10.0,
-        "rationale": "Provisional, no established scale precedent: a raw FFT magnitude mean observed at roughly 6.6e4 on the committed tracer on one local arm64 build. crossArchitectureAbsoluteTolerance approximates this metric's own float32 relative FMA-boundary sensitivity (~1e-7 relative, following the scale tail_tolerances_v2.json observed for other float32 metrics) applied to this larger raw magnitude rather than a bounded dB or ratio value. MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 60.0,
+        "crossArchitectureAbsoluteTolerance": 60.0,
+        "rationale": "Observed max delta 12.6 (macOS Intel vs. Windows x86_64, SAME architecture, CI run 34224039465), larger than the cross-architecture delta observed against macOS arm64 (up to 9.83) -- see this file's top-level rationale for why this metric's same-architecture divergence is not smaller than its cross-architecture one (a phase-unwrap amplification of ordinary compiler-codegen float32 differences, not an arm64-specific FMA effect). Committed at ~4.8x the larger observed delta, the same order of magnitude for both comparison classes rather than the tight/wide split every other metric here uses."
       },
       "coherentPitchMovementMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-3,
-        "crossArchitectureAbsoluteTolerance": 10.0,
-        "rationale": "Provisional, no established scale precedent: the same raw FFT magnitude construction as coherentPitchMovementBroadbandMeanMagnitude, evaluated at one configured rate's own bin rather than averaged, observed at roughly 5.2e6 on the committed tracer on one local arm64 build. See coherentPitchMovementBroadbandMeanMagnitude; MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 8000.0,
+        "crossArchitectureAbsoluteTolerance": 8000.0,
+        "rationale": "Observed max delta 1920 (macOS arm64 vs. Windows x86_64, cross-architecture) and 1350 (macOS Intel vs. Windows x86_64, same architecture), both against a raw FFT magnitude of ~5.19e6 at the configured rate's own bin -- see this file's top-level rationale. Committed at ~4.2x the larger observed delta, the same order of magnitude for both comparison classes."
       },
       "coherentPitchMovementRelativeMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-6,
-        "crossArchitectureAbsoluteTolerance": 1e-2,
-        "rationale": "Provisional, no established scale precedent: the ratio of coherentPitchMovementMagnitude to coherentPitchMovementBroadbandMeanMagnitude, observed at roughly 78 on the committed tracer on one local arm64 build. crossArchitectureAbsoluteTolerance approximates the same ~1e-7 relative float32 FMA-boundary sensitivity applied to this ratio's own magnitude. MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 0.15,
+        "crossArchitectureAbsoluteTolerance": 0.15,
+        "rationale": "Observed max delta 0.0407 (macOS arm64 vs. Windows x86_64, cross-architecture) and 0.0352 (macOS Intel vs. Windows x86_64, same architecture), against a baseline value of ~78.3 -- see this file's top-level rationale. Committed at ~3.7x the larger observed delta, the same order of magnitude for both comparison classes."
       },
       "outputCorrelationMeanAbsoluteOffDiagonal": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-6,
-        "rationale": "Provisional: a dimensionless [-1, 1] zero-lag correlation, the same construction diffusion_tolerances_v1.json already carries cross-platform headroom for; reused here at the same order of magnitude. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 2.55e-08 (macOS arm64 vs. macOS Intel, CI run 34224039465), while the two x86_64 platforms differed by 7.22e-16. A dimensionless [-1, 1] zero-lag correlation, the same construction diffusion_tolerances_v1.json already carries cross-platform headroom for at this same order of magnitude."
       },
       "outputCorrelationMaxAbsoluteOffDiagonal": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-6,
-        "rationale": "Provisional: the pairwise maximum of the same correlation matrix as outputCorrelationMeanAbsoluteOffDiagonal; see that entry. Pending this issue's own CI run."
+        "rationale": "Observed max cross-architecture delta 2.55e-08 (macOS arm64 vs. macOS Intel, CI run 34224039465); see outputCorrelationMeanAbsoluteOffDiagonal (the pairwise maximum of the same correlation matrix, identical here since this tracer's matrix has a single off-diagonal pair)."
       }
     },
     "float64": {
       "nonFiniteSampleCount": {
         "sameArchitectureAbsoluteTolerance": 0,
         "crossArchitectureAbsoluteTolerance": 0,
-        "rationale": "A non-finite sample is a discrete numerical-hygiene failure, not a floating-point accumulation, matching every other tolerances file in this repository."
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64 (macOS Intel does not build the double preset, CI run 34224039465); same basis as the float32 entry."
       },
       "decayRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 decayRt60Sec entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 2.81e-14 (Windows x86_64 vs. macOS arm64, band=1000 T30 fit, CI run 34224039465) -- the same tiny scale tail_tolerances_v2.json's own float64 decayRt60Sec entry observed, confirming the float32 preset's much larger delta is specifically a float32-DSP-build effect."
       },
       "predictedTargetRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 predictedTargetRt60Sec entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.01e-14 (Windows x86_64 vs. macOS arm64, band=125, CI run 34224039465) -- identical to the float32 preset's own observation, confirming this metric is independent of DSP sample precision."
       },
       "predictedRangeLowRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 predictedRangeLowRt60Sec entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.02e-14 (Windows x86_64 vs. macOS arm64, band=63, CI run 34224039465); see predictedTargetRt60Sec."
       },
       "predictedRangeHighRt60Sec": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 predictedRangeHighRt60Sec entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 4.82e-14 (Windows x86_64 vs. macOS arm64, band=125, CI run 34224039465); see predictedTargetRt60Sec."
       },
       "decayRelativeError": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 decayRelativeError entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 2.81e-14 (Windows x86_64 vs. macOS arm64, CI run 34224039465); see decayRt60Sec."
       },
       "decayTiltSlopeRatioPerOctave": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: see the float32 entry's reasoning; at float64 the underlying T30 fits reproduce near machine-epsilon scale, matching tail_tolerances_v2.json's own float64 decayRelativeError entry. Pending this issue's own CI run."
+        "rationale": "Observed max delta 8.85e-16 (Windows x86_64 vs. macOS arm64, CI run 34224039465)."
       },
       "decayTiltInterceptRatio": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: see decayTiltSlopeRatioPerOctave. Pending this issue's own CI run."
+        "rationale": "Observed max delta 1.81e-14 (Windows x86_64 vs. macOS arm64, CI run 34224039465)."
       },
       "boundedEnergySlopeDbPerSegment": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from tail_tolerances_v2.json's own float64 eventualContractionSlopeDbPerSegment entry unchanged. Pending this issue's own CI run."
+        "rationale": "Observed max delta 1.06e-13 (Windows x86_64 vs. macOS arm64, CI run 34224039465) -- the same tiny scale as decayRt60Sec's float64 entry."
       },
       "coherentPitchMovementBroadbandMeanMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-3,
-        "crossArchitectureAbsoluteTolerance": 1e-3,
-        "rationale": "Provisional, no established scale precedent: at float64 the underlying DSP output and this analyzer's own numpy float64 chain should reproduce near machine-epsilon scale across architectures, matching the float32-preset-only divergence tail_tolerances_v2.json documented for its own metrics. MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 0.02,
+        "crossArchitectureAbsoluteTolerance": 0.02,
+        "rationale": "Observed delta 0.0031 (Windows x86_64 vs. macOS arm64, the only float64 pair available -- macOS Intel does not build the double preset, CI run 34224039465), ~4000x smaller than the float32 preset's equivalent delta, confirming this metric's float32 divergence is a precision effect amplified by phase unwrapping rather than a structural non-determinism (see this file's top-level rationale). Committed at ~6.5x the observed delta. sameArchitectureAbsoluteTolerance is set equal to crossArchitectureAbsoluteTolerance because no same-architecture float64 pair exists to observe separately, matching tail_tolerances_v2.json's own convention for float64 entries in the same situation."
       },
       "coherentPitchMovementMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-3,
-        "crossArchitectureAbsoluteTolerance": 1e-3,
-        "rationale": "Provisional: see coherentPitchMovementBroadbandMeanMagnitude. MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 3.0,
+        "crossArchitectureAbsoluteTolerance": 3.0,
+        "rationale": "Observed delta 0.473 (Windows x86_64 vs. macOS arm64, CI run 34224039465); see coherentPitchMovementBroadbandMeanMagnitude. Committed at ~6.3x the observed delta."
       },
       "coherentPitchMovementRelativeMagnitude": {
-        "sameArchitectureAbsoluteTolerance": 1e-6,
-        "crossArchitectureAbsoluteTolerance": 1e-6,
-        "rationale": "Provisional: see the float32 entry; at float64 this ratio should reproduce near machine-epsilon scale across architectures. MUST be replaced with this issue's own CI-observed delta before merge."
+        "sameArchitectureAbsoluteTolerance": 7e-5,
+        "crossArchitectureAbsoluteTolerance": 7e-5,
+        "rationale": "Observed delta 1.08e-05 (Windows x86_64 vs. macOS arm64, CI run 34224039465); see coherentPitchMovementBroadbandMeanMagnitude. Committed at ~6.5x the observed delta."
       },
       "outputCorrelationMeanAbsoluteOffDiagonal": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: reused from diffusion_tolerances_v1.json's own float64 correlation-metric headroom philosophy. Pending this issue's own CI run."
+        "rationale": "Observed delta 2.78e-15 (Windows x86_64 vs. macOS arm64, CI run 34224039465)."
       },
       "outputCorrelationMaxAbsoluteOffDiagonal": {
         "sameArchitectureAbsoluteTolerance": 1e-9,
         "crossArchitectureAbsoluteTolerance": 1e-9,
-        "rationale": "Provisional: see outputCorrelationMeanAbsoluteOffDiagonal. Pending this issue's own CI run."
+        "rationale": "Observed delta 2.78e-15 (Windows x86_64 vs. macOS arm64, CI run 34224039465); see outputCorrelationMeanAbsoluteOffDiagonal."
       }
     }
   }
