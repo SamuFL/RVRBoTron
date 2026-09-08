@@ -220,6 +220,32 @@ add_test(
 )
 
 add_test(
+  NAME modulation_analyzer_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_modulation_analyzer_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_tail.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_tail_v2.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_modulation.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/modulation-analyzer-contract
+)
+
+add_test(
+  NAME modulation_equivalence_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_modulation_equivalence_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/extract_modulation_equivalence.py
+    ${CMAKE_SOURCE_DIR}/tools/compare_modulation_equivalence.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_modulation.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/modulation-equivalence-contract
+)
+
+add_test(
   NAME diffusion_equivalence_contract
   COMMAND
     ${Python3_EXECUTABLE}
