@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <numeric>
 #include <optional>
@@ -358,6 +359,64 @@ rvrbotron::dsp::ResolvedConfig resolvedModulatedLoopConfig(
   requested.seed = seed;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
+}
+
+// A Diffuser-only Composition (no Feedback Loop) whose shared step
+// defaults and/or a single step override may each carry their own
+// Modulation object (issue #91). `stepDefaultsModulation` is nullopt when
+// every step's Modulation should come solely from `stepOverride` (or be
+// omitted entirely, if that is nullopt too); `stepOverride`, when
+// present, is (step index, that step's own Modulation).
+rvrbotron::dsp::ResolvedConfig resolvedDiffuserStepModulatedConfig(
+    const std::uint32_t channels,
+    const double totalMs,
+    const std::uint32_t stepCount,
+    const std::optional<rvrbotron::config::ModulationConfig>&
+        stepDefaultsModulation,
+    const std::optional<
+        std::pair<std::uint32_t, rvrbotron::config::ModulationConfig>>&
+        stepOverride,
+    const std::uint64_t seed = 0x9e3779b97f4a7c15ULL) {
+  rvrbotron::config::SplitConfig split;
+  split.channels = channels;
+  split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+  split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::DiffusionStepConfig step;
+  step.delayStrategy = rvrbotron::dsp::DelayStrategy::segmentedRandom;
+  step.mix = rvrbotron::dsp::MixMatrixType::hadamard;
+  step.shuffle = true;
+  step.polarity = rvrbotron::dsp::PolarityStrategy::seededRandom;
+  step.modulation = stepDefaultsModulation;
+
+  rvrbotron::config::DiffuserConfig diffuser;
+  diffuser.steps = stepCount;
+  diffuser.totalMs = totalMs;
+  diffuser.distribution = rvrbotron::config::DiffusionDistribution::even;
+  diffuser.step = step;
+  if (stepOverride.has_value()) {
+    rvrbotron::config::DiffusionStepOverride override;
+    override.index = stepOverride->first;
+    override.step.modulation = stepOverride->second;
+    diffuser.stepOverrides =
+        std::vector<rvrbotron::config::DiffusionStepOverride>{override};
+  }
+
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+
+  rvrbotron::config::CompositionConfig composition;
+  composition.stagesSpecified = true;
+  composition.stages.emplace_back(split);
+  composition.stages.emplace_back(diffuser);
+  composition.stages.emplace_back(downmix);
+
+  rvrbotron::config::ReverbConfig requested;
+  requested.formatVersion = 1;
+  requested.seed = seed;
+  requested.composition = std::move(composition);
+  return rvrbotron::config::resolveConfig(requested, 48000, 1);
 }
 
 // Same seed as resolvedFeedbackLoopConfig above, and the same Feedback Loop
@@ -2549,6 +2608,216 @@ int main() {
           return 1;
         }
       }
+    }
+  }
+
+  // Diffusion Step Modulation (issue #91): one-shot, non-compounding
+  // detuning scoped to a single step, as distinct from the Feedback
+  // Loop's own compounding Modulation above. Probe this seed's own
+  // resolved delays with Modulation omitted first, so the depthMs chosen
+  // below stays safely within every step's shortest delay regardless of
+  // which values segmented-random happens to draw.
+  {
+    constexpr std::uint32_t channels = 8;
+    constexpr double totalMs = 200.0;
+    constexpr std::uint32_t stepCount = 2;
+    const auto probeConfig = resolvedDiffuserStepModulatedConfig(
+        channels, totalMs, stepCount, std::nullopt, std::nullopt);
+    const auto& probeDiffuser = std::get<rvrbotron::dsp::ResolvedDiffuser>(
+        probeConfig.composition.stages[1]);
+    auto minDelay = std::numeric_limits<std::uint64_t>::max();
+    for (const auto& step : probeDiffuser.steps) {
+      for (const auto delay : step.delaysSamples) {
+        minDelay = std::min(minDelay, delay);
+      }
+    }
+    if (minDelay == std::numeric_limits<std::uint64_t>::max() ||
+        minDelay < 10) {
+      std::cerr << "Diffusion Step Modulation probe resolved an "
+                   "unexpectedly short delay -- adjust the test fixture\n";
+      return 1;
+    }
+    // A third of the shortest resolved delay less the fixed Interpolation
+    // margin, converted to depthMs at 48 kHz -- comfortably inside the
+    // Excursion rejection rule regardless of which Channel ends up
+    // shortest.
+    const auto safeExcursionSamples =
+        static_cast<double>(
+            minDelay - rvrbotron::config::kModulationInterpolationMarginSamples) /
+        3.0;
+    const auto safeDepthMs = safeExcursionSamples * 1000.0 / 48000.0;
+
+    // Explicit zero depth on a step is the resolved bypass: it records
+    // evidence that Modulation was configured, grows no buffer headroom,
+    // and renders bit-identical to Modulation omitted from that step --
+    // mirroring the Feedback Loop's own zero-depth invariant.
+    rvrbotron::config::ModulationConfig zeroDepthModulation;
+    zeroDepthModulation.depthMs = 0.0;
+    const auto zeroDepthConfig = resolvedDiffuserStepModulatedConfig(
+        channels,
+        totalMs,
+        stepCount,
+        std::nullopt,
+        std::make_pair(std::uint32_t{0}, zeroDepthModulation));
+    const auto& zeroDepthDiffuser =
+        std::get<rvrbotron::dsp::ResolvedDiffuser>(
+            zeroDepthConfig.composition.stages[1]);
+    if (!zeroDepthDiffuser.steps[0].modulation.has_value()) {
+      std::cerr << "explicit zero depth did not resolve a Modulation "
+                   "object on the Diffusion Step\n";
+      return 1;
+    }
+    if (zeroDepthDiffuser.steps[0].bufferSizes !=
+        probeDiffuser.steps[0].bufferSizes) {
+      std::cerr << "zero-depth Diffusion Step Modulation grew the "
+                   "resolved buffer sizes over Modulation omitted\n";
+      return 1;
+    }
+
+    std::vector<rvrbotron::dsp::Sample> impulse(
+        channels, rvrbotron::dsp::Sample{0});
+    impulse[0] = rvrbotron::dsp::Sample{1};
+    std::vector<rvrbotron::dsp::Sample> silence(
+        channels, rvrbotron::dsp::Sample{0});
+
+    {
+      // A fresh Diffuser per side of the comparison: neither is copy- nor
+      // move-assignable and each must start silent at frame 0 (mirrors
+      // the Feedback Loop's own zero-depth comparison above).
+      rvrbotron::dsp::Diffuser omittedDiffuser(probeDiffuser);
+      rvrbotron::dsp::Diffuser zeroDepthDiffuserDsp(zeroDepthDiffuser);
+      for (std::size_t frame = 0; frame < 4000; ++frame) {
+        std::vector<rvrbotron::dsp::Sample> omittedOutput(channels);
+        std::vector<rvrbotron::dsp::Sample> zeroDepthOutput(channels);
+        const auto& in = frame == 0 ? impulse : silence;
+        omittedDiffuser.processFrame(in.data(), omittedOutput.data());
+        zeroDepthDiffuserDsp.processFrame(in.data(), zeroDepthOutput.data());
+        if (omittedOutput != zeroDepthOutput) {
+          std::cerr << "zero-depth Diffusion Step Modulation output "
+                       "diverged from Modulation omitted at frame "
+                    << frame << '\n';
+          return 1;
+        }
+      }
+    }
+
+    // Active Modulation on step 0 alone moves that step's delays and
+    // renders end to end: buffer headroom grows only on the modulated
+    // step, the untouched step 1 keeps its buffer sizes exactly equal to
+    // its delays, and the rendered output differs from the unmodulated
+    // baseline.
+    rvrbotron::config::ModulationConfig activeModulation;
+    activeModulation.depthMs = safeDepthMs;
+    activeModulation.rateHz = 5.0;
+    const auto activeConfig = resolvedDiffuserStepModulatedConfig(
+        channels,
+        totalMs,
+        stepCount,
+        std::nullopt,
+        std::make_pair(std::uint32_t{0}, activeModulation));
+    const auto& activeDiffuser = std::get<rvrbotron::dsp::ResolvedDiffuser>(
+        activeConfig.composition.stages[1]);
+    const auto& activeStep0 = activeDiffuser.steps[0];
+    const auto& activeStep1 = activeDiffuser.steps[1];
+    if (activeStep1.modulation.has_value()) {
+      std::cerr << "an untouched Diffusion Step resolved Modulation it "
+                   "was never configured with\n";
+      return 1;
+    }
+    if (activeStep1.bufferSizes != activeStep1.delaysSamples) {
+      std::cerr << "an unmodulated Diffusion Step's buffer sizes grew "
+                   "even though it has no Modulation configured\n";
+      return 1;
+    }
+    const auto& activeMod = *activeStep0.modulation;
+    const auto headroom =
+        static_cast<std::uint64_t>(std::ceil(activeMod.excursionSamples)) +
+        rvrbotron::config::kModulationInterpolationMarginSamples;
+    for (std::size_t channel = 0; channel < channels; ++channel) {
+      const auto expected = activeMod.channelModulated[channel]
+          ? activeStep0.delaysSamples[channel] + headroom
+          : activeStep0.delaysSamples[channel];
+      if (activeStep0.bufferSizes[channel] != expected) {
+        std::cerr << "active Diffusion Step Modulation did not reserve "
+                     "Excursion plus the fixed Interpolation margin on "
+                     "Channel "
+                  << channel << '\n';
+        return 1;
+      }
+    }
+
+    {
+      rvrbotron::dsp::Diffuser omittedDiffuser(probeDiffuser);
+      rvrbotron::dsp::Diffuser activeDiffuserDsp(activeDiffuser);
+      auto activeOutputDiffered = false;
+      for (std::size_t frame = 0; frame < 4000; ++frame) {
+        std::vector<rvrbotron::dsp::Sample> omittedOutput(channels);
+        std::vector<rvrbotron::dsp::Sample> activeOutput(channels);
+        const auto& in = frame == 0 ? impulse : silence;
+        omittedDiffuser.processFrame(in.data(), omittedOutput.data());
+        activeDiffuserDsp.processFrame(in.data(), activeOutput.data());
+        if (omittedOutput != activeOutput) {
+          activeOutputDiffered = true;
+        }
+      }
+      if (!activeOutputDiffered) {
+        std::cerr << "active Diffusion Step Modulation rendered output "
+                     "identical to the unmodulated baseline\n";
+        return 1;
+      }
+    }
+
+    // Diffusion Step trajectories are seeded per step and per Channel:
+    // two steps modulated with identical parameters (via the shared step
+    // defaults) never share a trajectory.
+    const auto bothStepsConfig = resolvedDiffuserStepModulatedConfig(
+        channels, totalMs, stepCount, activeModulation, std::nullopt);
+    const auto& bothStepsDiffuser =
+        std::get<rvrbotron::dsp::ResolvedDiffuser>(
+            bothStepsConfig.composition.stages[1]);
+    if (!bothStepsDiffuser.steps[0].modulation.has_value() ||
+        !bothStepsDiffuser.steps[1].modulation.has_value()) {
+      std::cerr << "shared step-default Modulation did not apply to "
+                   "every Diffusion Step\n";
+      return 1;
+    }
+    if (bothStepsDiffuser.steps[0].modulation->channelSeeds ==
+        bothStepsDiffuser.steps[1].modulation->channelSeeds) {
+      std::cerr << "two Diffusion Steps modulated with identical "
+                   "parameters shared the exact same per-Channel "
+                   "trajectory seeds\n";
+      return 1;
+    }
+
+    // The Excursion rejection rule applies identically to a Diffusion
+    // Step, naming the responsible step's own Modulation parameter path
+    // -- a short step delay is as safe as a short loop delay.
+    rvrbotron::config::ModulationConfig unsafeModulation;
+    unsafeModulation.depthMs = 1000.0;
+    auto rejected = false;
+    try {
+      resolvedDiffuserStepModulatedConfig(
+          channels,
+          totalMs,
+          stepCount,
+          std::nullopt,
+          std::make_pair(std::uint32_t{0}, unsafeModulation));
+    } catch (const rvrbotron::HarnessError& error) {
+      rejected = true;
+      if (!error.location().has_value() ||
+          error.location()->find("/steps/0/modulation/depthMs") ==
+              std::string::npos) {
+        std::cerr << "Diffusion Step Excursion rejection did not name "
+                     "the responsible step's own Modulation parameter "
+                     "path: "
+                  << error.location().value_or("<none>") << '\n';
+        return 1;
+      }
+    }
+    if (!rejected) {
+      std::cerr << "an Excursion far exceeding the resolved delay was "
+                   "not rejected for a Diffusion Step\n";
+      return 1;
     }
   }
 

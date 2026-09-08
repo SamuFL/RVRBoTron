@@ -53,6 +53,90 @@ struct ResolvedSplit {
   double channelGain = 0.0;
 };
 
+// The delay line's fractional-read method for a Modulation-bearing stage
+// (see docs/design/reverb/stages/06-modulation.md's "Fractional delay
+// becomes mandatory"): third-order Lagrange today; `linear` and `allpass`
+// are added by later tickets. Shared by the Feedback Loop and a Diffusion
+// Step alike.
+enum class ModulationInterpolation {
+  lagrange3,
+};
+
+// A Modulation's per-Channel trajectory waveform (see docs/design/
+// reverb/stages/06-modulation.md's "Decorrelation and shape"):
+// `smoothedRandom` is Catmull-Rom interpolation between random targets;
+// `sine` and `triangle` are periodic. `rateHz` means the same thing for
+// all three -- one full target-grid cycle per 1/rateHz seconds -- so
+// comparing shapes at a fixed rate compares only the shapes.
+enum class ModulationShape {
+  smoothedRandom,
+  sine,
+  triangle,
+};
+
+// Resolved Modulation (see docs/design/reverb/stages/06-modulation.md,
+// issues #89/#91): seeded per-Channel delay-time movement, read through a
+// fractional DelayLine interpolator, on either the Feedback Loop (where
+// movement compounds every circulation) or a Diffusion Step (where the
+// signal passes once, so movement is one-shot and does not compound).
+// Disabled (nullopt) on the owning stage by default: omission preserves
+// existing rendered output and leaves the Resolved Configuration
+// byte-identical to one written without it.
+//
+// There is no `target` field (see the design doc's "Placement"): which
+// stage a resolved Modulation belongs to is already recorded by where
+// this struct is nested (on the Feedback Loop, or on a Diffusion Step),
+// not by a second field naming the same decision. Likewise, "nominal and
+// maximum buffer bounds" -- called for in issue #89's acceptance criteria
+// -- are the owning stage's own `delaysSamples` and `bufferSizes`, not
+// duplicated here.
+struct ResolvedModulation {
+  // Peak Excursion, in milliseconds, and the LFO rate, in Hz, that
+  // together govern the Detune product (see "Depth and rate multiply").
+  // 0.4ms / 0.7Hz is the documented research baseline for an included but
+  // otherwise empty Modulation object -- not a neutral default.
+  double depthMs = 0.4;
+  double rateHz = 0.7;
+  ModulationShape shape = ModulationShape::smoothedRandom;
+  // Proportion of Channels modulated, rounded up to the nearest Channel
+  // (see "Placement"'s "channelFraction is what tests it at the
+  // output"). 1.0 modulates every Channel; 0 disables Modulation for
+  // this stage, exactly like an explicit depthMs of 0.
+  double channelFraction = 1.0;
+  ModulationInterpolation interpolation = ModulationInterpolation::lagrange3;
+  // depthMs resolved to samples at this Composition's sample rate; 0 when
+  // depthMs is 0.
+  double excursionSamples = 0.0;
+  // The fixed worst-case Interpolation margin (see "What this forces on
+  // the architecture"), in samples, sized for the worst of all three
+  // eventual interpolation methods so DSP-owned memory does not move when
+  // the method changes.
+  std::uint64_t interpolationMarginSamples = 0;
+  // Per-Channel derived trajectory seed (a pure function of this
+  // Composition's own seed, the owning stage's own positional itemIndex
+  // -- 0 for the Feedback Loop, this step's own index for a Diffusion
+  // Step -- and the Channel index), per-Channel resolved trajectory rate
+  // -- rateHz times that Channel's own fixed +-10% seeded spread, already
+  // divided by the sample rate so the DSP layer works in per-sample units
+  // like every other resolved rate in this codebase -- and per-Channel
+  // resolved phase, a positionally seeded offset in [0, 1) added to that
+  // Channel's target-grid position (see "Decorrelation and shape"'s
+  // "Phase, rate spread and Channel selection each get their own usage
+  // tag"). All three empty when depthMs is 0 (the resolved bypass; see
+  // "Identity is guaranteed by construction, not by arithmetic").
+  std::vector<std::uint64_t> channelSeeds;
+  std::vector<double> channelTargetsPerSample;
+  std::vector<double> channelPhases;
+  // The per-Channel bypass mask (see "What this forces on the
+  // architecture"'s "Identity is guaranteed by construction, not by
+  // arithmetic"): true for a Channel actually modulated -- the first
+  // ceil(channelFraction * N) entries of a positionally seeded fixed
+  // permutation, independent of delay ordering -- false for a Channel
+  // that keeps the cheaper integer read path. Empty exactly when the
+  // other three per-Channel vectors are (the resolved bypass).
+  std::vector<bool> channelModulated;
+};
+
 struct ResolvedDiffusionStep {
   std::uint32_t index = 0;
   std::uint64_t lengthSamples = 0;
@@ -67,6 +151,15 @@ struct ResolvedDiffusionStep {
   std::vector<int> polaritySigns;
   MixMatrixType mix = MixMatrixType::hadamard;
   std::vector<double> matrix;
+  // Seeded delay-time movement scoped to this step alone -- one-shot,
+  // non-compounding, as distinct from the Feedback Loop's own compounding
+  // Modulation (see docs/design/reverb/stages/06-modulation.md's
+  // "Placement" and issue #91). Disabled (nullopt) by default: omission
+  // preserves this step's existing rendered output and resolved bytes.
+  // Seeded per step (this step's own `index` is the positional
+  // itemIndex, see ResolvedModulation) and per Channel, so two modulated
+  // steps never share a trajectory.
+  std::optional<ResolvedModulation> modulation;
 };
 
 struct ResolvedDiffuser {
@@ -129,86 +222,6 @@ struct ResolvedDamping {
   double slowestResolvedRt60Sec = 0.0;
 };
 
-// The Feedback Loop delay line's fractional-read method (see docs/design/
-// reverb/stages/06-modulation.md's "Fractional delay becomes mandatory"):
-// third-order Lagrange today; `linear` and `allpass` are added by later
-// tickets.
-enum class ModulationInterpolation {
-  lagrange3,
-};
-
-// A Modulation's per-Channel trajectory waveform (see docs/design/
-// reverb/stages/06-modulation.md's "Decorrelation and shape"):
-// `smoothedRandom` is Catmull-Rom interpolation between random targets;
-// `sine` and `triangle` are periodic. `rateHz` means the same thing for
-// all three -- one full target-grid cycle per 1/rateHz seconds -- so
-// comparing shapes at a fixed rate compares only the shapes.
-enum class ModulationShape {
-  smoothedRandom,
-  sine,
-  triangle,
-};
-
-// Resolved Modulation (see docs/design/reverb/stages/06-modulation.md,
-// issue #89): seeded per-Channel delay-time movement inside the Feedback
-// Loop, read through a fractional DelayLine interpolator. Disabled
-// (nullopt) on the owning stage by default: omission preserves existing
-// rendered output and leaves the Resolved Configuration byte-identical to
-// one written without it.
-//
-// There is no `target` field (see the design doc's "Placement"): which
-// stage a resolved Modulation belongs to is already recorded by where
-// this struct is nested (on the Feedback Loop today; a Diffusion Step is
-// added by a later ticket), not by a second field naming the same
-// decision. Likewise, "nominal and maximum buffer bounds" -- called for
-// in issue #89's acceptance criteria -- are the owning stage's own
-// `delaysSamples` and `bufferSizes`, not duplicated here.
-struct ResolvedModulation {
-  // Peak Excursion, in milliseconds, and the LFO rate, in Hz, that
-  // together govern the Detune product (see "Depth and rate multiply").
-  // 0.4ms / 0.7Hz is the documented research baseline for an included but
-  // otherwise empty Modulation object -- not a neutral default.
-  double depthMs = 0.4;
-  double rateHz = 0.7;
-  ModulationShape shape = ModulationShape::smoothedRandom;
-  // Proportion of Channels modulated, rounded up to the nearest Channel
-  // (see "Placement"'s "channelFraction is what tests it at the
-  // output"). 1.0 modulates every Channel; 0 disables Modulation for
-  // this stage, exactly like an explicit depthMs of 0.
-  double channelFraction = 1.0;
-  ModulationInterpolation interpolation = ModulationInterpolation::lagrange3;
-  // depthMs resolved to samples at this Composition's sample rate; 0 when
-  // depthMs is 0.
-  double excursionSamples = 0.0;
-  // The fixed worst-case Interpolation margin (see "What this forces on
-  // the architecture"), in samples, sized for the worst of all three
-  // eventual interpolation methods so DSP-owned memory does not move when
-  // the method changes.
-  std::uint64_t interpolationMarginSamples = 0;
-  // Per-Channel derived trajectory seed (a pure function of this
-  // Composition's own seed and the Channel index), per-Channel resolved
-  // trajectory rate -- rateHz times that Channel's own fixed +-10%
-  // seeded spread, already divided by the sample rate so the DSP layer
-  // works in per-sample units like every other resolved rate in this
-  // codebase -- and per-Channel resolved phase, a positionally seeded
-  // offset in [0, 1) added to that Channel's target-grid position (see
-  // "Decorrelation and shape"'s "Phase, rate spread and Channel
-  // selection each get their own usage tag"). All three empty when
-  // depthMs is 0 (the resolved bypass; see "Identity is guaranteed by
-  // construction, not by arithmetic").
-  std::vector<std::uint64_t> channelSeeds;
-  std::vector<double> channelTargetsPerSample;
-  std::vector<double> channelPhases;
-  // The per-Channel bypass mask (see "What this forces on the
-  // architecture"'s "Identity is guaranteed by construction, not by
-  // arithmetic"): true for a Channel actually modulated -- the first
-  // ceil(channelFraction * N) entries of a positionally seeded fixed
-  // permutation, independent of delay ordering -- false for a Channel
-  // that keeps the cheaper integer read path. Empty exactly when the
-  // other three per-Channel vectors are (the resolved bypass).
-  std::vector<bool> channelModulated;
-};
-
 struct ResolvedFeedbackLoop {
   std::uint32_t channels = 0;
   std::uint64_t delayMinSamples = 0;
@@ -254,11 +267,12 @@ struct ResolvedFeedbackLoop {
   // preserves undamped output, and existing format-version-1 Resolved
   // Configurations without this field load as disabled.
   std::optional<ResolvedDamping> damping;
-  // Seeded delay-time movement (see docs/design/reverb/stages/
-  // 06-modulation.md and issue #89). Disabled (nullopt) by default:
-  // omission preserves existing rendered output, and existing
-  // format-version-1 Resolved Configurations without this field load as
-  // disabled.
+  // Seeded, compounding delay-time movement (see docs/design/reverb/
+  // stages/06-modulation.md and issue #89) -- as distinct from a
+  // Diffusion Step's own one-shot Modulation (issue #91). Disabled
+  // (nullopt) by default: omission preserves existing rendered output,
+  // and existing format-version-1 Resolved Configurations without this
+  // field load as disabled.
   std::optional<ResolvedModulation> modulation;
 };
 

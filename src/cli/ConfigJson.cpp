@@ -242,6 +242,38 @@ dsp::ModulationShape parseModulationShape(
   fail(path, "expected smoothed-random, sine, or triangle");
 }
 
+config::ModulationConfig parseRequestedModulation(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value,
+      path,
+      {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"});
+  config::ModulationConfig modulation;
+  if (value.contains("depthMs")) {
+    modulation.depthMs =
+        parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
+  }
+  if (value.contains("rateHz")) {
+    modulation.rateHz =
+        parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  }
+  if (value.contains("shape")) {
+    modulation.shape = parseModulationShape(
+        value.at("shape"), std::string(path) + "/shape");
+  }
+  if (value.contains("channelFraction")) {
+    modulation.channelFraction = parseNumber(
+        value.at("channelFraction"), std::string(path) + "/channelFraction");
+  }
+  if (value.contains("interpolation")) {
+    modulation.interpolation = parseModulationInterpolation(
+        value.at("interpolation"), std::string(path) + "/interpolation");
+  }
+  return modulation;
+}
+
 dsp::GainMode parseGainMode(
     const Json& value,
     const std::string_view path) {
@@ -330,6 +362,10 @@ config::DiffusionStepConfig parseStepFields(
     step.polarity = parsePolarity(
         value.at("polarity"), std::string(path) + "/polarity");
   }
+  if (value.contains("modulation")) {
+    step.modulation = parseRequestedModulation(
+        value.at("modulation"), std::string(path) + "/modulation");
+  }
   return step;
 }
 
@@ -338,7 +374,9 @@ config::DiffusionStepConfig parseRequestedStep(
     const std::string_view path) {
   requireObject(value, path);
   rejectUnknownFields(
-      value, path, {"delayStrategy", "mix", "shuffle", "polarity"});
+      value,
+      path,
+      {"delayStrategy", "mix", "shuffle", "polarity", "modulation"});
   return parseStepFields(value, path);
 }
 
@@ -347,7 +385,14 @@ config::DiffusionStepOverride parseRequestedStepOverride(
     const std::string_view path) {
   requireObject(value, path);
   rejectUnknownFields(
-      value, path, {"index", "delayStrategy", "mix", "shuffle", "polarity"});
+      value,
+      path,
+      {"index",
+       "delayStrategy",
+       "mix",
+       "shuffle",
+       "polarity",
+       "modulation"});
   requireField(value, "index", path);
   config::DiffusionStepOverride stepOverride;
   stepOverride.index =
@@ -463,38 +508,6 @@ config::DampingConfig parseRequestedDamping(
         parseNumber(value.at("lowHz"), std::string(path) + "/lowHz");
   }
   return damping;
-}
-
-config::ModulationConfig parseRequestedModulation(
-    const Json& value,
-    const std::string_view path) {
-  requireObject(value, path);
-  rejectUnknownFields(
-      value,
-      path,
-      {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"});
-  config::ModulationConfig modulation;
-  if (value.contains("depthMs")) {
-    modulation.depthMs =
-        parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
-  }
-  if (value.contains("rateHz")) {
-    modulation.rateHz =
-        parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
-  }
-  if (value.contains("shape")) {
-    modulation.shape = parseModulationShape(
-        value.at("shape"), std::string(path) + "/shape");
-  }
-  if (value.contains("channelFraction")) {
-    modulation.channelFraction = parseNumber(
-        value.at("channelFraction"), std::string(path) + "/channelFraction");
-  }
-  if (value.contains("interpolation")) {
-    modulation.interpolation = parseModulationInterpolation(
-        value.at("interpolation"), std::string(path) + "/interpolation");
-  }
-  return modulation;
 }
 
 config::FeedbackLoopConfig parseRequestedFeedbackLoop(
@@ -671,6 +684,66 @@ std::vector<int> parseSignArray(
   return result;
 }
 
+dsp::ResolvedModulation parseResolvedModulation(
+    const Json& value,
+    const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value,
+      path,
+      {"depthMs",
+       "rateHz",
+       "shape",
+       "channelFraction",
+       "interpolation",
+       "excursionSamples",
+       "interpolationMarginSamples",
+       "channelSeeds",
+       "channelTargetsPerSample",
+       "channelPhases",
+       "channelModulated"});
+  for (const auto field :
+       {"depthMs",
+        "rateHz",
+        "shape",
+        "channelFraction",
+        "interpolation",
+        "excursionSamples",
+        "interpolationMarginSamples",
+        "channelSeeds",
+        "channelTargetsPerSample",
+        "channelPhases",
+        "channelModulated"}) {
+    requireField(value, field, path);
+  }
+  dsp::ResolvedModulation modulation;
+  modulation.depthMs =
+      parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
+  modulation.rateHz =
+      parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
+  modulation.shape = parseModulationShape(
+      value.at("shape"), std::string(path) + "/shape");
+  modulation.channelFraction = parseNumber(
+      value.at("channelFraction"), std::string(path) + "/channelFraction");
+  modulation.interpolation = parseModulationInterpolation(
+      value.at("interpolation"), std::string(path) + "/interpolation");
+  modulation.excursionSamples = parseNumber(
+      value.at("excursionSamples"), std::string(path) + "/excursionSamples");
+  modulation.interpolationMarginSamples = parseUnsigned64(
+      value.at("interpolationMarginSamples"),
+      std::string(path) + "/interpolationMarginSamples");
+  modulation.channelSeeds = parseUnsigned64Array(
+      value.at("channelSeeds"), std::string(path) + "/channelSeeds");
+  modulation.channelTargetsPerSample = parseNumberArray(
+      value.at("channelTargetsPerSample"),
+      std::string(path) + "/channelTargetsPerSample");
+  modulation.channelPhases = parseNumberArray(
+      value.at("channelPhases"), std::string(path) + "/channelPhases");
+  modulation.channelModulated = parseBooleanArray(
+      value.at("channelModulated"), std::string(path) + "/channelModulated");
+  return modulation;
+}
+
 dsp::ResolvedSplit parseResolvedSplit(
     const Json& value,
     const std::string_view path) {
@@ -725,7 +798,8 @@ dsp::ResolvedDiffusionStep parseResolvedStep(
        "polarity",
        "polaritySigns",
        "mix",
-       "matrix"});
+       "matrix",
+       "modulation"});
   for (const auto field :
        {"index",
         "lengthSamples",
@@ -753,29 +827,38 @@ dsp::ResolvedDiffusionStep parseResolvedStep(
     matrix.insert(matrix.end(), values.begin(), values.end());
   }
 
-  return {
-      parseUnsigned32(value.at("index"), std::string(path) + "/index"),
-      parseUnsigned64(
-          value.at("lengthSamples"), std::string(path) + "/lengthSamples"),
-      parseNumber(value.at("lengthMs"), std::string(path) + "/lengthMs"),
-      parseDelayStrategy(
-          value.at("delayStrategy"), std::string(path) + "/delayStrategy"),
-      parseUnsigned64Array(
-          value.at("delaysSamples"), std::string(path) + "/delaysSamples"),
-      parseNumberArray(
-          value.at("delaysMs"), std::string(path) + "/delaysMs"),
-      parseUnsigned64Array(
-          value.at("bufferSizes"), std::string(path) + "/bufferSizes"),
-      parseBoolean(value.at("shuffle"), std::string(path) + "/shuffle"),
-      parseUnsigned32Array(
-          value.at("permutation"), std::string(path) + "/permutation"),
-      parsePolarity(
-          value.at("polarity"), std::string(path) + "/polarity"),
-      parseSignArray(
-          value.at("polaritySigns"), std::string(path) + "/polaritySigns"),
-      parseMix(value.at("mix"), std::string(path) + "/mix"),
-      std::move(matrix),
-  };
+  dsp::ResolvedDiffusionStep step;
+  step.index = parseUnsigned32(value.at("index"), std::string(path) + "/index");
+  step.lengthSamples = parseUnsigned64(
+      value.at("lengthSamples"), std::string(path) + "/lengthSamples");
+  step.lengthMs =
+      parseNumber(value.at("lengthMs"), std::string(path) + "/lengthMs");
+  step.delayStrategy = parseDelayStrategy(
+      value.at("delayStrategy"), std::string(path) + "/delayStrategy");
+  step.delaysSamples = parseUnsigned64Array(
+      value.at("delaysSamples"), std::string(path) + "/delaysSamples");
+  step.delaysMs = parseNumberArray(
+      value.at("delaysMs"), std::string(path) + "/delaysMs");
+  step.bufferSizes = parseUnsigned64Array(
+      value.at("bufferSizes"), std::string(path) + "/bufferSizes");
+  step.shuffle =
+      parseBoolean(value.at("shuffle"), std::string(path) + "/shuffle");
+  step.permutation = parseUnsigned32Array(
+      value.at("permutation"), std::string(path) + "/permutation");
+  step.polarity =
+      parsePolarity(value.at("polarity"), std::string(path) + "/polarity");
+  step.polaritySigns = parseSignArray(
+      value.at("polaritySigns"), std::string(path) + "/polaritySigns");
+  step.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
+  step.matrix = std::move(matrix);
+  // Omitted entirely (rather than emitted as null) when disabled, so a
+  // resolved.json written before Diffusion Step Modulation existed
+  // remains loadable, and loads back as disabled (see issue #91).
+  if (value.contains("modulation")) {
+    step.modulation = parseResolvedModulation(
+        value.at("modulation"), std::string(path) + "/modulation");
+  }
+  return step;
 }
 
 dsp::ResolvedDiffuser parseResolvedDiffuser(
@@ -898,66 +981,6 @@ dsp::ResolvedDamping parseResolvedDamping(
       value.at("slowestResolvedRt60Sec"),
       std::string(path) + "/slowestResolvedRt60Sec");
   return damping;
-}
-
-dsp::ResolvedModulation parseResolvedModulation(
-    const Json& value,
-    const std::string_view path) {
-  requireObject(value, path);
-  rejectUnknownFields(
-      value,
-      path,
-      {"depthMs",
-       "rateHz",
-       "shape",
-       "channelFraction",
-       "interpolation",
-       "excursionSamples",
-       "interpolationMarginSamples",
-       "channelSeeds",
-       "channelTargetsPerSample",
-       "channelPhases",
-       "channelModulated"});
-  for (const auto field :
-       {"depthMs",
-        "rateHz",
-        "shape",
-        "channelFraction",
-        "interpolation",
-        "excursionSamples",
-        "interpolationMarginSamples",
-        "channelSeeds",
-        "channelTargetsPerSample",
-        "channelPhases",
-        "channelModulated"}) {
-    requireField(value, field, path);
-  }
-  dsp::ResolvedModulation modulation;
-  modulation.depthMs =
-      parseNumber(value.at("depthMs"), std::string(path) + "/depthMs");
-  modulation.rateHz =
-      parseNumber(value.at("rateHz"), std::string(path) + "/rateHz");
-  modulation.shape = parseModulationShape(
-      value.at("shape"), std::string(path) + "/shape");
-  modulation.channelFraction = parseNumber(
-      value.at("channelFraction"), std::string(path) + "/channelFraction");
-  modulation.interpolation = parseModulationInterpolation(
-      value.at("interpolation"), std::string(path) + "/interpolation");
-  modulation.excursionSamples = parseNumber(
-      value.at("excursionSamples"), std::string(path) + "/excursionSamples");
-  modulation.interpolationMarginSamples = parseUnsigned64(
-      value.at("interpolationMarginSamples"),
-      std::string(path) + "/interpolationMarginSamples");
-  modulation.channelSeeds = parseUnsigned64Array(
-      value.at("channelSeeds"), std::string(path) + "/channelSeeds");
-  modulation.channelTargetsPerSample = parseNumberArray(
-      value.at("channelTargetsPerSample"),
-      std::string(path) + "/channelTargetsPerSample");
-  modulation.channelPhases = parseNumberArray(
-      value.at("channelPhases"), std::string(path) + "/channelPhases");
-  modulation.channelModulated = parseBooleanArray(
-      value.at("channelModulated"), std::string(path) + "/channelModulated");
-  return modulation;
 }
 
 dsp::ResolvedFeedbackLoop parseResolvedFeedbackLoop(

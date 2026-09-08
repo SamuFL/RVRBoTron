@@ -116,6 +116,26 @@ const char* splitStrategyName(const dsp::SplitStrategyType strategy) {
       "unsupported Split strategy");
 }
 
+// Shared by the Feedback Loop and each Diffusion Step (issues #89/#91):
+// the two modulated stages must serialize identically so a comparison
+// between them is a comparison of values, not of schema.
+Json modulationJson(const dsp::ResolvedModulation& modulation) {
+  return {
+      {"depthMs", modulation.depthMs},
+      {"rateHz", modulation.rateHz},
+      {"shape", modulationShapeName(modulation.shape)},
+      {"channelFraction", modulation.channelFraction},
+      {"interpolation",
+       modulationInterpolationName(modulation.interpolation)},
+      {"excursionSamples", modulation.excursionSamples},
+      {"interpolationMarginSamples", modulation.interpolationMarginSamples},
+      {"channelSeeds", modulation.channelSeeds},
+      {"channelTargetsPerSample", modulation.channelTargetsPerSample},
+      {"channelPhases", modulation.channelPhases},
+      {"channelModulated", modulation.channelModulated},
+  };
+}
+
 Json splitJson(const dsp::ResolvedSplit& split) {
   return {
       {"type", "split"},
@@ -140,22 +160,28 @@ Json diffuserJson(const dsp::ResolvedDiffuser& diffuser) {
       }
       matrix.push_back(std::move(values));
     }
-    steps.push_back(
-        {
-            {"index", step.index},
-            {"lengthSamples", step.lengthSamples},
-            {"lengthMs", step.lengthMs},
-            {"delayStrategy", delayStrategyName(step.delayStrategy)},
-            {"delaysSamples", step.delaysSamples},
-            {"delaysMs", step.delaysMs},
-            {"bufferSizes", step.bufferSizes},
-            {"shuffle", step.shuffle},
-            {"permutation", step.permutation},
-            {"polarity", polarityName(step.polarity)},
-            {"polaritySigns", step.polaritySigns},
-            {"mix", mixMatrixTypeName(step.mix)},
-            {"matrix", std::move(matrix)},
-        });
+    Json stepJson{
+        {"index", step.index},
+        {"lengthSamples", step.lengthSamples},
+        {"lengthMs", step.lengthMs},
+        {"delayStrategy", delayStrategyName(step.delayStrategy)},
+        {"delaysSamples", step.delaysSamples},
+        {"delaysMs", step.delaysMs},
+        {"bufferSizes", step.bufferSizes},
+        {"shuffle", step.shuffle},
+        {"permutation", step.permutation},
+        {"polarity", polarityName(step.polarity)},
+        {"polaritySigns", step.polaritySigns},
+        {"mix", mixMatrixTypeName(step.mix)},
+        {"matrix", std::move(matrix)},
+    };
+    // Omitted entirely (rather than emitted as null) when disabled, so a
+    // step with no Modulation configured remains byte-identical to one
+    // written before Diffusion Step Modulation existed (see issue #91).
+    if (step.modulation.has_value()) {
+      stepJson["modulation"] = modulationJson(*step.modulation);
+    }
+    steps.push_back(std::move(stepJson));
   }
   return {
       {"type", "diffuser"},
@@ -232,21 +258,7 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
   // Modulation existed remains byte-identical to one produced with it
   // disabled today, and loads back as disabled (see issue #89).
   if (loop.modulation.has_value()) {
-    const auto& modulation = *loop.modulation;
-    document["modulation"] = {
-        {"depthMs", modulation.depthMs},
-        {"rateHz", modulation.rateHz},
-        {"shape", modulationShapeName(modulation.shape)},
-        {"channelFraction", modulation.channelFraction},
-        {"interpolation",
-         modulationInterpolationName(modulation.interpolation)},
-        {"excursionSamples", modulation.excursionSamples},
-        {"interpolationMarginSamples", modulation.interpolationMarginSamples},
-        {"channelSeeds", modulation.channelSeeds},
-        {"channelTargetsPerSample", modulation.channelTargetsPerSample},
-        {"channelPhases", modulation.channelPhases},
-        {"channelModulated", modulation.channelModulated},
-    };
+    document["modulation"] = modulationJson(*loop.modulation);
   }
   return document;
 }

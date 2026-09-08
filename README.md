@@ -229,7 +229,8 @@ mapping.
 | `step.mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"hadamard"` | Shared default applied to every step unless overridden in `stepOverrides`. A matrix of a given type is resolved once and shared across every step that uses it. `"hadamard"` requires a power-of-two Channel count; `"householder"` and `"random-orthogonal"` accept any Channel count. |
 | `step.shuffle` | boolean | `true` | Shared default applied to every step unless overridden in `stepOverrides`. |
 | `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
-| `stepOverrides` | array of `{index, delayStrategy?, mix?, shuffle?, polarity?}` | unset | Sparse per-step overrides keyed by zero-based step index. Only listed fields are overridden; omitted fields fall back to the shared `step` defaults above. Each index must be unique and within `[0, stepCount)`. |
+| `step.modulation` | object, or omitted | omitted (disabled) | Seeded per-Channel delay-time movement scoped to that step alone -- the signal passes once, so detuning applies once and does not compound, in contrast to the Feedback Loop's own Modulation (compounds every circulation; see below). Omitted preserves that step's existing rendered output; an included empty object (`{}`) resolves the same research baseline as the Feedback Loop's own `modulation`. Shared default applied to every step unless overridden in `stepOverrides`; see the Feedback Loop's `modulation` field table below for the nested fields, shared verbatim between the two stages. |
+| `stepOverrides` | array of `{index, delayStrategy?, mix?, shuffle?, polarity?, modulation?}` | unset | Sparse per-step overrides keyed by zero-based step index. Only listed fields are overridden; omitted fields fall back to the shared `step` defaults above. Each index must be unique and within `[0, stepCount)`. |
 
 `"hadamard"` mixes maximally (`N·log₂N` additions) and is the diffuser's
 default. `"householder"` subtracts twice the mean of the Channels from every
@@ -252,6 +253,20 @@ memory footprint (delay lines plus per-step mix matrices) exceeds the
 configured budget — 512 MiB by default, overridable with
 `--memory-budget-mib <mebibytes>` on `render`. `--capture-stages all` writes
 one canonical WAV per resolved step, named `01-diffusion-step-{i}.wav`.
+
+A step's Modulation trajectories are seeded per step *and* per Channel, so
+two modulated steps never share a trajectory — and neither does a
+modulated step share one with the Feedback Loop's own Modulation, even
+when both otherwise resolve identical parameters. Zero depth on a step is
+the resolved bypass, bit-identical to `modulation` omitted from that
+step; buffer headroom (the resolved Excursion plus the fixed
+Interpolation margin) is reserved only on the Channels a step actually
+modulates. A modulated Channel's resolved delay too short to serve its
+own step's requested Excursion is rejected before any audio is
+processed, naming that step's own `modulation/depthMs` — the same
+Excursion rejection rule as the Feedback Loop's, since a short step delay
+is exactly as unsafe as a short loop delay. Resolved per-step Modulation
+is recorded in `resolved.json` alongside the Feedback Loop's own.
 
 #### `downmix` stage
 

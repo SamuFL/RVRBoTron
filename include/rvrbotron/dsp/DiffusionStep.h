@@ -1,12 +1,14 @@
 #pragma once
 
 #include "rvrbotron/dsp/DelayLine.h"
+#include "rvrbotron/dsp/Modulation.h"
 #include "rvrbotron/dsp/ResolvedConfig.h"
 #include "rvrbotron/dsp/Sample.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace rvrbotron::dsp {
@@ -33,6 +35,15 @@ private:
   std::unique_ptr<MixMatrix> mix_;
 
   std::vector<Sample> delayedValues_;
+
+  // One-shot, non-compounding delay-time movement scoped to this step
+  // alone (see docs/design/reverb/stages/06-modulation.md's "Placement"
+  // and issue #91) -- as distinct from the Feedback Loop's own
+  // compounding Modulation. Resolution's own bypass (an omitted
+  // Modulation object, an explicit zero depth, or a zero
+  // channelFraction) leaves `modulation_` unconstructed, exactly
+  // mirroring FeedbackLoop's own `modulation_`.
+  std::optional<Modulation> modulation_;
 };
 
 } // namespace rvrbotron::dsp

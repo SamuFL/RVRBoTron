@@ -31,11 +31,33 @@ enum class DiffusionDistribution {
   doubling,
 };
 
+// Research-baseline defaults for an included-but-empty Modulation object
+// on a Diffusion Step (see docs/design/reverb/stages/06-modulation.md and
+// issue #91): the same research baseline as the Feedback Loop's own
+// Modulation, so the two stages differ only in the values a caller
+// actually sets, not in what an empty object means.
+struct ModulationConfig {
+  std::optional<double> depthMs;
+  std::optional<double> rateHz;
+  std::optional<dsp::ModulationShape> shape;
+  std::optional<double> channelFraction;
+  std::optional<dsp::ModulationInterpolation> interpolation;
+};
+
 struct DiffusionStepConfig {
   std::optional<dsp::DelayStrategy> delayStrategy;
   std::optional<dsp::MixMatrixType> mix;
   std::optional<bool> shuffle;
   std::optional<dsp::PolarityStrategy> polarity;
+  // Omitted (nullopt) disables Modulation for this step and preserves its
+  // existing rendered output and resolved bytes; an included empty object
+  // resolves to the research baseline (see ModulationConfig and issue
+  // #91). Accepted in both the shared step defaults and per-step
+  // overrides, exactly like every other field above: an override's own
+  // `modulation` (when present) wins over the shared default's, which
+  // wins over Modulation being absent entirely (see docs/design/reverb/
+  // stages/06-modulation.md's "Placement").
+  std::optional<ModulationConfig> modulation;
 };
 
 struct DiffusionStepOverride {
@@ -83,27 +105,22 @@ struct DampingConfig {
   std::optional<double> lowHz;
 };
 
-// Research-baseline defaults for an included-but-empty Modulation object
-// on the Feedback Loop (see docs/design/reverb/stages/06-modulation.md
-// and issue #89): a meaningful research baseline rather than a neutral
-// product default -- explicit zero depth remains available for identity
-// experiments.
+// Research-baseline defaults for an included-but-empty Modulation object,
+// on the Feedback Loop or a Diffusion Step alike (see docs/design/reverb/
+// stages/06-modulation.md and issues #89/#91): a meaningful research
+// baseline rather than a neutral product default -- explicit zero depth
+// remains available for identity experiments.
 constexpr double kDefaultModulationDepthMs = 0.4;
 constexpr double kDefaultModulationRateHz = 0.7;
 
 // Issue #89 shipped `lagrange3` interpolation with every Channel always
 // modulated; issue #90 adds `shape` (all three waveforms) and
-// `channelFraction` (partial-Channel modulation). `interpolation` still
-// only accepts `lagrange3` -- `linear` and `allpass` are added by later
-// tickets that extend dsp::ModulationInterpolation and this parser's
-// accepted values without moving the field itself.
-struct ModulationConfig {
-  std::optional<double> depthMs;
-  std::optional<double> rateHz;
-  std::optional<dsp::ModulationShape> shape;
-  std::optional<double> channelFraction;
-  std::optional<dsp::ModulationInterpolation> interpolation;
-};
+// `channelFraction` (partial-Channel modulation); issue #91 places the
+// same ModulationConfig (defined above, alongside DiffusionStepConfig) on
+// a Diffusion Step. `interpolation` still only accepts `lagrange3` --
+// `linear` and `allpass` are added by later tickets that extend
+// dsp::ModulationInterpolation and this parser's accepted values without
+// moving the field itself.
 
 struct FeedbackLoopConfig {
   std::optional<double> delayMinMs;
