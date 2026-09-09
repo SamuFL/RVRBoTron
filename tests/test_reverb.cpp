@@ -4,7 +4,9 @@
 #include "rvrbotron/dsp/DelayLine.h"
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
+#include "rvrbotron/dsp/Downmix.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
+#include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/Modulation.h"
 #include "rvrbotron/dsp/Reverb.h"
@@ -195,6 +197,8 @@ rvrbotron::dsp::ResolvedConfig twoChannelDiffusionConfig() {
           {1.0, 0.0},
           {0.0, 1.0},
           rvrbotron::dsp::DownmixAlignment::aligned,
+          90.0,
+          {1.0, 0.0, 0.0, 1.0},
       });
   return config;
 }
@@ -1527,6 +1531,359 @@ int main() {
       std::cerr << "halves/alternating Feedback Loop Downmix did not "
                    "resolve unaligned\n";
       return 1;
+    }
+  }
+
+  // Width (#109): the resolved 2x2 mid/side matrix, exact at the 0/90/180
+  // endpoints and via the documented formula at an intermediate angle
+  // (docs/design/reverb/stages/08-downmix.md's "Width as a constant-power
+  // mid/side law").
+  for (const auto widthDeg : {0.0, 45.0, 90.0, 135.0, 180.0}) {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 2;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    auto downmix = referenceSelectDownmixConfig(2);
+    downmix.widthDeg = widthDeg;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& resolvedDownmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (resolvedDownmix.widthDeg != widthDeg) {
+      std::cerr << "Width did not resolve the requested widthDeg\n";
+      return 1;
+    }
+    const auto half = 1.0 / std::sqrt(2.0);
+    std::array<double, 4> expectedMatrix{};
+    if (widthDeg == 0.0) {
+      expectedMatrix = {half, half, half, half};
+    } else if (widthDeg == 90.0) {
+      expectedMatrix = {1.0, 0.0, 0.0, 1.0};
+    } else if (widthDeg == 180.0) {
+      expectedMatrix = {half, -half, -half, half};
+    } else {
+      const auto halfAngleRad =
+          widthDeg * (rvrbotron::dsp::kPi / 180.0) / 2.0;
+      const auto cosHalf = std::cos(halfAngleRad);
+      const auto sinHalf = std::sin(halfAngleRad);
+      const auto a = (cosHalf + sinHalf) * half;
+      const auto b = (cosHalf - sinHalf) * half;
+      expectedMatrix = {a, b, b, a};
+    }
+    if (resolvedDownmix.widthMatrix.size() != 4) {
+      std::cerr << "Width matrix did not resolve to 4 elements\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (resolvedDownmix.widthMatrix[index] != expectedMatrix[index]) {
+        std::cerr << "Width matrix at " << widthDeg
+                   << " degrees did not match the documented formula\n";
+        return 1;
+      }
+    }
+  }
+
+  // Width's DSP application (#109), tested directly at the Downmix seam
+  // with a hand-chosen pre-Width [left, right] rather than through the
+  // full Reverb pipeline, so the pre-Width value is exactly known.
+  {
+    auto widthTestDownmix = [](const double widthDeg) {
+      rvrbotron::dsp::ResolvedDownmix config;
+      config.inputChannels = 2;
+      config.outputChannels = 2;
+      config.strategy = rvrbotron::dsp::DownmixStrategy::select;
+      config.leftChannel = 0;
+      config.rightChannel = 1;
+      config.normalisation = rvrbotron::dsp::EnergyNormalisation::none;
+      config.compensation = 1.0;
+      config.widthDeg = widthDeg;
+      const auto half = 1.0 / std::sqrt(2.0);
+      if (widthDeg == 0.0) {
+        config.widthMatrix = {half, half, half, half};
+      } else if (widthDeg == 90.0) {
+        config.widthMatrix = {1.0, 0.0, 0.0, 1.0};
+      } else if (widthDeg == 180.0) {
+        config.widthMatrix = {half, -half, -half, half};
+      } else {
+        const auto halfAngleRad =
+            widthDeg * (rvrbotron::dsp::kPi / 180.0) / 2.0;
+        const auto cosHalf = std::cos(halfAngleRad);
+        const auto sinHalf = std::sin(halfAngleRad);
+        const auto a = (cosHalf + sinHalf) * half;
+        const auto b = (cosHalf - sinHalf) * half;
+        config.widthMatrix = {a, b, b, a};
+      }
+      return rvrbotron::dsp::Downmix(config);
+    };
+    const auto preWidthLeft = static_cast<rvrbotron::dsp::Sample>(0.6);
+    const auto preWidthRight = static_cast<rvrbotron::dsp::Sample>(-0.4);
+    const std::array<rvrbotron::dsp::Sample, 2> preWidth{
+        preWidthLeft, preWidthRight};
+    const rvrbotron::dsp::Sample* const channelsData = preWidth.data();
+
+    // 90 degrees is an exact identity bypass.
+    {
+      auto downmix = widthTestDownmix(90.0);
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(channelsData, outputs, 0);
+      if (left[0] != preWidthLeft || right[0] != preWidthRight) {
+        std::cerr << "Width at 90 degrees was not an exact bypass\n";
+        return 1;
+      }
+    }
+
+    // 0 degrees mono-izes any input to (L+R)/sqrt(2) on both outputs.
+    {
+      auto downmix = widthTestDownmix(0.0);
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(channelsData, outputs, 0);
+      const auto expectedMono =
+          (static_cast<double>(preWidthLeft) +
+           static_cast<double>(preWidthRight)) /
+          std::sqrt(2.0);
+      if (!close(left[0], expectedMono) || !close(right[0], expectedMono)) {
+        std::cerr << "Width at 0 degrees did not mono-ize the input\n";
+        return 1;
+      }
+    }
+
+    // 180 degrees is side-only and out of phase: a mono pre-Width input
+    // (left == right) cancels to exact zero.
+    {
+      auto downmix = widthTestDownmix(180.0);
+      const auto monoValue = static_cast<rvrbotron::dsp::Sample>(0.5);
+      const std::array<rvrbotron::dsp::Sample, 2> monoPreWidth{
+          monoValue, monoValue};
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(monoPreWidth.data(), outputs, 0);
+      if (left[0] != rvrbotron::dsp::Sample{0} ||
+          right[0] != rvrbotron::dsp::Sample{0}) {
+        std::cerr << "Width at 180 degrees did not cancel a mono "
+                     "pre-Width input\n";
+        return 1;
+      }
+    }
+
+    // 180 degrees on a non-mono input is side-only and out of phase:
+    // equal magnitude, opposite sign.
+    {
+      auto downmix = widthTestDownmix(180.0);
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(channelsData, outputs, 0);
+      const auto expectedSide =
+          (static_cast<double>(preWidthLeft) -
+           static_cast<double>(preWidthRight)) /
+          std::sqrt(2.0);
+      if (!close(left[0], expectedSide) || !close(right[0], -expectedSide)) {
+        std::cerr << "Width at 180 degrees was not side-only and out of "
+                     "phase\n";
+        return 1;
+      }
+    }
+
+    // An intermediate width (45 degrees) applies the same formula the
+    // resolved matrix above was checked against.
+    {
+      auto downmix = widthTestDownmix(45.0);
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(channelsData, outputs, 0);
+      const auto halfAngleRad = 45.0 * (rvrbotron::dsp::kPi / 180.0) / 2.0;
+      const auto cosHalf = std::cos(halfAngleRad);
+      const auto sinHalf = std::sin(halfAngleRad);
+      const auto half = 1.0 / std::sqrt(2.0);
+      const auto a = (cosHalf + sinHalf) * half;
+      const auto b = (cosHalf - sinHalf) * half;
+      const auto expectedLeft =
+          a * static_cast<double>(preWidthLeft) +
+          b * static_cast<double>(preWidthRight);
+      const auto expectedRight =
+          b * static_cast<double>(preWidthLeft) +
+          a * static_cast<double>(preWidthRight);
+      if (!close(left[0], expectedLeft) || !close(right[0], expectedRight)) {
+        std::cerr << "Width at 45 degrees did not match the documented "
+                     "formula\n";
+        return 1;
+      }
+    }
+  }
+
+  // Main wet path enablement and level (#109). resolveConfig is a public
+  // non-JSON entry point too (mirroring #107/#108/#110's own
+  // direct-construction checks): mainEnabled/mainLevelDb set on the
+  // empty identity Composition must be rejected there directly.
+  {
+    rvrbotron::config::CompositionConfig emptyWithMainEnabled;
+    emptyWithMainEnabled.mainEnabled = false;
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.composition = emptyWithMainEnabled;
+    bool rejected = false;
+    try {
+      static_cast<void>(
+          rvrbotron::config::resolveConfig(requested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "resolveConfig accepted mainEnabled on the empty "
+                   "identity Composition\n";
+      return 1;
+    }
+  }
+  {
+    rvrbotron::config::CompositionConfig emptyWithMainLevelDb;
+    emptyWithMainLevelDb.mainLevelDb = -6.0;
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.composition = emptyWithMainLevelDb;
+    bool rejected = false;
+    try {
+      static_cast<void>(
+          rvrbotron::config::resolveConfig(requested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "resolveConfig accepted mainLevelDb on the empty "
+                   "identity Composition\n";
+      return 1;
+    }
+  }
+
+  // A non-empty Composition exposes documented mainEnabled/mainLevelDb
+  // defaults (#109): enabled, 0 dB, and the linear gain that implies.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 2;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    auto downmix = referenceSelectDownmixConfig(2);
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    if (!resolved.composition.mainEnabled ||
+        resolved.composition.mainLevelDb != 0.0 ||
+        resolved.composition.mainGain != 1.0) {
+      std::cerr << "a non-empty Composition did not default to "
+                   "mainEnabled/0 dB mainLevelDb/1.0 mainGain\n";
+      return 1;
+    }
+
+    // A disabled Main wet path contributes exact stereo zero (#109),
+    // even though its interior Split/Diffuser processing still runs.
+    auto disabledComposition = composition;
+    disabledComposition.mainEnabled = false;
+    rvrbotron::config::ReverbConfig disabledRequested;
+    disabledRequested.formatVersion = 2;
+    disabledRequested.seed = 7;
+    disabledRequested.composition = std::move(disabledComposition);
+    const auto disabledResolved =
+        rvrbotron::config::resolveConfig(disabledRequested, 48000, 1);
+    if (disabledResolved.composition.mainEnabled) {
+      std::cerr << "mainEnabled: false did not resolve disabled\n";
+      return 1;
+    }
+    rvrbotron::dsp::Reverb disabledReverb(disabledResolved);
+    std::array<rvrbotron::dsp::Sample, 4> disabledInput{
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 4> disabledLeft{};
+    std::array<rvrbotron::dsp::Sample, 4> disabledRight{};
+    const rvrbotron::dsp::Sample* disabledInputs[]{disabledInput.data()};
+    rvrbotron::dsp::Sample* disabledOutputs[]{
+        disabledLeft.data(), disabledRight.data()};
+    disabledReverb.process(disabledInputs, 1, disabledOutputs, 2, 4);
+    for (std::size_t frame = 0; frame < 4; ++frame) {
+      if (disabledLeft[frame] != rvrbotron::dsp::Sample{0} ||
+          disabledRight[frame] != rvrbotron::dsp::Sample{0}) {
+        std::cerr << "a disabled Main wet path did not contribute exact "
+                     "stereo zero\n";
+        return 1;
+      }
+    }
+
+    // mainLevelDb scales the post-Width stereo output by its linear
+    // gain, applied once after Downmix (#109).
+    auto leveledComposition = composition;
+    leveledComposition.mainLevelDb = -6.0;
+    rvrbotron::config::ReverbConfig leveledRequested;
+    leveledRequested.formatVersion = 2;
+    leveledRequested.seed = 7;
+    leveledRequested.composition = std::move(leveledComposition);
+    const auto leveledResolved =
+        rvrbotron::config::resolveConfig(leveledRequested, 48000, 1);
+    const auto expectedGain = std::pow(10.0, -6.0 / 20.0);
+    if (std::abs(leveledResolved.composition.mainGain - expectedGain) >
+        1e-9) {
+      std::cerr << "mainLevelDb: -6 did not resolve the expected linear "
+                   "gain\n";
+      return 1;
+    }
+    rvrbotron::dsp::Reverb unleveledReverb(resolved);
+    rvrbotron::dsp::Reverb leveledReverb(leveledResolved);
+    std::array<rvrbotron::dsp::Sample, 4> unleveledInput{
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1},
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 4> unleveledLeft{};
+    std::array<rvrbotron::dsp::Sample, 4> unleveledRight{};
+    std::array<rvrbotron::dsp::Sample, 4> leveledLeft{};
+    std::array<rvrbotron::dsp::Sample, 4> leveledRight{};
+    const rvrbotron::dsp::Sample* unleveledInputs[]{
+        unleveledInput.data()};
+    rvrbotron::dsp::Sample* unleveledOutputs[]{
+        unleveledLeft.data(), unleveledRight.data()};
+    rvrbotron::dsp::Sample* leveledOutputs[]{
+        leveledLeft.data(), leveledRight.data()};
+    unleveledReverb.process(unleveledInputs, 1, unleveledOutputs, 2, 4);
+    leveledReverb.process(unleveledInputs, 1, leveledOutputs, 2, 4);
+    for (std::size_t frame = 0; frame < 4; ++frame) {
+      const auto expectedLeft =
+          static_cast<double>(unleveledLeft[frame]) * expectedGain;
+      const auto expectedRight =
+          static_cast<double>(unleveledRight[frame]) * expectedGain;
+      if (!close(leveledLeft[frame], expectedLeft) ||
+          !close(leveledRight[frame], expectedRight)) {
+        std::cerr << "mainLevelDb: -6 did not scale the Main wet path "
+                     "output by its resolved gain\n";
+        return 1;
+      }
     }
   }
 

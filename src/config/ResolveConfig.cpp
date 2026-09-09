@@ -4,6 +4,7 @@
 #include "rvrbotron/config/DampingResolution.h"
 #include "rvrbotron/config/MixMatrixResolution.h"
 #include "rvrbotron/config/ModulationResolution.h"
+#include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/PositionalRandom.h"
 
 #include <algorithm>
@@ -1343,6 +1344,34 @@ std::optional<std::uint64_t> estimateDownmixOrthogonalMatrixBytes(
                         : std::nullopt;
 }
 
+// The Width stage's resolved 2x2 mid/side matrix (docs/design/reverb/
+// stages/08-downmix.md's "Width as a constant-power mid/side law"),
+// applied to the pre-Width [left, right] vector as row-major
+// [[m00, m01], [m10, m11]]. Exact endpoint matrices at 0/90/180 degrees
+// bypass the general trig formula: 90 degrees genuinely needs its own
+// case, since cos(pi/4) and sin(pi/4), though mathematically equal, are
+// not guaranteed bit-identical from libm, and the design doc requires
+// 90 degrees to be an exact identity bypass. Shared by resolveDownmix and
+// validateResolvedConfig so the two never drift on the formula.
+std::vector<double> resolveWidthMatrix(const double widthDeg) {
+  const auto half = 1.0 / std::sqrt(2.0);
+  if (widthDeg == 0.0) {
+    return {half, half, half, half};
+  }
+  if (widthDeg == 90.0) {
+    return {1.0, 0.0, 0.0, 1.0};
+  }
+  if (widthDeg == 180.0) {
+    return {half, -half, -half, half};
+  }
+  const auto halfAngleRad = widthDeg * (dsp::kPi / 180.0) / 2.0;
+  const auto cosHalf = std::cos(halfAngleRad);
+  const auto sinHalf = std::sin(halfAngleRad);
+  const auto a = (cosHalf + sinHalf) * half;
+  const auto b = (cosHalf - sinHalf) * half;
+  return {a, b, b, a};
+}
+
 void checkDownmixMemoryBudget(
     const std::uint32_t channels,
     const std::uint64_t budgetBytes,
@@ -1445,6 +1474,8 @@ dsp::ResolvedDownmix resolveDownmix(
 
   auto effectiveLeftRow = scaledRow(leftRow, compensation);
   auto effectiveRightRow = scaledRow(rightRow, compensation);
+  const auto widthDeg = requested.widthDeg.value_or(90.0);
+  auto widthMatrix = resolveWidthMatrix(widthDeg);
   return {
       channels,
       2,
@@ -1458,7 +1489,17 @@ dsp::ResolvedDownmix resolveDownmix(
       std::move(effectiveLeftRow),
       std::move(effectiveRightRow),
       alignment,
+      widthDeg,
+      std::move(widthMatrix),
   };
+}
+
+// The Main wet path's requested level, converted to a linear multiplier
+// (issue #109) -- resolved once, before construction, so Reverb's audio
+// processing never computes `pow`. Shared by resolveConfig and
+// validateResolvedConfig so the two never drift on the formula.
+double resolveMainGain(const double mainLevelDb) noexcept {
+  return std::pow(10.0, mainLevelDb / 20.0);
 }
 
 void validateShape(const dsp::ResolvedComposition& composition) {
@@ -1514,7 +1555,31 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
       requested.composition.has_value() ? &*requested.composition : nullptr;
   ResolutionEvidence resolutionEvidence;
   if (requestedComposition != nullptr &&
+      requestedComposition->stages.empty()) {
+    // resolveConfig is a public non-JSON entry point too (issue #109,
+    // mirroring #107/#108's own direct-construction checks): the JSON
+    // boundary's own rejection is not the only place this contract has to
+    // hold for a caller that skips it (e.g. a direct C++ ReverbConfig
+    // construction).
+    if (requestedComposition->mainEnabled.has_value()) {
+      fail(
+          "/composition/mainEnabled",
+          "not applicable to the empty identity Composition");
+    }
+    if (requestedComposition->mainLevelDb.has_value()) {
+      fail(
+          "/composition/mainLevelDb",
+          "not applicable to the empty identity Composition");
+    }
+  }
+  if (requestedComposition != nullptr &&
       !requestedComposition->stages.empty()) {
+    resolved.composition.mainEnabled =
+        requestedComposition->mainEnabled.value_or(true);
+    resolved.composition.mainLevelDb =
+        requestedComposition->mainLevelDb.value_or(0.0);
+    resolved.composition.mainGain =
+        resolveMainGain(resolved.composition.mainLevelDb);
     const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
         std::holds_alternative<SplitConfig>(
@@ -2794,6 +2859,23 @@ void validateResolvedConfig(
     return;
   }
 
+  // The Main wet path's own enablement and level (issue #109): moot, and
+  // never serialized, on the empty identity Composition handled by the
+  // early return above.
+  if (!std::isfinite(resolved.composition.mainLevelDb)) {
+    fail("/composition/mainLevelDb", "expected a finite value");
+  }
+  if (!(resolved.composition.mainGain > 0.0) ||
+      !std::isfinite(resolved.composition.mainGain)) {
+    fail("/composition/mainGain", "expected finite positive gain");
+  }
+  if (resolved.composition.mainGain !=
+      resolveMainGain(resolved.composition.mainLevelDb)) {
+    fail(
+        "/composition/mainGain",
+        "expected gain derived from mainLevelDb");
+  }
+
   const auto& split =
       std::get<dsp::ResolvedSplit>(resolved.composition.stages.front());
   const auto downmixIndex = resolved.composition.stages.size() - 1;
@@ -3032,6 +3114,17 @@ void validateResolvedConfig(
         stagePath(downmixIndex) + "/alignment",
         "expected the Alignment expectation derived from Composition "
         "wiring");
+  }
+  if (!std::isfinite(downmix.widthDeg) || downmix.widthDeg < 0.0 ||
+      downmix.widthDeg > 180.0) {
+    fail(
+        stagePath(downmixIndex) + "/widthDeg",
+        "expected a finite value within [0, 180]");
+  }
+  if (downmix.widthMatrix != resolveWidthMatrix(downmix.widthDeg)) {
+    fail(
+        stagePath(downmixIndex) + "/widthMatrix",
+        "expected the matrix derived from widthDeg");
   }
 }
 

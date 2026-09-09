@@ -623,7 +623,12 @@ config::DownmixConfig parseRequestedDownmix(
   rejectUnknownFields(
       value,
       path,
-      {"type", "strategy", "leftChannel", "rightChannel", "normalisation"});
+      {"type",
+       "strategy",
+       "leftChannel",
+       "rightChannel",
+       "normalisation",
+       "widthDeg"});
   config::DownmixConfig downmix;
   if (value.contains("strategy")) {
     downmix.strategy = parseDownmixStrategy(
@@ -655,41 +660,74 @@ config::DownmixConfig parseRequestedDownmix(
     downmix.normalisation = parseNormalisation(
         value.at("normalisation"), std::string(path) + "/normalisation");
   }
+  if (value.contains("widthDeg")) {
+    downmix.widthDeg = parseNumber(
+        value.at("widthDeg"), std::string(path) + "/widthDeg");
+  }
   return downmix;
 }
 
 config::CompositionConfig parseRequestedComposition(const Json& value) {
   requireObject(value, "/composition");
-  rejectUnknownFields(value, "/composition", {"stages"});
+  rejectUnknownFields(
+      value, "/composition", {"stages", "mainEnabled", "mainLevelDb"});
 
   config::CompositionConfig composition;
-  if (!value.contains("stages")) {
+  if (value.contains("stages")) {
+    composition.stagesSpecified = true;
+    const auto& stages = value.at("stages");
+    requireArray(stages, "/composition/stages");
+    for (std::size_t index = 0; index < stages.size(); ++index) {
+      const auto path = "/composition/stages/" + std::to_string(index);
+      const auto& stage = stages.at(index);
+      requireObject(stage, path);
+      requireField(stage, "type", path);
+      const auto type = parseString(stage.at("type"), path + "/type");
+      if (type == "split") {
+        composition.stages.emplace_back(parseRequestedSplit(stage, path));
+      } else if (type == "diffuser") {
+        composition.stages.emplace_back(
+            parseRequestedDiffuser(stage, path));
+      } else if (type == "feedback-loop") {
+        composition.stages.emplace_back(
+            parseRequestedFeedbackLoop(stage, path));
+      } else if (type == "downmix") {
+        composition.stages.emplace_back(
+            parseRequestedDownmix(stage, path));
+      } else {
+        fail(
+            path + "/type",
+            "expected split, diffuser, feedback-loop, or downmix");
+      }
+    }
+  }
+
+  // mainEnabled/mainLevelDb control the serial Main wet path (issue
+  // #109): moot, and rejected, on the empty identity Composition, since
+  // there is no branch for them to affect (docs/design/reverb/stages/
+  // 09-composition.md's "Branch controls are invalid on the empty
+  // identity Composition").
+  if (composition.stages.empty()) {
+    if (value.contains("mainEnabled")) {
+      fail(
+          "/composition/mainEnabled",
+          "not applicable to the empty identity Composition");
+    }
+    if (value.contains("mainLevelDb")) {
+      fail(
+          "/composition/mainLevelDb",
+          "not applicable to the empty identity Composition");
+    }
     return composition;
   }
 
-  composition.stagesSpecified = true;
-  const auto& stages = value.at("stages");
-  requireArray(stages, "/composition/stages");
-  for (std::size_t index = 0; index < stages.size(); ++index) {
-    const auto path = "/composition/stages/" + std::to_string(index);
-    const auto& stage = stages.at(index);
-    requireObject(stage, path);
-    requireField(stage, "type", path);
-    const auto type = parseString(stage.at("type"), path + "/type");
-    if (type == "split") {
-      composition.stages.emplace_back(parseRequestedSplit(stage, path));
-    } else if (type == "diffuser") {
-      composition.stages.emplace_back(parseRequestedDiffuser(stage, path));
-    } else if (type == "feedback-loop") {
-      composition.stages.emplace_back(
-          parseRequestedFeedbackLoop(stage, path));
-    } else if (type == "downmix") {
-      composition.stages.emplace_back(parseRequestedDownmix(stage, path));
-    } else {
-      fail(
-          path + "/type",
-          "expected split, diffuser, feedback-loop, or downmix");
-    }
+  if (value.contains("mainEnabled")) {
+    composition.mainEnabled = parseBoolean(
+        value.at("mainEnabled"), "/composition/mainEnabled");
+  }
+  if (value.contains("mainLevelDb")) {
+    composition.mainLevelDb = parseNumber(
+        value.at("mainLevelDb"), "/composition/mainLevelDb");
   }
   return composition;
 }
@@ -1178,7 +1216,9 @@ dsp::ResolvedDownmix parseResolvedDownmix(
        "rightRow",
        "effectiveLeftRow",
        "effectiveRightRow",
-       "alignment"});
+       "alignment",
+       "widthDeg",
+       "widthMatrix"});
   for (const auto field :
        {"inputChannels",
         "outputChannels",
@@ -1189,7 +1229,9 @@ dsp::ResolvedDownmix parseResolvedDownmix(
         "rightRow",
         "effectiveLeftRow",
         "effectiveRightRow",
-        "alignment"}) {
+        "alignment",
+        "widthDeg",
+        "widthMatrix"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedDownmix downmix;
@@ -1236,12 +1278,19 @@ dsp::ResolvedDownmix parseResolvedDownmix(
       std::string(path) + "/effectiveRightRow");
   downmix.alignment = parseDownmixAlignment(
       value.at("alignment"), std::string(path) + "/alignment");
+  downmix.widthDeg = parseNumber(
+      value.at("widthDeg"), std::string(path) + "/widthDeg");
+  downmix.widthMatrix = parseNumberArray(
+      value.at("widthMatrix"), std::string(path) + "/widthMatrix");
   return downmix;
 }
 
 dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
   requireObject(value, "/composition");
-  rejectUnknownFields(value, "/composition", {"stages"});
+  rejectUnknownFields(
+      value,
+      "/composition",
+      {"stages", "mainEnabled", "mainLevelDb", "mainGain"});
   requireField(value, "stages", "/composition");
   const auto& stages = value.at("stages");
   requireArray(stages, "/composition/stages");
@@ -1268,6 +1317,35 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
           "expected split, diffuser, feedback-loop, or downmix");
     }
   }
+
+  if (composition.stages.empty()) {
+    if (value.contains("mainEnabled")) {
+      fail(
+          "/composition/mainEnabled",
+          "not applicable to the empty identity Composition");
+    }
+    if (value.contains("mainLevelDb")) {
+      fail(
+          "/composition/mainLevelDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (value.contains("mainGain")) {
+      fail(
+          "/composition/mainGain",
+          "not applicable to the empty identity Composition");
+    }
+    return composition;
+  }
+
+  requireField(value, "mainEnabled", "/composition");
+  composition.mainEnabled = parseBoolean(
+      value.at("mainEnabled"), "/composition/mainEnabled");
+  requireField(value, "mainLevelDb", "/composition");
+  composition.mainLevelDb = parseNumber(
+      value.at("mainLevelDb"), "/composition/mainLevelDb");
+  requireField(value, "mainGain", "/composition");
+  composition.mainGain = parseNumber(
+      value.at("mainGain"), "/composition/mainGain");
   return composition;
 }
 

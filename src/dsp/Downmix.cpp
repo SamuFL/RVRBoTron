@@ -31,24 +31,35 @@ Downmix::Downmix(const ResolvedDownmix& config)
       effectiveRightRow_(
           config.strategy == DownmixStrategy::select
               ? std::vector<Sample>()
-              : toSampleRow(config.effectiveRightRow)) {}
+              : toSampleRow(config.effectiveRightRow)),
+      widthMatrix_{
+          static_cast<Sample>(config.widthMatrix[0]),
+          static_cast<Sample>(config.widthMatrix[1]),
+          static_cast<Sample>(config.widthMatrix[2]),
+          static_cast<Sample>(config.widthMatrix[3])} {}
 
 void Downmix::processFrame(const Sample* const channels,
                            Sample* const* const outputs,
                            const std::size_t frame) const noexcept {
+  Sample preWidthLeft;
+  Sample preWidthRight;
   if (strategy_ == DownmixStrategy::select) {
-    outputs[0][frame] = channels[leftChannel_] * compensation_;
-    outputs[1][frame] = channels[rightChannel_] * compensation_;
-    return;
+    preWidthLeft = channels[leftChannel_] * compensation_;
+    preWidthRight = channels[rightChannel_] * compensation_;
+  } else {
+    Sample left{0};
+    Sample right{0};
+    for (std::size_t channel = 0; channel < inputChannels_; ++channel) {
+      left += channels[channel] * effectiveLeftRow_[channel];
+      right += channels[channel] * effectiveRightRow_[channel];
+    }
+    preWidthLeft = left;
+    preWidthRight = right;
   }
-  Sample left{0};
-  Sample right{0};
-  for (std::size_t channel = 0; channel < inputChannels_; ++channel) {
-    left += channels[channel] * effectiveLeftRow_[channel];
-    right += channels[channel] * effectiveRightRow_[channel];
-  }
-  outputs[0][frame] = left;
-  outputs[1][frame] = right;
+  outputs[0][frame] =
+      widthMatrix_[0] * preWidthLeft + widthMatrix_[1] * preWidthRight;
+  outputs[1][frame] =
+      widthMatrix_[2] * preWidthLeft + widthMatrix_[3] * preWidthRight;
 }
 
 std::size_t Downmix::inputChannelCount() const noexcept {

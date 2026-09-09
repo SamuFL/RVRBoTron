@@ -200,7 +200,9 @@ build/default/rvrbotron render \
 | --- | --- | --- | --- |
 | `formatVersion` | integer | *(required)* | Must be `2`. Missing or unsupported values fail at `/formatVersion`; version `1` fails with the exact recovery message naming tag `format-v1-final` (commit `8a4e718`), the last build able to render or analyze it. See [ADR-0006](docs/adr/0006-format-v2-compatibility-boundary.md). |
 | `seed` | unsigned 64-bit integer | `0` | Drives every seeded-random derivation (delays, shuffle, polarity). |
-| `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`. |
+| `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`, `[split, feedback-loop, downmix]`, or `[split, diffuser, feedback-loop, downmix]`. |
+| `composition.mainEnabled` | boolean | `true` | The Main wet path's enablement. Not applicable, and rejected, when `composition.stages` is empty (issue #109). `false` skips Downmix/Width processing and contributes exact stereo zero. |
+| `composition.mainLevelDb` | finite number (dB) | `0` | The Main wet path's level, applied once after its Downmix (including Width). Not applicable, and rejected, when `composition.stages` is empty (issue #109). Resolved Configuration additionally records the derived linear `mainGain`. |
 
 #### `split` stage
 
@@ -278,6 +280,14 @@ is recorded in `resolved.json` alongside the Feedback Loop's own.
 | `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to any other strategy |
 | `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to any other strategy |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+| `widthDeg` | finite number within `[0, 180]` | `90` |
+
+`widthDeg` (issue #109) applies a constant-power mid/side Width law to the
+Downmix's pre-Width `[left, right]` output: `0` collapses to mono, `90` is an
+exact identity bypass, and `180` is side-only and out of phase. Resolved
+Configuration records the resolved `widthMatrix`, the concrete 2x2 matrix
+`widthDeg` resolves to (exact at `0`/`90`/`180`; trigonometric otherwise), so
+replay never recomputes it.
 
 `leftChannel` has no implicit default -- every `select` Downmix names its
 Channel explicitly (see issue #107). `orthogonal-rows` (issue #108) instead

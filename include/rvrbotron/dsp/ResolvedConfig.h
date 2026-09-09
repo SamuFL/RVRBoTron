@@ -324,6 +324,14 @@ struct ResolvedDownmix {
   std::vector<double> effectiveLeftRow;
   std::vector<double> effectiveRightRow;
   DownmixAlignment alignment = DownmixAlignment::aligned;
+  // Stereo Width (issue #109, docs/design/reverb/stages/08-downmix.md's
+  // "Width as a constant-power mid/side law"): degrees from 0 (mono)
+  // through 90 (unmodified) to 180 (side-only, out of phase), and the
+  // resolved row-major 2x2 matrix -- [[m00, m01], [m10, m11]] applied to
+  // the pre-Width [left, right] vector -- derived from it once and
+  // serialized so replay never recomputes trigonometry.
+  double widthDeg = 90.0;
+  std::vector<double> widthMatrix;
 };
 
 using ResolvedStage = std::variant<
@@ -334,6 +342,15 @@ using ResolvedStage = std::variant<
 
 struct ResolvedComposition {
   std::vector<ResolvedStage> stages;
+  // The Main wet path's own enablement and level (issue #109): moot and
+  // unserialized for the empty identity Composition (`stages` empty),
+  // where the defaults below are never read. `mainGain` is `mainLevelDb`
+  // converted to a linear multiplier -- resolved once, before
+  // construction, so audio processing never computes `pow` (see #105's
+  // "branch and width processing resolved before construction").
+  bool mainEnabled = true;
+  double mainLevelDb = 0.0;
+  double mainGain = 1.0;
 };
 
 struct ResolvedConfig {

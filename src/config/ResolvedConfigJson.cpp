@@ -308,6 +308,8 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
       {"effectiveLeftRow", downmix.effectiveLeftRow},
       {"effectiveRightRow", downmix.effectiveRightRow},
       {"alignment", downmixAlignmentName(downmix.alignment)},
+      {"widthDeg", downmix.widthDeg},
+      {"widthMatrix", downmix.widthMatrix},
   };
   // leftChannel/rightChannel are `select`-specific (issue #108) and,
   // within `select`, an omitted rightChannel means mono duplication
@@ -342,7 +344,16 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
         },
         stage));
   }
-  return {{"stages", std::move(stages)}};
+  Json document{{"stages", std::move(stages)}};
+  // mainEnabled/mainLevelDb/mainGain are moot, and omitted, on the empty
+  // identity Composition (issue #109) -- mirroring how leftChannel/
+  // rightChannel are omitted for a non-`select` Downmix.
+  if (!composition.stages.empty()) {
+    document["mainEnabled"] = composition.mainEnabled;
+    document["mainLevelDb"] = composition.mainLevelDb;
+    document["mainGain"] = composition.mainGain;
+  }
+  return document;
 }
 
 } // namespace

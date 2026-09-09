@@ -94,6 +94,28 @@ def inter_channel_level_difference_db(left, right):
     return 10.0 * math.log10(left_energy / right_energy)
 
 
+def width_matrix(width_deg):
+    # Width's resolved 2x2 mid/side matrix (#109, docs/design/reverb/
+    # stages/08-downmix.md's "Width as a constant-power mid/side law") --
+    # an independent Python re-derivation of resolveWidthMatrix, for
+    # comparing against the rendered resolved.json rather than reusing
+    # that C++ code. Exact endpoints at 0/90/180 degrees, matching the
+    # production resolver's own bypass of the general trig formula there.
+    half = 1.0 / math.sqrt(2.0)
+    if width_deg == 0.0:
+        return [half, half, half, half]
+    if width_deg == 90.0:
+        return [1.0, 0.0, 0.0, 1.0]
+    if width_deg == 180.0:
+        return [half, -half, -half, half]
+    half_angle_rad = math.radians(width_deg) / 2.0
+    cos_half = math.cos(half_angle_rad)
+    sin_half = math.sin(half_angle_rad)
+    a = (cos_half + sin_half) * half
+    b = (cos_half - sin_half) * half
+    return [a, b, b, a]
+
+
 def dft_power_spectrum(samples):
     # A direct O(n^2) DFT is fine here: fixtures below are a few dozen
     # samples (a millisecond-scale Diffuser response), not a signal this
@@ -405,6 +427,8 @@ def main():
         "effectiveLeftRow": [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "effectiveRightRow": [0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "alignment": "aligned",
+        "widthDeg": 90.0,
+        "widthMatrix": [1.0, 0.0, 0.0, 1.0],
     }:
         raise AssertionError(f"unexpected resolved Downmix: {stages[2]}")
 
@@ -2328,6 +2352,373 @@ def main():
             f"not applicable to strategy {strategy_name}",
             workspace / f"{strategy_name}-with-left-channel-result",
         )
+
+    # Main wet path enablement, level, and Width (#109): docs/design/
+    # reverb/stages/09-composition.md's mainEnabled/mainLevelDb and
+    # docs/design/reverb/stages/08-downmix.md's Width.
+    main_base_document = {
+        "formatVersion": 2,
+        "seed": 42,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 4,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {
+                    "type": "diffuser",
+                    "steps": 1,
+                    "totalMs": 1,
+                    "distribution": "even",
+                    "step": {
+                        "delayStrategy": "segmented-random",
+                        "mix": "hadamard",
+                        "shuffle": True,
+                        "polarity": "seeded-random",
+                    },
+                },
+                {
+                    "type": "downmix",
+                    "strategy": "select",
+                    "leftChannel": 0,
+                    "rightChannel": 1,
+                    "normalisation": "energy",
+                },
+            ]
+        },
+    }
+
+    # Branch controls are rejected on the empty identity Composition.
+    for main_field, main_field_value in (
+        ("mainEnabled", True),
+        ("mainLevelDb", -6.0),
+    ):
+        empty_with_field_document = {
+            "formatVersion": 2,
+            "composition": {main_field: main_field_value},
+        }
+        empty_with_field_request = workspace / (
+            f"main-empty-with-{main_field}-request.json"
+        )
+        empty_with_field_request.write_text(
+            json.dumps(empty_with_field_document)
+        )
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                empty_with_field_request,
+                "--output",
+                workspace / f"main-empty-with-{main_field}-result",
+            ),
+            f"/composition/{main_field}: not applicable to the empty "
+            f"identity Composition",
+            workspace / f"main-empty-with-{main_field}-result",
+        )
+
+    # A non-empty Composition exposes documented mainEnabled/mainLevelDb
+    # defaults: enabled, 0 dB, and the linear gain that implies.
+    main_default_request = workspace / "main-default-request.json"
+    main_default_request.write_text(json.dumps(main_base_document))
+    main_default_result = workspace / "main-default-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            main_default_request,
+            "--output",
+            main_default_result,
+        )
+    )
+    main_default_composition = json.loads(
+        (main_default_result / "resolved.json").read_text()
+    )["composition"]
+    if (
+        main_default_composition["mainEnabled"] is not True
+        or main_default_composition["mainLevelDb"] != 0.0
+        or main_default_composition["mainGain"] != 1.0
+    ):
+        raise AssertionError(
+            f"unexpected default Main wet path controls: "
+            f"{main_default_composition}"
+        )
+    _, main_default_output_samples = read_float_wav(
+        main_default_result / "output.wav"
+    )
+
+    # A disabled Main wet path contributes exact stereo zero.
+    main_disabled_document = json.loads(json.dumps(main_base_document))
+    main_disabled_document["composition"]["mainEnabled"] = False
+    main_disabled_request = workspace / "main-disabled-request.json"
+    main_disabled_request.write_text(json.dumps(main_disabled_document))
+    main_disabled_result = workspace / "main-disabled-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            main_disabled_request,
+            "--output",
+            main_disabled_result,
+        )
+    )
+    main_disabled_composition = json.loads(
+        (main_disabled_result / "resolved.json").read_text()
+    )["composition"]
+    if main_disabled_composition["mainEnabled"] is not False:
+        raise AssertionError("mainEnabled: false did not resolve disabled")
+    _, main_disabled_output_samples = read_float_wav(
+        main_disabled_result / "output.wav"
+    )
+    if any(value != 0.0 for value in main_disabled_output_samples):
+        raise AssertionError(
+            "a disabled Main wet path did not contribute exact stereo "
+            "zero"
+        )
+
+    # mainLevelDb scales the post-Width stereo output by its resolved
+    # linear gain, applied once after Downmix.
+    main_leveled_document = json.loads(json.dumps(main_base_document))
+    main_leveled_document["composition"]["mainLevelDb"] = -6.0
+    main_leveled_request = workspace / "main-leveled-request.json"
+    main_leveled_request.write_text(json.dumps(main_leveled_document))
+    main_leveled_result = workspace / "main-leveled-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            main_leveled_request,
+            "--output",
+            main_leveled_result,
+        )
+    )
+    main_leveled_composition = json.loads(
+        (main_leveled_result / "resolved.json").read_text()
+    )["composition"]
+    expected_main_gain = 10.0 ** (-6.0 / 20.0)
+    if abs(main_leveled_composition["mainGain"] - expected_main_gain) > 1e-9:
+        raise AssertionError(
+            f"mainLevelDb: -6 did not resolve the expected linear gain: "
+            f"{main_leveled_composition}"
+        )
+    _, main_leveled_output_samples = read_float_wav(
+        main_leveled_result / "output.wav"
+    )
+    if len(main_leveled_output_samples) != len(main_default_output_samples):
+        raise AssertionError("mainLevelDb: -6 changed the rendered frame count")
+    for leveled_value, unleveled_value in zip(
+        main_leveled_output_samples, main_default_output_samples
+    ):
+        if abs(leveled_value - unleveled_value * expected_main_gain) > 1e-6:
+            raise AssertionError(
+                "mainLevelDb: -6 did not scale the Main wet path output "
+                "by its resolved gain"
+            )
+
+    # Width (#109): endpoint identity (0/90/180) and an intermediate
+    # angle, each checked against the resolved matrix and replayed from
+    # resolved.json.
+    for width_deg in (0.0, 45.0, 90.0, 135.0, 180.0):
+        width_document = json.loads(json.dumps(main_base_document))
+        width_document["composition"]["stages"][2]["widthDeg"] = width_deg
+        width_request = workspace / f"main-width-{width_deg}-request.json"
+        width_request.write_text(json.dumps(width_document))
+        width_result = workspace / f"main-width-{width_deg}-result"
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                width_request,
+                "--output",
+                width_result,
+            )
+        )
+        width_downmix = json.loads(
+            (width_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if width_downmix["widthDeg"] != width_deg:
+            raise AssertionError(
+                f"Width did not resolve the requested widthDeg: "
+                f"{width_downmix}"
+            )
+        expected_width_matrix = width_matrix(width_deg)
+        if any(
+            abs(actual - expected) > 1e-9
+            for actual, expected in zip(
+                width_downmix["widthMatrix"], expected_width_matrix
+            )
+        ):
+            raise AssertionError(
+                f"Width matrix at {width_deg} degrees did not match the "
+                f"documented formula: {width_downmix}"
+            )
+
+        width_rerender = workspace / f"main-width-{width_deg}-rerender"
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--resolved",
+                width_result / "resolved.json",
+                "--output",
+                width_rerender,
+            )
+        )
+        if (width_rerender / "resolved.json").read_bytes() != (
+            width_result / "resolved.json"
+        ).read_bytes():
+            raise AssertionError(
+                f"Width resolved rerender changed configuration at "
+                f"{width_deg} degrees"
+            )
+        if (width_rerender / "output.wav").read_bytes() != (
+            width_result / "output.wav"
+        ).read_bytes():
+            raise AssertionError(
+                f"Width resolved rerender changed output at {width_deg} "
+                f"degrees"
+            )
+
+    # 90 degrees defaults identically to an omitted widthDeg: a
+    # bit-identical bypass against the default render above.
+    width_90_result = workspace / "main-width-90.0-result"
+    if (width_90_result / "output.wav").read_bytes() != (
+        main_default_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "Width at 90 degrees was not a bit-identical bypass"
+        )
+
+    # Actual energy change across Width is measured and reported, not
+    # gated, on a seeded unaligned (Feedback-Loop) fixed-total-power
+    # fixture (docs/design/reverb/stages/08-downmix.md's "Width evidence"
+    # and "actual energy change is always reported").
+    width_energy_by_degrees = {}
+    for width_deg in (0.0, 90.0, 180.0):
+        width_energy_document = {
+            "formatVersion": 2,
+            "seed": 42,
+            "composition": {
+                "stages": [
+                    {
+                        "type": "split",
+                        "channels": 4,
+                        "strategy": "duplicate",
+                        "normalisation": "energy",
+                    },
+                    {"type": "feedback-loop"},
+                    {
+                        "type": "downmix",
+                        "strategy": "select",
+                        "leftChannel": 0,
+                        "rightChannel": 1,
+                        "normalisation": "energy",
+                        "widthDeg": width_deg,
+                    },
+                ]
+            },
+        }
+        width_energy_request = workspace / (
+            f"main-width-energy-{width_deg}-request.json"
+        )
+        width_energy_request.write_text(json.dumps(width_energy_document))
+        width_energy_result = workspace / (
+            f"main-width-energy-{width_deg}-result"
+        )
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                width_energy_request,
+                "--output",
+                width_energy_result,
+            )
+        )
+        _, width_energy_output_samples = read_float_wav(
+            width_energy_result / "output.wav"
+        )
+        width_energy_left, width_energy_right = deinterleave(
+            2, width_energy_output_samples
+        )
+        width_energy = math.fsum(
+            v * v for v in width_energy_left
+        ) + math.fsum(v * v for v in width_energy_right)
+        if not math.isfinite(width_energy):
+            raise AssertionError(
+                f"Width output energy is not finite at {width_deg} degrees"
+            )
+        width_energy_by_degrees[width_deg] = width_energy
+
+    width_evidence_path = workspace / "main-width-energy-evidence.json"
+    width_evidence_path.write_text(
+        json.dumps(width_energy_by_degrees, indent=2)
+    )
+
+    # widthDeg must stay within its declared structural domain (#109,
+    # docs/design/reverb/stages/09-composition.md's Rules table: "width
+    # must be finite and in their declared structural domains").
+    width_out_of_range_document = json.loads(json.dumps(main_base_document))
+    width_out_of_range_document["composition"]["stages"][2][
+        "widthDeg"
+    ] = 200.0
+    width_out_of_range_request = workspace / (
+        "main-width-out-of-range-request.json"
+    )
+    width_out_of_range_request.write_text(
+        json.dumps(width_out_of_range_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            width_out_of_range_request,
+            "--output",
+            workspace / "main-width-out-of-range-result",
+        ),
+        "/composition/stages/2/widthDeg: "
+        "expected a finite value within [0, 180]",
+        workspace / "main-width-out-of-range-result",
+    )
+
+    # An extreme mainLevelDb whose derived linear mainGain overflows to
+    # infinity is rejected rather than propagated into a non-finite gain.
+    main_extreme_level_document = json.loads(json.dumps(main_base_document))
+    main_extreme_level_document["composition"]["mainLevelDb"] = 1.0e6
+    main_extreme_level_request = workspace / (
+        "main-extreme-level-request.json"
+    )
+    main_extreme_level_request.write_text(
+        json.dumps(main_extreme_level_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            main_extreme_level_request,
+            "--output",
+            workspace / "main-extreme-level-result",
+        ),
+        "/composition/mainGain: expected finite positive gain",
+        workspace / "main-extreme-level-result",
+    )
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))

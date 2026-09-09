@@ -3,6 +3,7 @@
 #include "rvrbotron/dsp/ResolvedConfig.h"
 #include "rvrbotron/dsp/Sample.h"
 
+#include <array>
 #include <cstddef>
 #include <vector>
 
@@ -35,6 +36,14 @@ private:
   // processFrame.
   std::vector<Sample> effectiveLeftRow_;
   std::vector<Sample> effectiveRightRow_;
+  // The resolved 2x2 Width matrix (docs/design/reverb/stages/
+  // 08-downmix.md's "Width as a constant-power mid/side law"), applied to
+  // the pre-Width [left, right] vector as row-major
+  // [[m00, m01], [m10, m11]] -- resolved once before construction (issue
+  // #109) so processFrame never computes trigonometry. At the default
+  // 90 degrees this is an exact identity, so every existing strategy's
+  // pre-Width output is unchanged bit-for-bit.
+  std::array<Sample, 4> widthMatrix_;
 };
 
 } // namespace rvrbotron::dsp
