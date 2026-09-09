@@ -1227,6 +1227,309 @@ int main() {
     }
   }
 
+  // `halves` (#110): the first ceil(N/2) Channels map left, the remainder
+  // maps right, each group using equal 1/sqrt(groupSize) coefficients.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    // Householder (unlike the default Hadamard) is valid at the N=5 odd
+    // Channel count exercised below, and at N=4/N=1.
+    rvrbotron::config::DiffusionStepConfig step;
+    step.mix = rvrbotron::dsp::MixMatrixType::householder;
+    diffuser.step = step;
+    rvrbotron::config::DownmixConfig halvesDownmix;
+    halvesDownmix.strategy = rvrbotron::dsp::DownmixStrategy::halves;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(halvesDownmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (downmix.leftChannel.has_value() ||
+        downmix.rightChannel.has_value()) {
+      std::cerr << "halves resolved a leftChannel/rightChannel it has no "
+                   "use for\n";
+      return 1;
+    }
+    const auto half = 1.0 / std::sqrt(2.0);
+    const std::array<double, 4> expectedLeft{half, half, 0.0, 0.0};
+    const std::array<double, 4> expectedRight{0.0, 0.0, half, half};
+    const auto expectedCompensation = std::sqrt(2.0);
+    if (downmix.compensation != expectedCompensation) {
+      std::cerr << "halves compensation did not match sqrt(N/2)\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (downmix.leftRow[index] != expectedLeft[index] ||
+          downmix.rightRow[index] != expectedRight[index]) {
+        std::cerr << "halves leftRow/rightRow did not match the expected "
+                     "equal-coefficient groups\n";
+        return 1;
+      }
+      if (downmix.effectiveLeftRow[index] !=
+              expectedLeft[index] * expectedCompensation ||
+          downmix.effectiveRightRow[index] !=
+              expectedRight[index] * expectedCompensation) {
+        std::cerr << "halves effective rows did not match rows scaled by "
+                     "compensation\n";
+        return 1;
+      }
+    }
+    if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "halves Diffuser-only Downmix did not resolve aligned\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::Reverb halvesReverb(resolved);
+    std::array<rvrbotron::dsp::Sample, 1> halvesInput{
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 1> halvesLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> halvesRight{};
+    const rvrbotron::dsp::Sample* halvesInputs[]{halvesInput.data()};
+    rvrbotron::dsp::Sample* halvesOutputs[]{
+        halvesLeft.data(), halvesRight.data()};
+    beginAllocationCount();
+    halvesReverb.process(halvesInputs, 1, halvesOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "halves Downmix allocated while processing\n";
+      return 1;
+    }
+
+    // N=5 is odd: left group ceil(5/2)=3 at 1/sqrt(3), right group
+    // floor(5/2)=2 at 1/sqrt(2) -- unequal odd-N groups (#110).
+    auto oddComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(oddComposition.stages[0])
+        .channels = 5;
+    rvrbotron::config::ReverbConfig oddRequested;
+    oddRequested.formatVersion = 2;
+    oddRequested.seed = 7;
+    oddRequested.composition = std::move(oddComposition);
+    const auto oddResolved =
+        rvrbotron::config::resolveConfig(oddRequested, 48000, 1);
+    const auto& oddDownmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        oddResolved.composition.stages[2]);
+    const auto oddLeftCoefficient = 1.0 / std::sqrt(3.0);
+    const auto oddRightCoefficient = 1.0 / std::sqrt(2.0);
+    const std::array<double, 5> oddExpectedLeft{
+        oddLeftCoefficient, oddLeftCoefficient, oddLeftCoefficient, 0.0,
+        0.0};
+    const std::array<double, 5> oddExpectedRight{
+        0.0, 0.0, 0.0, oddRightCoefficient, oddRightCoefficient};
+    for (std::size_t index = 0; index < 5; ++index) {
+      if (oddDownmix.leftRow[index] != oddExpectedLeft[index] ||
+          oddDownmix.rightRow[index] != oddExpectedRight[index]) {
+        std::cerr << "halves at odd N=5 did not resolve the expected "
+                     "unequal groups\n";
+        return 1;
+      }
+    }
+
+    // N=1 has no second Channel to place in the remainder group: halves
+    // requires N >= 2.
+    auto singleChannelComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(
+        singleChannelComposition.stages[0])
+        .channels = 1;
+    rvrbotron::config::ReverbConfig singleChannelRequested;
+    singleChannelRequested.formatVersion = 2;
+    singleChannelRequested.seed = 7;
+    singleChannelRequested.composition =
+        std::move(singleChannelComposition);
+    bool singleChannelRejected = false;
+    try {
+      static_cast<void>(rvrbotron::config::resolveConfig(
+          singleChannelRequested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      singleChannelRejected = true;
+    }
+    if (!singleChannelRejected) {
+      std::cerr << "resolveConfig accepted halves at N=1\n";
+      return 1;
+    }
+  }
+
+  // `alternating` (#110): even Channel indices map left, odd indices map
+  // right, each group using equal 1/sqrt(groupSize) coefficients.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    // Householder (unlike the default Hadamard) is valid at the N=5 odd
+    // Channel count exercised below, and at N=4/N=1.
+    rvrbotron::config::DiffusionStepConfig step;
+    step.mix = rvrbotron::dsp::MixMatrixType::householder;
+    diffuser.step = step;
+    rvrbotron::config::DownmixConfig alternatingDownmix;
+    alternatingDownmix.strategy =
+        rvrbotron::dsp::DownmixStrategy::alternating;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(alternatingDownmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (downmix.leftChannel.has_value() ||
+        downmix.rightChannel.has_value()) {
+      std::cerr << "alternating resolved a leftChannel/rightChannel it "
+                   "has no use for\n";
+      return 1;
+    }
+    const auto half = 1.0 / std::sqrt(2.0);
+    const std::array<double, 4> expectedLeft{half, 0.0, half, 0.0};
+    const std::array<double, 4> expectedRight{0.0, half, 0.0, half};
+    const auto expectedCompensation = std::sqrt(2.0);
+    if (downmix.compensation != expectedCompensation) {
+      std::cerr << "alternating compensation did not match sqrt(N/2)\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (downmix.leftRow[index] != expectedLeft[index] ||
+          downmix.rightRow[index] != expectedRight[index]) {
+        std::cerr << "alternating leftRow/rightRow did not match the "
+                     "expected even/odd groups\n";
+        return 1;
+      }
+      if (downmix.effectiveLeftRow[index] !=
+              expectedLeft[index] * expectedCompensation ||
+          downmix.effectiveRightRow[index] !=
+              expectedRight[index] * expectedCompensation) {
+        std::cerr << "alternating effective rows did not match rows "
+                     "scaled by compensation\n";
+        return 1;
+      }
+    }
+    if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "alternating Diffuser-only Downmix did not resolve "
+                   "aligned\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::Reverb alternatingReverb(resolved);
+    std::array<rvrbotron::dsp::Sample, 1> alternatingInput{
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 1> alternatingLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> alternatingRight{};
+    const rvrbotron::dsp::Sample* alternatingInputs[]{
+        alternatingInput.data()};
+    rvrbotron::dsp::Sample* alternatingOutputs[]{
+        alternatingLeft.data(), alternatingRight.data()};
+    beginAllocationCount();
+    alternatingReverb.process(
+        alternatingInputs, 1, alternatingOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "alternating Downmix allocated while processing\n";
+      return 1;
+    }
+
+    // N=5 is odd: even indices {0,2,4} (size 3, 1/sqrt(3)); odd indices
+    // {1,3} (size 2, 1/sqrt(2)) -- unequal odd-N groups (#110).
+    auto oddComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(oddComposition.stages[0])
+        .channels = 5;
+    rvrbotron::config::ReverbConfig oddRequested;
+    oddRequested.formatVersion = 2;
+    oddRequested.seed = 7;
+    oddRequested.composition = std::move(oddComposition);
+    const auto oddResolved =
+        rvrbotron::config::resolveConfig(oddRequested, 48000, 1);
+    const auto& oddDownmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        oddResolved.composition.stages[2]);
+    const auto oddLeftCoefficient = 1.0 / std::sqrt(3.0);
+    const auto oddRightCoefficient = 1.0 / std::sqrt(2.0);
+    const std::array<double, 5> oddExpectedLeft{
+        oddLeftCoefficient, 0.0, oddLeftCoefficient, 0.0,
+        oddLeftCoefficient};
+    const std::array<double, 5> oddExpectedRight{
+        0.0, oddRightCoefficient, 0.0, oddRightCoefficient, 0.0};
+    for (std::size_t index = 0; index < 5; ++index) {
+      if (oddDownmix.leftRow[index] != oddExpectedLeft[index] ||
+          oddDownmix.rightRow[index] != oddExpectedRight[index]) {
+        std::cerr << "alternating at odd N=5 did not resolve the expected "
+                     "unequal groups\n";
+        return 1;
+      }
+    }
+
+    // N=1 has no odd-indexed Channel: alternating requires N >= 2.
+    auto singleChannelComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(
+        singleChannelComposition.stages[0])
+        .channels = 1;
+    rvrbotron::config::ReverbConfig singleChannelRequested;
+    singleChannelRequested.formatVersion = 2;
+    singleChannelRequested.seed = 7;
+    singleChannelRequested.composition =
+        std::move(singleChannelComposition);
+    bool singleChannelRejected = false;
+    try {
+      static_cast<void>(rvrbotron::config::resolveConfig(
+          singleChannelRequested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      singleChannelRejected = true;
+    }
+    if (!singleChannelRejected) {
+      std::cerr << "resolveConfig accepted alternating at N=1\n";
+      return 1;
+    }
+  }
+
+  // halves/alternating through a Feedback Loop (#110): Alignment
+  // expectation is derived from Composition wiring, so a source that
+  // includes a Feedback Loop must resolve unaligned for either strategy,
+  // exactly as it already does for select/orthogonal-rows.
+  for (const auto strategy :
+       {rvrbotron::dsp::DownmixStrategy::halves,
+        rvrbotron::dsp::DownmixStrategy::alternating}) {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::FeedbackLoopConfig loop;
+    rvrbotron::config::DownmixConfig downmixConfig;
+    downmixConfig.strategy = strategy;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(loop);
+    composition.stages.emplace_back(downmixConfig);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = std::move(composition);
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::unaligned) {
+      std::cerr << "halves/alternating Feedback Loop Downmix did not "
+                   "resolve unaligned\n";
+      return 1;
+    }
+  }
+
   for (const auto channels : {1U, 2U, 4U, 8U, 16U}) {
     if (!reverbDiffusionStepIsAllPass(channels)) {
       std::cerr << "Diffusion Step changed pseudo-random input energy at "

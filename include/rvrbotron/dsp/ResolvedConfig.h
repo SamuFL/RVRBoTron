@@ -38,6 +38,8 @@ enum class PolarityStrategy {
 enum class DownmixStrategy {
   select,
   orthogonalRows,
+  halves,
+  alternating,
 };
 
 // Whether a Downmix's source Channels carry independent echo times

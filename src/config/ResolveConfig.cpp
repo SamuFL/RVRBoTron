@@ -1227,6 +1227,23 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   return loop;
 }
 
+// Named for error messages naming the actual requested strategy (issue
+// #110) rather than a name hardcoded from when `select` had only one
+// alternative.
+const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
+  switch (strategy) {
+  case dsp::DownmixStrategy::select:
+    return "select";
+  case dsp::DownmixStrategy::orthogonalRows:
+    return "orthogonal-rows";
+  case dsp::DownmixStrategy::halves:
+    return "halves";
+  case dsp::DownmixStrategy::alternating:
+    return "alternating";
+  }
+  fail("/composition", "unsupported Downmix strategy");
+}
+
 // A `select` Downmix's unit-norm intrinsic row: a single 1.0 at `channel`
 // over `channels` total positions. Left with no 1.0 entry (norm zero, not
 // unit) when `channel` is out of range or `channels` is zero -- resolution
@@ -1237,6 +1254,50 @@ std::vector<double> selectRow(
   std::vector<double> row(channels, 0.0);
   if (channel < channels) {
     row[channel] = 1.0;
+  }
+  return row;
+}
+
+// `halves`' intrinsic row (issue #110): equal `1/sqrt(groupSize)`
+// coefficients over the first `ceil(N/2)` Channels (`leftGroup`) or the
+// remainder. Both groups are non-empty for every `channels >= 2`, but this
+// defensively returns an all-zero row rather than dividing by zero below
+// that floor -- resolution runs before validateResolvedConfig can reject a
+// shorter N, mirroring `orthogonal-rows`' own defensive placeholder.
+std::vector<double> halvesRow(
+    const std::uint32_t channels, const bool leftGroup) {
+  std::vector<double> row(channels, 0.0);
+  if (channels < 2) {
+    return row;
+  }
+  const std::uint32_t leftCount = (channels + 1U) / 2U;
+  const std::uint32_t begin = leftGroup ? 0U : leftCount;
+  const std::uint32_t end = leftGroup ? leftCount : channels;
+  const auto coefficient =
+      1.0 / std::sqrt(static_cast<double>(end - begin));
+  for (std::uint32_t index = begin; index < end; ++index) {
+    row[index] = coefficient;
+  }
+  return row;
+}
+
+// `alternating`'s intrinsic row (issue #110): equal `1/sqrt(groupSize)`
+// coefficients over even Channel indices (`leftGroup`) or odd indices.
+// Same N>=2 defensive placeholder as `halvesRow` above.
+std::vector<double> alternatingRow(
+    const std::uint32_t channels, const bool leftGroup) {
+  std::vector<double> row(channels, 0.0);
+  if (channels < 2) {
+    return row;
+  }
+  const std::uint32_t first = leftGroup ? 0U : 1U;
+  std::uint32_t groupSize = 0;
+  for (std::uint32_t index = first; index < channels; index += 2U) {
+    ++groupSize;
+  }
+  const auto coefficient = 1.0 / std::sqrt(static_cast<double>(groupSize));
+  for (std::uint32_t index = first; index < channels; index += 2U) {
+    row[index] = coefficient;
   }
   return row;
 }
@@ -1344,20 +1405,28 @@ dsp::ResolvedDownmix resolveDownmix(
     if (requested.leftChannel.has_value()) {
       fail(
           stagePath(stageIndex) + "/leftChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(strategy));
     }
     if (requested.rightChannel.has_value()) {
       fail(
           stagePath(stageIndex) + "/rightChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(strategy));
     }
-    // orthogonal-rows requires N >= 2 to have a distinct row 1; resolution
-    // runs before validateResolvedConfig can reject a shorter N, so this
-    // defensively resolves an all-zero placeholder rather than indexing
-    // past the 0- or 1-row matrix fillRandomOrthogonalSeed would build.
+    // Every non-select strategy requires N >= 2 to have a distinct row 1
+    // (issue #108/#110); resolution runs before validateResolvedConfig can
+    // reject a shorter N, so this defensively resolves an all-zero
+    // placeholder rather than indexing past a too-short row.
     if (channels < 2) {
       leftRow.assign(channels, 0.0);
       rightRow.assign(channels, 0.0);
+    } else if (strategy == dsp::DownmixStrategy::halves) {
+      leftRow = halvesRow(channels, /*leftGroup=*/true);
+      rightRow = halvesRow(channels, /*leftGroup=*/false);
+    } else if (strategy == dsp::DownmixStrategy::alternating) {
+      leftRow = alternatingRow(channels, /*leftGroup=*/true);
+      rightRow = alternatingRow(channels, /*leftGroup=*/false);
     } else {
       checkDownmixMemoryBudget(
           channels, memoryBudgetBytes, stagePath(stageIndex) + "/strategy");
@@ -2865,17 +2934,20 @@ void validateResolvedConfig(
     if (downmix.leftChannel.has_value()) {
       fail(
           stagePath(downmixIndex) + "/leftChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(downmix.strategy));
     }
     if (downmix.rightChannel.has_value()) {
       fail(
           stagePath(downmixIndex) + "/rightChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(downmix.strategy));
     }
     if (channels < 2) {
       fail(
           stagePath(downmixIndex) + "/strategy",
-          "orthogonal-rows requires at least two Channels");
+          std::string(downmixStrategyLabel(downmix.strategy)) +
+              " requires at least two Channels");
     }
   }
   if (!(downmix.compensation > 0.0) ||
@@ -2912,6 +2984,12 @@ void validateResolvedConfig(
     expectedRightRow = downmix.rightChannel.has_value()
         ? selectRow(*downmix.rightChannel, channels)
         : expectedLeftRow;
+  } else if (downmix.strategy == dsp::DownmixStrategy::halves) {
+    expectedLeftRow = halvesRow(channels, /*leftGroup=*/true);
+    expectedRightRow = halvesRow(channels, /*leftGroup=*/false);
+  } else if (downmix.strategy == dsp::DownmixStrategy::alternating) {
+    expectedLeftRow = alternatingRow(channels, /*leftGroup=*/true);
+    expectedRightRow = alternatingRow(channels, /*leftGroup=*/false);
   } else {
     auto matrix = resolveRandomOrthogonalMatrix(
         channels, resolved.seed, kMainDownmixRandomOrthogonalUsage);

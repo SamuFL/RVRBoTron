@@ -316,7 +316,30 @@ dsp::DownmixStrategy parseDownmixStrategy(
   if (name == "orthogonal-rows") {
     return dsp::DownmixStrategy::orthogonalRows;
   }
-  fail(path, "expected select or orthogonal-rows");
+  if (name == "halves") {
+    return dsp::DownmixStrategy::halves;
+  }
+  if (name == "alternating") {
+    return dsp::DownmixStrategy::alternating;
+  }
+  fail(path, "expected select, orthogonal-rows, halves, or alternating");
+}
+
+// Named for error messages naming the actual requested strategy (issue
+// #110) rather than a stale strategy name hardcoded from when `select`
+// had only one alternative.
+const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
+  switch (strategy) {
+  case dsp::DownmixStrategy::select:
+    return "select";
+  case dsp::DownmixStrategy::orthogonalRows:
+    return "orthogonal-rows";
+  case dsp::DownmixStrategy::halves:
+    return "halves";
+  case dsp::DownmixStrategy::alternating:
+    return "alternating";
+  }
+  fail("/composition", "unsupported Downmix strategy");
 }
 
 dsp::DownmixAlignment parseDownmixAlignment(
@@ -616,15 +639,16 @@ config::DownmixConfig parseRequestedDownmix(
           value.at("rightChannel"), std::string(path) + "/rightChannel");
     }
   } else {
+    const auto strategyLabel = downmixStrategyLabel(*downmix.strategy);
     if (value.contains("leftChannel")) {
       fail(
           std::string(path) + "/leftChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") + strategyLabel);
     }
     if (value.contains("rightChannel")) {
       fail(
           std::string(path) + "/rightChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") + strategyLabel);
     }
   }
   if (value.contains("normalisation")) {
@@ -1184,15 +1208,16 @@ dsp::ResolvedDownmix parseResolvedDownmix(
           value.at("rightChannel"), std::string(path) + "/rightChannel");
     }
   } else {
+    const auto strategyLabel = downmixStrategyLabel(downmix.strategy);
     if (value.contains("leftChannel")) {
       fail(
           std::string(path) + "/leftChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") + strategyLabel);
     }
     if (value.contains("rightChannel")) {
       fail(
           std::string(path) + "/rightChannel",
-          "not applicable to strategy orthogonal-rows");
+          std::string("not applicable to strategy ") + strategyLabel);
     }
   }
   downmix.normalisation = parseNormalisation(
