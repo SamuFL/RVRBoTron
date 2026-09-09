@@ -1639,6 +1639,26 @@ int main() {
       }
     }
 
+    // 90 degrees is bit-identical even for signed zero, which the
+    // matrix form (1*L + 0*R) alone would not preserve: IEEE 754 rounds
+    // (-0.0) + (+0.0) to +0.0, not -0.0.
+    {
+      auto downmix = widthTestDownmix(90.0);
+      const auto negativeZero = -static_cast<rvrbotron::dsp::Sample>(0.0);
+      const auto positiveZero = static_cast<rvrbotron::dsp::Sample>(0.0);
+      const std::array<rvrbotron::dsp::Sample, 2> signedZeroPreWidth{
+          negativeZero, positiveZero};
+      std::array<rvrbotron::dsp::Sample, 1> left{};
+      std::array<rvrbotron::dsp::Sample, 1> right{};
+      rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+      downmix.processFrame(signedZeroPreWidth.data(), outputs, 0);
+      if (!std::signbit(left[0]) || std::signbit(right[0])) {
+        std::cerr << "Width at 90 degrees did not preserve signed zero "
+                     "on bypass\n";
+        return 1;
+      }
+    }
+
     // 0 degrees mono-izes any input to (L+R)/sqrt(2) on both outputs.
     {
       auto downmix = widthTestDownmix(0.0);
@@ -1870,6 +1890,34 @@ int main() {
           !close(leveledRight[frame], expectedRight)) {
         std::cerr << "mainLevelDb: -6 did not scale the Main wet path "
                      "output by its resolved gain\n";
+        return 1;
+      }
+    }
+
+    // An extreme mainLevelDb resolves a mainGain that is a valid finite
+    // positive double but is not representable at float precision (see
+    // the analogous CLI-boundary check in test_configuration_cli.py).
+    // resolveConfig is a public non-JSON entry point too, so this must
+    // be rejected there directly as well.
+    for (const auto extremeMainLevelDb : {1000.0, -1000.0}) {
+      auto extremeComposition = composition;
+      extremeComposition.mainLevelDb = extremeMainLevelDb;
+      rvrbotron::config::ReverbConfig extremeRequested;
+      extremeRequested.formatVersion = 2;
+      extremeRequested.seed = 7;
+      extremeRequested.composition = std::move(extremeComposition);
+      bool extremeRejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(extremeRequested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        extremeRejected = true;
+      }
+      if (!extremeRejected) {
+        std::cerr << "resolveConfig accepted a mainLevelDb of "
+                   << extremeMainLevelDb
+                   << " whose gain is not representable at float "
+                      "precision\n";
         return 1;
       }
     }

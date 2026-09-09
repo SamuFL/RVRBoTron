@@ -2717,29 +2717,40 @@ def main():
             / f"main-width-out-of-range-{out_of_range_width_deg}-result",
         )
 
-    # An extreme mainLevelDb whose derived linear mainGain overflows to
-    # infinity is rejected rather than propagated into a non-finite gain.
-    main_extreme_level_document = json.loads(json.dumps(main_base_document))
-    main_extreme_level_document["composition"]["mainLevelDb"] = 1.0e6
-    main_extreme_level_request = workspace / (
-        "main-extreme-level-request.json"
-    )
-    main_extreme_level_request.write_text(
-        json.dumps(main_extreme_level_document)
-    )
-    require_failure(
-        run_renderer(
-            renderer,
-            "--input",
-            fixture,
-            "--config",
-            main_extreme_level_request,
-            "--output",
-            workspace / "main-extreme-level-result",
-        ),
-        "/composition/mainGain: expected finite positive gain",
-        workspace / "main-extreme-level-result",
-    )
+    # An extreme mainLevelDb resolves a mainGain that is a valid finite
+    # positive double but is not representable at float precision --
+    # +1000 dB overflows float to infinity, -1000 dB underflows it to
+    # exact zero -- and both are rejected rather than silently applying a
+    # gain DSP construction cannot actually reproduce (see Downmix's own
+    # double-resolved/Sample-applied split for why float precision is
+    # the binding constraint regardless of this build's own Sample type).
+    for extreme_main_level_db in (1000.0, -1000.0):
+        main_extreme_level_document = json.loads(
+            json.dumps(main_base_document)
+        )
+        main_extreme_level_document["composition"][
+            "mainLevelDb"
+        ] = extreme_main_level_db
+        main_extreme_level_request = workspace / (
+            f"main-extreme-level-{extreme_main_level_db}-request.json"
+        )
+        main_extreme_level_request.write_text(
+            json.dumps(main_extreme_level_document)
+        )
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                main_extreme_level_request,
+                "--output",
+                workspace / f"main-extreme-level-{extreme_main_level_db}-result",
+            ),
+            "/composition/mainGain: expected finite positive gain "
+            "representable at float precision",
+            workspace / f"main-extreme-level-{extreme_main_level_db}-result",
+        )
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))

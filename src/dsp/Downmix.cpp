@@ -36,7 +36,8 @@ Downmix::Downmix(const ResolvedDownmix& config)
           static_cast<Sample>(config.widthMatrix[0]),
           static_cast<Sample>(config.widthMatrix[1]),
           static_cast<Sample>(config.widthMatrix[2]),
-          static_cast<Sample>(config.widthMatrix[3])} {}
+          static_cast<Sample>(config.widthMatrix[3])},
+      identityWidth_(config.widthDeg == 90.0) {}
 
 void Downmix::processFrame(const Sample* const channels,
                            Sample* const* const outputs,
@@ -55,6 +56,11 @@ void Downmix::processFrame(const Sample* const channels,
     }
     preWidthLeft = left;
     preWidthRight = right;
+  }
+  if (identityWidth_) {
+    outputs[0][frame] = preWidthLeft;
+    outputs[1][frame] = preWidthRight;
+    return;
   }
   outputs[0][frame] =
       widthMatrix_[0] * preWidthLeft + widthMatrix_[1] * preWidthRight;

@@ -2865,9 +2865,25 @@ void validateResolvedConfig(
   if (!std::isfinite(resolved.composition.mainLevelDb)) {
     fail("/composition/mainLevelDb", "expected a finite value");
   }
+  // Checked at float precision regardless of this build's own Sample
+  // type -- a resolved.json is meant to give float and double DSP the
+  // same structure (docs/design/reverb/stages/09-composition.md), and
+  // float has the narrower range: an extreme but finite double mainGain
+  // (e.g. 1e50 from a +1000 dB mainLevelDb) silently becomes infinity
+  // when narrowed to float, and a tiny one silently becomes exact zero,
+  // either way diverging from the resolved value DSP construction
+  // actually reads (see Downmix's own effectiveLeftRow/effectiveRightRow
+  // for the same double-resolved/Sample-applied split).
+  const auto mainGainAtFloatPrecision =
+      static_cast<float>(resolved.composition.mainGain);
   if (!(resolved.composition.mainGain > 0.0) ||
-      !std::isfinite(resolved.composition.mainGain)) {
-    fail("/composition/mainGain", "expected finite positive gain");
+      !std::isfinite(resolved.composition.mainGain) ||
+      !std::isfinite(mainGainAtFloatPrecision) ||
+      !(mainGainAtFloatPrecision > 0.0f)) {
+    fail(
+        "/composition/mainGain",
+        "expected finite positive gain representable at float "
+        "precision");
   }
   if (resolved.composition.mainGain !=
       resolveMainGain(resolved.composition.mainLevelDb)) {

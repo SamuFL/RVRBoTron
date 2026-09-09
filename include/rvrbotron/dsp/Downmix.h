@@ -40,10 +40,14 @@ private:
   // 08-downmix.md's "Width as a constant-power mid/side law"), applied to
   // the pre-Width [left, right] vector as row-major
   // [[m00, m01], [m10, m11]] -- resolved once before construction (issue
-  // #109) so processFrame never computes trigonometry. At the default
-  // 90 degrees this is an exact identity, so every existing strategy's
-  // pre-Width output is unchanged bit-for-bit.
+  // #109) so processFrame never computes trigonometry.
   std::array<Sample, 4> widthMatrix_;
+  // True at the default 90 degrees: processFrame assigns the pre-Width
+  // samples directly rather than multiplying through widthMatrix_ (an
+  // algebraic identity there), so the bypass is exact for every input,
+  // including signed zero -- `1*(-0.0) + 0*(+0.0)` rounds to `+0.0` under
+  // IEEE 754, not `-0.0`, which the matrix form alone would not catch.
+  bool identityWidth_;
 };
 
 } // namespace rvrbotron::dsp
