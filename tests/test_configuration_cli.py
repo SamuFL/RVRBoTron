@@ -43,15 +43,15 @@ def deinterleave(channels: int, samples):
     return [samples[channel::channels] for channel in range(channels)]
 
 
-def pearson_correlation(a, b):
-    mean_a = math.fsum(a) / len(a)
-    mean_b = math.fsum(b) / len(b)
-    centered_a = [x - mean_a for x in a]
-    centered_b = [x - mean_b for x in b]
-    numerator = math.fsum(x * y for x, y in zip(centered_a, centered_b))
+def zero_lag_correlation(a, b):
+    # The repository's canonical Output correlation: an uncentered
+    # normalized zero-lag dot product (tools/analyze_diffusion.py's
+    # correlation_evidence, lines 123-131), not Pearson correlation --
+    # impulse responses generally have nonzero mean, so centering first
+    # would report a different quantity.
+    numerator = math.fsum(x * y for x, y in zip(a, b))
     denominator = math.sqrt(
-        math.fsum(x * x for x in centered_a)
-        * math.fsum(y * y for y in centered_b)
+        math.fsum(x * x for x in a) * math.fsum(y * y for y in b)
     )
     if denominator == 0.0:
         return 0.0
@@ -1704,7 +1704,7 @@ def main():
         # range, reported rather than gated against an acoustic threshold
         # (no universal pass/fail on decorrelation -- see the parent spec's
         # Out of Scope).
-        correlation = pearson_correlation(left, right)
+        correlation = zero_lag_correlation(left, right)
         if not math.isfinite(correlation) or abs(correlation) > 1.0 + 1e-9:
             raise AssertionError(
                 f"orthogonal-rows Output correlation is not a valid "
@@ -1748,10 +1748,40 @@ def main():
                 f"{orthogonal_rows_channels}"
             )
 
+        # Persist the evidence this fixture exists to gather (issue #108,
+        # docs/design/reverb/stages/08-downmix.md's "Decorrelation
+        # evidence" and "Spectral evidence") -- otherwise it is computed
+        # and immediately discarded, leaving nothing for a human to read
+        # even though every threshold above is deliberately non-gating.
+        orthogonal_evidence_path = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-evidence.json"
+        )
+        orthogonal_evidence_path.write_text(
+            json.dumps(
+                {
+                    "channels": orthogonal_rows_channels,
+                    "outputEnergy": output_energy,
+                    "outputCorrelation": correlation,
+                    "spectralMaxDeviation": max_deviation,
+                    "spectralRmsDeviation": rms_deviation,
+                },
+                indent=2,
+            )
+        )
+
     # Expected-level independence across N (within a generous tolerance --
     # an expected-power contract over a single seeded realization, not
     # exact equality; see docs/design/reverb/stages/08-downmix.md).
     energies = list(orthogonal_rows_energy_by_channels.values())
+    # A silent Downmix (energies all 0.0) would otherwise pass the ratio
+    # check below vacuously -- 0.0 > 3.0 * 0.0 is false -- so require each
+    # seeded fixture to have actually produced a nonzero expected level
+    # before comparing their ratio across N.
+    if any(energy <= 0.0 for energy in energies):
+        raise AssertionError(
+            f"orthogonal-rows output energy was not positive: "
+            f"{orthogonal_rows_energy_by_channels}"
+        )
     if max(energies) > 3.0 * min(energies):
         raise AssertionError(
             f"orthogonal-rows output energy was not roughly level-"

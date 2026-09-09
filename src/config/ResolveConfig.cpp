@@ -1268,12 +1268,40 @@ DownmixRowPair extractDownmixRows(
   };
 }
 
+// Conservative estimate of the transient N-by-N matrix that
+// `orthogonal-rows` resolution allocates (ADR-0002) before any row is cut
+// from it -- the same shape of estimate checkDiffuserMemoryBudget and
+// checkFeedbackLoopMemoryBudget make for their own mix matrices, applied
+// here so a large Channel count fails as a structured configuration error
+// instead of an uncontrolled allocation.
+std::optional<std::uint64_t> estimateDownmixOrthogonalMatrixBytes(
+    const std::uint32_t channels) noexcept {
+  constexpr std::uint64_t kSampleBytes = 8;
+  const auto matrixElements = checkedMul(channels, channels);
+  return matrixElements ? checkedMul(*matrixElements, kSampleBytes)
+                        : std::nullopt;
+}
+
+void checkDownmixMemoryBudget(
+    const std::uint32_t channels,
+    const std::uint64_t budgetBytes,
+    const std::string_view path) {
+  const auto estimate = estimateDownmixOrthogonalMatrixBytes(channels);
+  if (!estimate.has_value() || *estimate > budgetBytes) {
+    fail(
+        path,
+        "resolved Downmix DSP memory footprint exceeds the configured "
+        "memory budget");
+  }
+}
+
 dsp::ResolvedDownmix resolveDownmix(
     const DownmixConfig& requested,
     const std::uint32_t channels,
     const std::uint64_t seed,
     const dsp::DownmixAlignment alignment,
-    const std::size_t stageIndex) {
+    const std::size_t stageIndex,
+    const std::uint64_t memoryBudgetBytes) {
   const auto strategy =
       requested.strategy.value_or(dsp::DownmixStrategy::select);
   const auto normalisation = requested.normalisation.value_or(
@@ -1331,6 +1359,8 @@ dsp::ResolvedDownmix resolveDownmix(
       leftRow.assign(channels, 0.0);
       rightRow.assign(channels, 0.0);
     } else {
+      checkDownmixMemoryBudget(
+          channels, memoryBudgetBytes, stagePath(stageIndex) + "/strategy");
       auto matrix = resolveRandomOrthogonalMatrix(
           channels, seed, kMainDownmixRandomOrthogonalUsage);
       if (!matrix.has_value()) {
@@ -1532,7 +1562,8 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                       channels,
                       resolved.seed,
                       mainAlignment,
-                      stageIndex));
+                      stageIndex,
+                      memoryBudgetBytes));
             }
           },
           stage);

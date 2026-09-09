@@ -24,10 +24,15 @@ private:
   DownmixStrategy strategy_;
   std::size_t inputChannels_;
   std::size_t outputChannels_;
-  // The compensation-scaled row each output reads: a dense dot product
-  // over every Channel, uniform across strategies (`select`'s rows are
-  // just one-hot) rather than an indexed fast path -- see issue #108.
-  // Allocated once at construction, never resized in processFrame.
+  // `select`'s O(1) fast path: its rows are one-hot, so processFrame reads
+  // a single indexed Channel per output rather than paying for a dense
+  // N-wide dot product over mostly-zero coefficients (issue #108).
+  std::size_t leftChannel_;
+  std::size_t rightChannel_;
+  Sample compensation_;
+  // Every other strategy's dense rows (empty for `select`, which never
+  // reads them). Allocated once at construction, never resized in
+  // processFrame.
   std::vector<Sample> effectiveLeftRow_;
   std::vector<Sample> effectiveRightRow_;
 };

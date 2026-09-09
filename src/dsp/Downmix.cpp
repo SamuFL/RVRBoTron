@@ -20,12 +20,27 @@ Downmix::Downmix(const ResolvedDownmix& config)
     : strategy_(config.strategy),
       inputChannels_(config.inputChannels),
       outputChannels_(config.outputChannels),
-      effectiveLeftRow_(toSampleRow(config.effectiveLeftRow)),
-      effectiveRightRow_(toSampleRow(config.effectiveRightRow)) {}
+      leftChannel_(config.leftChannel.value_or(0)),
+      rightChannel_(
+          config.rightChannel.value_or(config.leftChannel.value_or(0))),
+      compensation_(static_cast<Sample>(config.compensation)),
+      effectiveLeftRow_(
+          config.strategy == DownmixStrategy::select
+              ? std::vector<Sample>()
+              : toSampleRow(config.effectiveLeftRow)),
+      effectiveRightRow_(
+          config.strategy == DownmixStrategy::select
+              ? std::vector<Sample>()
+              : toSampleRow(config.effectiveRightRow)) {}
 
 void Downmix::processFrame(const Sample* const channels,
                            Sample* const* const outputs,
                            const std::size_t frame) const noexcept {
+  if (strategy_ == DownmixStrategy::select) {
+    outputs[0][frame] = channels[leftChannel_] * compensation_;
+    outputs[1][frame] = channels[rightChannel_] * compensation_;
+    return;
+  }
   Sample left{0};
   Sample right{0};
   for (std::size_t channel = 0; channel < inputChannels_; ++channel) {
