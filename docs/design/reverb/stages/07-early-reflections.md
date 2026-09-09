@@ -165,4 +165,8 @@ audio when analysis needs it; DSP retains only the combined branch.
 - `stepIndex` 0 through k−1 at fixed gain — tap depth as a character control.
 - `levelDb` and `decayDbPerSec` independently — branch balance against Early-envelope shape.
 - `select` against `sum-all` — makes the alignment problem audible rather than theoretical.
+- Selected Channel pair at fixed taps — tests whether sign patterns materially
+  change the image.
+- Early width independently of Main width — separates the spatial onset cue
+  from the sustained image.
 - Early reflections off entirely at long RT60 — hear the gap before deciding how much to fill it.

@@ -74,6 +74,14 @@ normalization duplicates the selected Channel with `1/√2` compensation.
 This is an expected-power contract, not exact N→2 energy preservation. Tests use
 seeded unaligned fixtures; analysis reports actual branch and output energy.
 
+Mono compatibility uses equal-power fold-down:
+
+    mono = (L + R) / √2
+
+Analysis reports folded energy relative to stereo energy and octave-band
+spectral deviation. It exposes cancellation, especially above 90° width,
+without imposing an acoustic rejection threshold.
+
 ---
 
 ## Parameters
@@ -126,8 +134,9 @@ evidence. Better than one instance with a hidden branch.
 
 The old diagnostic implementation permits only implicit Channels 0/1
 `select`, compensated by `√(N/2)`; at N=1 it duplicates Channel 0 at `1/√2`.
-It remains reproducible at tag `format-v1-final` and is not accepted by
-format-version-2 builds.
+Its executable archive is recorded in
+[ADR-0006](../../../adr/0006-format-v2-compatibility-boundary.md) and is not
+accepted by format-version-2 builds.
 
 ---
 
@@ -152,7 +161,10 @@ format-version-2 builds.
 ## Worth sweeping early
 
 - `strategy` across all five at N=8 and N=16 — measure L/R correlation and spectral flatness.
-- `widthDeg` 0 / 45 / 90 / 135 / 180 — compare expected and actual energy.
+- Main width 0 / 45 / 90 / 135 / 180 with Early width fixed — compare expected
+  and actual energy independently.
 - `select` against `orthogonal-rows` — tests whether one channel really holds the whole pattern.
 - `select` against aligned `sum-all` — the Coherent Downmix ablation, with no
   validation bypass required.
+- N at fixed strategy and fixed total N-Channel power — verifies compensation
+  without changing the level fixture.

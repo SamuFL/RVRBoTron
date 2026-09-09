@@ -97,12 +97,12 @@ path.
 ```
 
 The abbreviated strings above stand only for the existing typed stage objects.
-The full Reference remains N=8 duplicate Split, the established four-step
-300 ms doubling Diffuser and Feedback Loop settings, and their existing
-Modulation omission/empty-object semantics. Issue 6 does not retune
-Modulation. Its explicit experiment baseline adds the two taps above and an
-`orthogonal-rows`, 90°, energy-normalized Main Downmix. These are Reference
-values for one-axis sweeps, not product defaults.
+The full spatial-output Reference remains N=8 duplicate Split, the established
+four-step 300 ms doubling Diffuser and Feedback Loop settings, and their
+existing Modulation omission/empty-object semantics. Its explicit experiment
+baseline adds the two taps above and an `orthogonal-rows`, 90°,
+energy-normalized Main Downmix. These are Reference values for one-axis sweeps,
+not product defaults.
 
 Omitting `early`, `early: {}`, and `early: {"taps": []}` all mean no branch.
 When taps are omitted or empty, specifying any of `enabled`, `levelDb`,
@@ -130,11 +130,13 @@ empty identity Composition.
 | Tap indices must reference existing diffusion steps | Stage 7 |
 | Delay buffers must cover nominal delay + symmetric modulation Excursion + a worst-case Interpolation margin, and every modulated Channel's resolved delay less that Excursion must exceed the margin | Stage 6 |
 | Resolved step lengths must sum to `totalMs` | Stage 3 |
+| Requested gains, levels, envelope slopes, and width must be finite and in their declared structural domains | Stages 7–8 |
+| Derived tap gains, Downmix rows, compensation, and width matrices must be finite | Stages 7–8 |
 
 Deliberately *not* rejected: ablations. `shuffle: false`, `delayStrategy: even`, `polarity: none`, `normalisation: none` all produce bad reverbs on purpose. The instrument must be able to produce the wrong answer on request.
 
 That policy includes `sum-all` on aligned Early Reflections. Analysis tags it
-as a Coherent Downmix ablation; a matched sweep report may warn and compare its
+as a Coherent Downmix ablation; a matched sweep report warns and compares its
 peak factor and spectral deviation with `select`, but configuration does not
 reject it.
 
@@ -167,10 +169,14 @@ existing quantities and adds only the two domain-separated Downmix usage sites. 
 Every render emits its fully resolved configuration beside the audio: input and output Channel counts, actual step lengths, per-channel delay times in samples and milliseconds, resolved permutations and polarity, every matrix coefficient, Damping ratios and corners, per-Channel shelf gains and coefficients, the 1 kHz response result, per-precision contraction bounds and margins, shelf-state settling evidence, the slowest resolved decay, buffer sizes, and the config format version. Version 2 additionally records canonical tap indices, nominal and modulated Tap support, nominal-endpoint-based tap shaping gains, branch enablement and gains, both 2×N Downmix row sets, compensation, derived Alignment expectations, and both 2×2 width matrices. Coefficients are serialized as binary64-round-trippable JSON numbers so one Resolved Configuration gives float and double DSP the same structure.
 
 Format version 2 intentionally does not load Requested or Resolved reverb
-configuration version 1. The error points to compatibility tag
-`format-v1-final`, commit
-`8a4e7180d77f1281808a7d8dc45aa37e1599f9b1`. Unrelated render, catalog, and
-analysis artifact schema versions remain independent. See
+configuration version 1. The exact error is:
+
+```text
+/formatVersion: reverb configuration format 1 is unsupported by this build; use tag format-v1-final (commit 8a4e718) to render or analyze format-1 configurations
+```
+
+Unrelated render, catalog, and analysis artifact schema versions remain
+independent. See
 [ADR-0006](../../../adr/0006-format-v2-compatibility-boundary.md).
 
 Two reasons. Analysis needs to know what was built rather than what was requested — a doubling distribution over four steps is not something to recompute by hand when reading a plot weeks later. And a resolved configuration re-renders identically, which makes any past experiment reproducible without the original request file.
@@ -203,11 +209,12 @@ load no configuration.
 
 **Research evidence stays outside sonic configuration.** `--capture-stages all` is a renderer option recorded in `render.json`, not part of Requested or Resolved Configuration. It writes manifested multi-Channel Stage captures through an optional capture-sink seam on `Reverb`; see [ADR-0003](../../../adr/0003-capture-internal-stage-evidence.md).
 
-Issue 6 adds optional `early-stereo` and `main-stereo` capture boundaries after
-all branch-local tap shaping, Downmix, width, and branch gain, immediately
-before summation. Their sample-wise sum is the stereo wet output. Explicitly
-capturing a disabled branch writes a correctly sized zero capture; otherwise a
-disabled branch produces no capture file.
+Optional `early-stereo` and `main-stereo` capture boundaries occur after all
+branch-local tap shaping, Downmix, width, and branch gain, immediately before
+summation. Their sample-wise sum is the stereo wet output. Analysis uses them
+to report both branch energies and the cross term implied by combined output.
+Explicitly capturing a disabled branch writes a correctly sized zero capture;
+otherwise a disabled branch produces no capture file.
 
 **Total drain is authorised automatically.** The renderer feeds silence for the resolved Tail budget after source EOF: a Diffuser's own finite response, a Feedback Loop's Tail budget, or their sum when a Diffuser and a Feedback Loop are both present. `render.json` keeps `frames` as output length and adds `inputFrames`; Stage captures share the final output timeline.
 
