@@ -91,7 +91,11 @@ The system is now time-varying, so it is not strictly energy-preserving, and the
 | `channelFraction` | 0–1 | Proportion of Channels modulated, rounded up. 0 disables. |
 | `interpolation` | `lagrange3` / `linear` / `allpass` | Property of the delay line. |
 
-`modulation` is optional wherever it appears. Omission disables it and preserves existing format-version-1 behavior byte-for-byte, including the Resolved Configuration's own bytes. When the object is present, omitted fields resolve to the values above: a meaningful research baseline rather than a product default, and deliberately not a neutral one. Explicit zero depth remains available for identity experiments.
+`modulation` is optional wherever it appears. Omission disables it, matching
+the sonic behavior archived at `format-v1-final`. When the object is present,
+omitted fields resolve to the values above: a meaningful research baseline
+rather than a product default, and deliberately not a neutral one. Explicit
+zero depth remains available for identity experiments.
 
 The modulated Channels are the first ⌈`channelFraction` × N⌉ of a positionally seeded permutation, so raising the fraction never reshuffles Channels that were already modulating and selection stays independent of delay ordering — which matters, since the parameter exists to test what the matrix does. Any non-zero fraction modulates at least one Channel; a fraction that silently rounded to none would be the kind of quiet no-op this project rejects elsewhere.
 

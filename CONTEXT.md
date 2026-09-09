@@ -64,9 +64,29 @@ _Avoid_: Modulation amount
 The diffuser taps mixed in parallel before the reverb tail arrives.
 _Avoid_: Pre-delay
 
+**Tap support**:
+The bounded time span in which a configured diffuser tap can contain energy. Nominal support follows resolved delays; modulated support conservatively includes Excursion and interpolation reach.
+_Avoid_: Tap arrival time
+
+**Early envelope**:
+The level contour formed by the gains and Tap support positions of the configured Early Reflections, without implying feedback decay.
+_Avoid_: Early RT60, early decay time
+
+**Main wet path**:
+The serial path from Split through the configured Diffuser and/or Feedback Loop to its Downmix, mixed in parallel with Early Reflections when present.
+_Avoid_: Tail path
+
 **Downmix**:
 The boundary that maps the internal Channels to stereo output.
 _Avoid_: Output adapter
+
+**Alignment expectation**:
+The structural expectation that a signal is aligned or unaligned based on its path through the Composition, used to choose and analyze Downmix behavior.
+_Avoid_: Alignment score, measured alignment
+
+**Coherent Downmix ablation**:
+An intentional experiment that sums an aligned signal so the audible and measured consequences of coherent reinforcement can be compared with Channel selection.
+_Avoid_: Invalid Downmix
 
 **Aligned**:
 A signal whose Channels carry the same echo times while differing in sign or amplitude.

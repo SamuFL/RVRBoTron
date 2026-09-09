@@ -96,6 +96,13 @@ Length resolution happens at configuration; `Diffuser` holds resolved lengths, n
 
 **Resolved configuration is an output artifact.** Every render emits `resolved.json` beside its WAV — actual step lengths, per-channel delay times, permutations, polarity patterns, and every resolved matrix coefficient. Analysis needs to know what was built rather than what was requested, and recomputing a doubling distribution by hand while reading a plot weeks later is exactly the friction that stops people using their own tools.
 
+**Configured post-step values are an output seam.** The Diffuser accepts an
+optional caller-provided tap accumulator while processing. After each requested
+zero-based step index, it exposes that step's completed N-Channel frame for
+read-only accumulation. The accumulator cannot modify the Diffuser's main
+output, register callbacks, or allocate while audio flows. Stage capture remains
+a separate evidence seam and can record every post-step signal independently.
+
 **The step-count sweep is the canonical experiment**, and it means nothing without the positional seeding rule from Stage 2.
 
 ---
@@ -108,6 +115,8 @@ Length resolution happens at configuration; `Diffuser` holds resolved lengths, n
 - **Length conservation.** Resolved step lengths sum to `totalMs`, within sample rounding.
 - **Seed stability.** Increasing `steps` leaves preceding steps unchanged.
 - **Alignment.** Hadamard cases have perfect arrival-support overlap absent cancellation; every matrix reports Alignment score.
+- **Tap non-interference.** Configuring or accumulating taps leaves the main
+  Diffuser output bit-identical.
 - **No feedback.** Block-size independent.
 
 ---

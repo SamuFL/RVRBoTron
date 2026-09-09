@@ -14,7 +14,7 @@ The internal multi-channel world ends here, and the choices made in compressing 
 
 ## What it does mathematically
 
-An N×2 matrix.
+A 2×N matrix: two output rows over N input Channels.
 
 **It cannot be all-pass, and that's fine.** A map from N dimensions to 2 has rank 2 at most, so energy in the other N−2 dimensions is discarded. No matrix avoids this — it's a property of leaving the multi-channel world.
 
@@ -22,28 +22,57 @@ The concern is not lost energy, which is just a level to compensate, but **patte
 
 ### Two source signals, two rules
 
-The tail arrives **unaligned**, so summing decorrelated channels is safe and captures all the energy. The early reflections arrive **aligned**, so summing reinforces coherently and produces peaks — channel selection is required instead, which Stage 7 handles.
+The tail arrives **unaligned**, so summing decorrelated channels is safe and captures all the energy. The early reflections arrive **aligned**, so summing reinforces coherently and
+produces peaks. Channel selection is the ordinary choice; coherent summing
+remains an explicit measurable ablation handled by Stage 7.
 
 ### Strategies
 
 | Strategy | Method | Notes |
 |---|---|---|
-| `orthogonal-rows` | Two orthonormal rows of a mixing matrix | Maximal L/R decorrelation by construction. Default. |
-| `halves` | First N/2 → L, last N/2 → R | Captures all energy; disjoint channel sets decorrelate well. |
-| `alternating` | Even → L, odd → R | Behaves differently when channel shuffling is disabled. |
-| `select` | Take two channels | Cheapest. Each channel holds a complete echo pattern, but only 2/N of the energy, needing √(N/2) compensation. |
+| `orthogonal-rows` | Two deterministic dense orthonormal rows | Derived from the branch-specific versioned `main-downmix` or `early-downmix` RandomOrthogonal usage site. |
+| `halves` | First ceil(N/2) Channels → L, remainder → R | Each non-empty group has equal coefficients `1/√groupSize`. |
+| `alternating` | Even indices → L, odd indices → R | Each non-empty group has equal coefficients `1/√groupSize`. |
+| `select` | Explicit left Channel and optional right Channel | An omitted right Channel duplicates the left to mono. |
+| `sum-all` | The same `1/√N` row duplicated to L/R | Diagnostic Coherent Downmix ablation. |
 
-### Width as a rotation
+`select` and `sum-all` support N≥1. The other strategies require N≥2.
+Selected Channel indices are zero-based, explicit in Resolved Configuration,
+and must be distinct when both are present.
+
+### Width as a constant-power mid/side law
 
     M = (L + R)/√2      S = (L − R)/√2
-    M′ = M·cos θ − S·sin θ
-    S′ = M·sin θ + S·cos θ
+    M′ = √2·cos(θ/2)·M
+    S′ = √2·sin(θ/2)·S
 
-A 2×2 rotation is orthogonal, so the image changes and the level does not — consistent with how every other energy question here is handled. θ = 0° collapses to mono, 90° is unmodified, beyond widens out of phase. Implementing width as a gain on the side channel instead would couple level and width.
+After reconstructing L/R, 0° is mono, 90° is unchanged, and 180° is
+side-only and out of phase. This preserves expected power when M and S carry
+equal energy, as for decorrelated stereo; it cannot preserve every individual
+signal's energy while also collapsing arbitrary stereo to mono. Actual energy
+change is measured. A mono pre-width signal remains non-spatial and may change
+level or cancel toward 180°.
 
-### Level compensation
+The exact endpoint matrices over the pre-width `[L, R]` vector are:
 
-Each strategy captures a different fraction of internal energy, depending on N. Compensation is computed at configuration from both, so changing strategy or channel count changes the sound and not the level. Together with the 1/√N at Split and matrix normalisation in every step, this is what makes level independence hold end to end.
+    0°   [[1/√2,  1/√2], [ 1/√2,  1/√2]]
+    90°  [[1,     0   ], [ 0,     1   ]]
+    180° [[1/√2, -1/√2], [-1/√2,  1/√2]]
+
+The resolved 90° matrix is an exact identity bypass. Exact matrices are also
+used at 0° and 180°; intermediate matrices are resolved once and serialized, so
+replay does not recompute trigonometry.
+
+### Expected-power normalisation
+
+Every strategy constructs unit-norm rows intrinsically. With
+`normalisation: energy`, a common `√(N/2)` compensation restores the stereo
+reference level under equal-power uncorrelated Channel input. With `none`, that
+common compensation is omitted but row normalization remains. At N=1, energy
+normalization duplicates the selected Channel with `1/√2` compensation.
+
+This is an expected-power contract, not exact N→2 energy preservation. Tests use
+seeded unaligned fixtures; analysis reports actual branch and output energy.
 
 ---
 
@@ -60,8 +89,11 @@ Each strategy captures a different fraction of internal energy, depending on N. 
 | Parameter | Value | Notes |
 |---|---|---|
 | `strategy` | `orthogonal-rows` / `halves` / `alternating` / `select` | |
+| | `sum-all` | Diagnostic Coherent Downmix ablation. |
+| `leftChannel` | zero-based index | Used by `select`. |
+| `rightChannel` | zero-based index or omitted | Used by `select`; omission duplicates left to mono. |
 | `widthDeg` | 0–180 | 0 mono, 90 unmodified, >90 out of phase. |
-| `normalisation` | `energy` / `none` | `none` is diagnostic. |
+| `normalisation` | `energy` / `none` | `none` omits common compensation, not unit-row construction. |
 
 ---
 
@@ -69,8 +101,8 @@ Each strategy captures a different fraction of internal energy, depending on N. 
 
 ```
 Downmix
-  matrix       : N×2
-  width        : 2×2 rotation
+  rows         : 2×N
+  width        : 2×2 mid/side matrix
   compensation : scalar, resolved at configuration
 ```
 
@@ -78,32 +110,49 @@ Downmix
 
 ## What this forces on the architecture
 
-**Downmix must know the alignment of its input.** A summing strategy on an aligned signal produces plausible-sounding, comb-coloured output — a real error that would not announce itself. So each instance is configured with the alignment it expects, and configuration is rejected if a summing strategy meets an aligned source.
+**Downmix records the Alignment expectation of its input.** Composition derives
+that expectation from wiring: direct Diffuser output and taps are aligned;
+Feedback Loop output is unaligned. Requested configuration cannot forge it.
+Summing an aligned source is an acoustically revealing but structurally valid
+ablation, so configuration permits it. Analysis records measured Alignment
+score and tags aligned `sum-all`; matched sweep reports compare it with
+`select`.
 
-A full chain therefore has **two downmix instances**, one for the tail and one for the early reflections, with different valid strategy sets. Better than one instance with a hidden branch.
+A full chain therefore has **two Downmix instances**, one for the Main wet path
+and one for Early Reflections, with independent resolved matrices, width, and
+evidence. Better than one instance with a hidden branch.
 
-### Milestone 2 diagnostic Downmix
+### Format-version-1 diagnostic Downmix
 
-Before the Feedback Loop makes Channels unaligned, the finite Diffuser needs a deliberately narrow listening output. The Milestone 2 Downmix permits only `select`: Channel 0 to left and Channel 1 to right, compensated by √(N/2). At N=1 it duplicates Channel 0 to stereo at 1/√2. This is expected-energy diagnostic output, not an all-pass claim.
-
-The complete Stage 8 strategies, width rotation, and user-selectable normalization remain deferred until spatial output is the active research subject. Exact N-Channel energy and Alignment evidence comes from Stage captures rather than from the diagnostic stereo output.
+The old diagnostic implementation permits only implicit Channels 0/1
+`select`, compensated by `√(N/2)`; at N=1 it duplicates Channel 0 at `1/√2`.
+It remains reproducible at tag `format-v1-final` and is not accepted by
+format-version-2 builds.
 
 ---
 
 ## Invariants
 
-- **Level independence.** Output level unchanged by N, strategy, and `widthDeg`.
-- **Width is a rotation.** Energy at any `widthDeg` equals energy at 90°.
+- **Expected level independence.** Seeded unaligned fixtures of fixed total
+  power, with per-Channel power `1/N` as Split produces, retain expected power
+  across N and strategy within declared tolerance.
+- **Width endpoints.** 0° is mono, 90° is bit-identical bypass, and 180° is
+  side-only and out of phase.
+- **Width evidence.** Expected power is constant on the canonical decorrelated
+  fixture; actual energy change is always reported.
 - **Mono at zero.** `widthDeg: 0` gives L identical to R.
-- **Decorrelation.** On unaligned input at 90°, L/R correlation is near zero.
-- **No coloration.** Long-term average spectrum of the downmixed impulse response is flat within a few dB.
-- **Alignment validation.** Summing strategies on aligned input are rejected at load.
+- **Decorrelation evidence.** Output correlation and inter-channel level
+  difference are reported; no universal acoustic threshold rejects a render.
+- **Spectral evidence.** Max and RMS band deviation are measured against the
+  same N-Channel source's aggregate spectrum.
+- **Alignment provenance.** Resolved expectation must match Composition wiring.
 
 ---
 
 ## Worth sweeping early
 
-- `strategy` across all four at N=8 and N=16 — measure L/R correlation and spectral flatness.
-- `widthDeg` 0 / 45 / 90 / 135 — confirm energy is constant.
+- `strategy` across all five at N=8 and N=16 — measure L/R correlation and spectral flatness.
+- `widthDeg` 0 / 45 / 90 / 135 / 180 — compare expected and actual energy.
 - `select` against `orthogonal-rows` — tests whether one channel really holds the whole pattern.
-- Deliberate misuse: a summing strategy on the early path with validation disabled. The comb coloration made audible once, so it's recognisable later.
+- `select` against aligned `sum-all` — the Coherent Downmix ablation, with no
+  validation bypass required.
