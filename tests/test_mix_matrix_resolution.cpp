@@ -108,7 +108,8 @@ int main() {
       -0.5852900294878902,
       -0.2744846012848514,
   };
-  const auto actualFill = fillRandomOrthogonalSeed(2, 7);
+  const auto actualFill =
+      fillRandomOrthogonalSeed(2, 7, kMixMatrixRandomOrthogonalUsage);
   if (actualFill.size() != expectedFill.size()) {
     std::cerr << "fillRandomOrthogonalSeed(2, 7) returned the wrong size\n";
     return 1;
@@ -119,6 +120,40 @@ int main() {
                    "independently derived fixed vector\n";
       return 1;
     }
+  }
+
+  // The Main Downmix's own domain-separated usage tag ("MAINDNMX", ADR-0002,
+  // issue #108) fills a genuinely different matrix from "MIXORTHO" at the
+  // same (channels, seed) -- branch separation -- independently derived the
+  // same way as expectedFill above, just with the other tag.
+  constexpr std::uint64_t kMainDownmixUsage = 0x4d41494e444e4d58ULL;
+  const std::vector<double> expectedMainDownmixFill{
+      -0.05678428623707443,
+      -0.49216371819247473,
+      0.5601412288335468,
+      0.9342651142760141,
+  };
+  const auto actualMainDownmixFill =
+      fillRandomOrthogonalSeed(2, 7, kMainDownmixUsage);
+  if (actualMainDownmixFill.size() != expectedMainDownmixFill.size()) {
+    std::cerr << "fillRandomOrthogonalSeed(2, 7, MAINDNMX) returned the "
+                 "wrong size\n";
+    return 1;
+  }
+  for (std::size_t index = 0; index < expectedMainDownmixFill.size();
+       ++index) {
+    if (!close(
+            actualMainDownmixFill[index], expectedMainDownmixFill[index],
+            1e-15)) {
+      std::cerr << "fillRandomOrthogonalSeed(2, 7, MAINDNMX) did not match "
+                   "the independently derived fixed vector\n";
+      return 1;
+    }
+  }
+  if (actualMainDownmixFill == actualFill) {
+    std::cerr << "MAINDNMX and MIXORTHO produced the same fill at the same "
+                 "(channels, seed) -- usage tags are not domain-separated\n";
+    return 1;
   }
 
   // Hand-derived QR: A = [[0,1],[1,0]] (already orthogonal) resolves via
@@ -155,7 +190,8 @@ int main() {
   // The end-to-end RandomOrthogonal construction is orthogonal for several
   // Channel counts, including non-powers-of-two, and is repeat-deterministic.
   for (const auto channels : {2U, 3U, 5U, 9U}) {
-    const auto resolved = resolveRandomOrthogonalMatrix(channels, 7);
+    const auto resolved = resolveRandomOrthogonalMatrix(
+        channels, 7, kMixMatrixRandomOrthogonalUsage);
     if (!resolved.has_value()) {
       std::cerr << "resolveRandomOrthogonalMatrix(" << channels
                 << ", 7) unexpectedly reported a singular construction\n";
@@ -166,11 +202,52 @@ int main() {
                 << ", 7) is not orthogonal\n";
       return 1;
     }
-    if (resolveRandomOrthogonalMatrix(channels, 7) != resolved) {
+    if (resolveRandomOrthogonalMatrix(
+            channels, 7, kMixMatrixRandomOrthogonalUsage) != resolved) {
       std::cerr << "resolveRandomOrthogonalMatrix(" << channels
                 << ", 7) was not repeat-deterministic\n";
       return 1;
     }
+  }
+
+  // The Main Downmix's own usage tag resolves a genuinely different, still
+  // orthonormal matrix at the same (channels, seed) -- branch separation
+  // survives the full fill-then-QR construction, not just the dense fill
+  // (already checked above). Rows 0 and 1 match the independently derived
+  // Q from expectedMainDownmixFill's own fill (hand-verified Householder
+  // QR, same sign convention).
+  const auto mainDownmixResolved =
+      resolveRandomOrthogonalMatrix(2, 7, kMainDownmixUsage);
+  if (!mainDownmixResolved.has_value()) {
+    std::cerr << "resolveRandomOrthogonalMatrix(2, 7, MAINDNMX) "
+                 "unexpectedly reported a singular construction\n";
+    return 1;
+  }
+  if (!isOrthogonal(*mainDownmixResolved, 2, 1e-9)) {
+    std::cerr << "resolveRandomOrthogonalMatrix(2, 7, MAINDNMX) is not "
+                 "orthogonal\n";
+    return 1;
+  }
+  const std::vector<double> expectedMainDownmixQ{
+      -0.10085801681611817,
+      -0.9949008294518201,
+      0.9949008294518201,
+      -0.10085801681611806,
+  };
+  for (std::size_t index = 0; index < expectedMainDownmixQ.size(); ++index) {
+    if (!close(
+            (*mainDownmixResolved)[index], expectedMainDownmixQ[index],
+            1e-9)) {
+      std::cerr << "resolveRandomOrthogonalMatrix(2, 7, MAINDNMX) did not "
+                   "match the independently derived fixed vector\n";
+      return 1;
+    }
+  }
+  if (*mainDownmixResolved ==
+      *resolveRandomOrthogonalMatrix(2, 7, kMixMatrixRandomOrthogonalUsage)) {
+    std::cerr << "MAINDNMX and MIXORTHO resolved the same orthogonal "
+                 "matrix at the same (channels, seed)\n";
+    return 1;
   }
 
   return 0;

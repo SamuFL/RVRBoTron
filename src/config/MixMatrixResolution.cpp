@@ -8,11 +8,6 @@
 namespace rvrbotron::config {
 namespace {
 
-// The RandomOrthogonal dense fill is shared across Diffusion Steps rather
-// than derived per step, so its positional derivation uses (row, column)
-// in place of (step index, Channel); see ADR-0002.
-constexpr std::uint64_t kRandomOrthogonalFillUsage = 0x4d49584f5254484fULL;
-
 bool hasOddParity(std::uint32_t value) noexcept {
   bool odd = false;
   while (value != 0) {
@@ -73,13 +68,15 @@ std::vector<double> resolveHouseholderMatrix(const std::uint32_t channels) {
 }
 
 std::vector<double> fillRandomOrthogonalSeed(
-    const std::uint32_t channels, const std::uint64_t seed) {
+    const std::uint32_t channels,
+    const std::uint64_t seed,
+    const std::uint64_t usage) {
   std::vector<double> matrix(
       static_cast<std::size_t>(channels) * channels);
   for (std::uint32_t row = 0; row < channels; ++row) {
     for (std::uint32_t column = 0; column < channels; ++column) {
       const auto unit = dsp::positionalUnitDoubleV1(
-          seed, kRandomOrthogonalFillUsage, row, column);
+          seed, usage, row, column);
       matrix[static_cast<std::size_t>(row) * channels + column] =
           -1.0 + 2.0 * unit;
     }
@@ -157,9 +154,11 @@ std::optional<std::vector<double>> householderQrOrthogonalize(
 }
 
 std::optional<std::vector<double>> resolveRandomOrthogonalMatrix(
-    const std::uint32_t channels, const std::uint64_t seed) {
+    const std::uint32_t channels,
+    const std::uint64_t seed,
+    const std::uint64_t usage) {
   return householderQrOrthogonalize(
-      fillRandomOrthogonalSeed(channels, seed), channels);
+      fillRandomOrthogonalSeed(channels, seed, usage), channels);
 }
 
 } // namespace rvrbotron::config

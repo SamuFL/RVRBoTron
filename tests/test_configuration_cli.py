@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import math
 import shutil
 import struct
 import subprocess
@@ -36,6 +37,44 @@ def read_float_wav(path: Path):
     else:
         raise AssertionError(f"unexpected bits per sample: {bits_per_sample}")
     return channels, samples
+
+
+def deinterleave(channels: int, samples):
+    return [samples[channel::channels] for channel in range(channels)]
+
+
+def pearson_correlation(a, b):
+    mean_a = math.fsum(a) / len(a)
+    mean_b = math.fsum(b) / len(b)
+    centered_a = [x - mean_a for x in a]
+    centered_b = [x - mean_b for x in b]
+    numerator = math.fsum(x * y for x, y in zip(centered_a, centered_b))
+    denominator = math.sqrt(
+        math.fsum(x * x for x in centered_a)
+        * math.fsum(y * y for y in centered_b)
+    )
+    if denominator == 0.0:
+        return 0.0
+    return numerator / denominator
+
+
+def dft_power_spectrum(samples):
+    # A direct O(n^2) DFT is fine here: fixtures below are a few dozen
+    # samples (a millisecond-scale Diffuser response), not a signal this
+    # test suite needs FFT-scale performance for.
+    n = len(samples)
+    power = []
+    for k in range(n // 2 + 1):
+        real = math.fsum(
+            value * math.cos(-2.0 * math.pi * k * t / n)
+            for t, value in enumerate(samples)
+        )
+        imag = math.fsum(
+            value * math.sin(-2.0 * math.pi * k * t / n)
+            for t, value in enumerate(samples)
+        )
+        power.append(real * real + imag * imag)
+    return power
 
 
 def run_renderer(renderer: Path, *arguments: str):
@@ -1483,6 +1522,333 @@ def main():
                 f"({actual_left}, {actual_right}) != "
                 f"({expected_left}, {expected_right})"
             )
+
+    # orthogonal-rows (#108): the dense branch-specific RandomOrthogonal
+    # Main Downmix. Two N values, each a Diffuser-only fixed-total-power
+    # fixture (Split's own energy normalisation keeps per-Channel power at
+    # 1/N of the fixed impulse energy, matching the design's expected-power
+    # fixture), captured with --capture-stages all so the N-Channel signal
+    # entering the Downmix is available for level/correlation/spectral
+    # evidence.
+    orthogonal_rows_energy_by_channels = {}
+    for orthogonal_rows_channels in (4, 8):
+        orthogonal_request_path = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-request.json"
+        )
+        orthogonal_result = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-result"
+        )
+        orthogonal_rerender = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-rerender"
+        )
+        orthogonal_request_path.write_text(
+            json.dumps(
+                {
+                    "formatVersion": 2,
+                    "seed": 42,
+                    "composition": {
+                        "stages": [
+                            {
+                                "type": "split",
+                                "channels": orthogonal_rows_channels,
+                                "strategy": "duplicate",
+                                "normalisation": "energy",
+                            },
+                            {
+                                "type": "diffuser",
+                                "steps": 1,
+                                "totalMs": 1,
+                                "distribution": "even",
+                                "step": {
+                                    "delayStrategy": "segmented-random",
+                                    "mix": "hadamard",
+                                    "shuffle": True,
+                                    "polarity": "seeded-random",
+                                },
+                            },
+                            {
+                                "type": "downmix",
+                                "strategy": "orthogonal-rows",
+                                "normalisation": "energy",
+                            },
+                        ]
+                    },
+                }
+            )
+        )
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                orthogonal_request_path,
+                "--capture-stages",
+                "all",
+                "--output",
+                orthogonal_result,
+            )
+        )
+        orthogonal_downmix = json.loads(
+            (orthogonal_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if (
+            "leftChannel" in orthogonal_downmix
+            or "rightChannel" in orthogonal_downmix
+        ):
+            raise AssertionError(
+                f"orthogonal-rows resolved a Channel selection it has no "
+                f"use for: {orthogonal_downmix}"
+            )
+        expected_compensation = math.sqrt(orthogonal_rows_channels / 2.0)
+        if (
+            orthogonal_downmix["strategy"] != "orthogonal-rows"
+            or abs(
+                orthogonal_downmix["compensation"] - expected_compensation
+            )
+            > 1e-9
+            or len(orthogonal_downmix["leftRow"]) != orthogonal_rows_channels
+            or len(orthogonal_downmix["rightRow"]) != orthogonal_rows_channels
+            or orthogonal_downmix["alignment"] != "aligned"
+        ):
+            raise AssertionError(
+                f"unexpected orthogonal-rows resolved Downmix: "
+                f"{orthogonal_downmix}"
+            )
+        left_row = orthogonal_downmix["leftRow"]
+        right_row = orthogonal_downmix["rightRow"]
+
+        def row_dot(a, b):
+            return math.fsum(x * y for x, y in zip(a, b))
+
+        if (
+            abs(row_dot(left_row, left_row) - 1.0) > 1e-9
+            or abs(row_dot(right_row, right_row) - 1.0) > 1e-9
+            or abs(row_dot(left_row, right_row)) > 1e-9
+        ):
+            raise AssertionError(
+                f"orthogonal-rows leftRow/rightRow are not orthonormal: "
+                f"{orthogonal_downmix}"
+            )
+        for row_name, row, effective_row_name in (
+            ("leftRow", left_row, "effectiveLeftRow"),
+            ("rightRow", right_row, "effectiveRightRow"),
+        ):
+            expected_effective_row = [
+                value * expected_compensation for value in row
+            ]
+            actual_effective_row = orthogonal_downmix[effective_row_name]
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(
+                    actual_effective_row, expected_effective_row
+                )
+            ):
+                raise AssertionError(
+                    f"{effective_row_name} did not match {row_name} scaled "
+                    f"by compensation: {orthogonal_downmix}"
+                )
+
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--resolved",
+                orthogonal_result / "resolved.json",
+                "--output",
+                orthogonal_rerender,
+            )
+        )
+        if (orthogonal_rerender / "resolved.json").read_bytes() != (
+            orthogonal_result / "resolved.json"
+        ).read_bytes():
+            raise AssertionError(
+                "orthogonal-rows resolved rerender changed configuration"
+            )
+        if (orthogonal_rerender / "output.wav").read_bytes() != (
+            orthogonal_result / "output.wav"
+        ).read_bytes():
+            raise AssertionError("orthogonal-rows resolved rerender changed output")
+
+        output_channels, output_samples = read_float_wav(
+            orthogonal_result / "output.wav"
+        )
+        diffusion_channels, diffusion_samples = read_float_wav(
+            orthogonal_result / "captures" / "01-diffusion-step-0.wav"
+        )
+        if output_channels != 2 or diffusion_channels != orthogonal_rows_channels:
+            raise AssertionError(
+                f"unexpected Channel counts at N={orthogonal_rows_channels}: "
+                f"output={output_channels}, "
+                f"captured diffusion-step={diffusion_channels}"
+            )
+        left, right = deinterleave(2, output_samples)
+        source_channels = deinterleave(
+            orthogonal_rows_channels, diffusion_samples
+        )
+
+        # Expected level: total downmix output energy, compared across N
+        # below (compensation is designed to keep it roughly independent of
+        # N under this fixed-total-power fixture -- an expected-power
+        # contract, not exact per-instance equality; see issue #108 and
+        # docs/design/reverb/stages/08-downmix.md).
+        output_energy = math.fsum(v * v for v in left) + math.fsum(
+            v * v for v in right
+        )
+        orthogonal_rows_energy_by_channels[orthogonal_rows_channels] = (
+            output_energy
+        )
+
+        # Output correlation: finite and within the mathematically valid
+        # range, reported rather than gated against an acoustic threshold
+        # (no universal pass/fail on decorrelation -- see the parent spec's
+        # Out of Scope).
+        correlation = pearson_correlation(left, right)
+        if not math.isfinite(correlation) or abs(correlation) > 1.0 + 1e-9:
+            raise AssertionError(
+                f"orthogonal-rows Output correlation is not a valid "
+                f"correlation coefficient at N={orthogonal_rows_channels}: "
+                f"{correlation}"
+            )
+
+        # Spectral evidence: the downmixed L/R power spectra against the
+        # same N-Channel source's aggregate power spectrum, reported as
+        # max/RMS band deviation -- again exposed as evidence, not an
+        # acoustic pass/fail (docs/design/reverb/stages/08-downmix.md's own
+        # "Worth sweeping early" and Invariants sections).
+        aggregate_source_power = [0.0] * (len(left) // 2 + 1)
+        for channel_samples in source_channels:
+            channel_power = dft_power_spectrum(channel_samples)
+            aggregate_source_power = [
+                total + value
+                for total, value in zip(aggregate_source_power, channel_power)
+            ]
+        left_power = dft_power_spectrum(left)
+        right_power = dft_power_spectrum(right)
+        deviations = [
+            abs(l + r - aggregate)
+            for l, r, aggregate in zip(
+                left_power, right_power, aggregate_source_power
+            )
+        ]
+        if not all(math.isfinite(value) for value in deviations):
+            raise AssertionError(
+                f"orthogonal-rows spectral deviation is not finite at "
+                f"N={orthogonal_rows_channels}"
+            )
+        max_deviation = max(deviations)
+        rms_deviation = math.sqrt(
+            math.fsum(value * value for value in deviations) / len(deviations)
+        )
+        if not (math.isfinite(max_deviation) and math.isfinite(rms_deviation)):
+            raise AssertionError(
+                f"orthogonal-rows spectral evidence did not resolve to "
+                f"finite max/RMS band deviation at N="
+                f"{orthogonal_rows_channels}"
+            )
+
+    # Expected-level independence across N (within a generous tolerance --
+    # an expected-power contract over a single seeded realization, not
+    # exact equality; see docs/design/reverb/stages/08-downmix.md).
+    energies = list(orthogonal_rows_energy_by_channels.values())
+    if max(energies) > 3.0 * min(energies):
+        raise AssertionError(
+            f"orthogonal-rows output energy was not roughly level-"
+            f"independent of N: {orthogonal_rows_energy_by_channels}"
+        )
+
+    # normalisation: "none" omits only the common compensation scalar --
+    # rows stay the same unit-norm intrinsic rows as under "energy", but
+    # compensation and the effective rows collapse to 1.0/row itself.
+    orthogonal_none_document = json.loads(orthogonal_request_path.read_text())
+    orthogonal_none_document["composition"]["stages"][2][
+        "normalisation"
+    ] = "none"
+    orthogonal_none_request = workspace / "orthogonal-rows-none-request.json"
+    orthogonal_none_request.write_text(json.dumps(orthogonal_none_document))
+    orthogonal_none_result = workspace / "orthogonal-rows-none-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            orthogonal_none_request,
+            "--output",
+            orthogonal_none_result,
+        )
+    )
+    orthogonal_none_downmix = json.loads(
+        (orthogonal_none_result / "resolved.json").read_text()
+    )["composition"]["stages"][2]
+    if (
+        orthogonal_none_downmix["normalisation"] != "none"
+        or orthogonal_none_downmix["compensation"] != 1.0
+        or orthogonal_none_downmix["leftRow"] != orthogonal_none_downmix["effectiveLeftRow"]
+        or orthogonal_none_downmix["rightRow"] != orthogonal_none_downmix["effectiveRightRow"]
+    ):
+        raise AssertionError(
+            f"unexpected orthogonal-rows none-normalisation resolved "
+            f"Downmix: {orthogonal_none_downmix}"
+        )
+
+    # orthogonal-rows requires N >= 2: no row 1 exists at N=1.
+    orthogonal_single_channel_document = json.loads(
+        orthogonal_request_path.read_text()
+    )
+    orthogonal_single_channel_document["composition"]["stages"][0][
+        "channels"
+    ] = 1
+    orthogonal_single_channel_request = (
+        workspace / "orthogonal-rows-single-channel-request.json"
+    )
+    orthogonal_single_channel_request.write_text(
+        json.dumps(orthogonal_single_channel_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            orthogonal_single_channel_request,
+            "--output",
+            workspace / "orthogonal-rows-single-channel-result",
+        ),
+        "/composition/stages/2/strategy: "
+        "orthogonal-rows requires at least two Channels",
+        workspace / "orthogonal-rows-single-channel-result",
+    )
+
+    # leftChannel/rightChannel are `select`-specific: providing either
+    # alongside orthogonal-rows is rejected, not silently ignored.
+    orthogonal_with_left_channel_document = json.loads(
+        orthogonal_request_path.read_text()
+    )
+    orthogonal_with_left_channel_document["composition"]["stages"][2][
+        "leftChannel"
+    ] = 0
+    orthogonal_with_left_channel_request = (
+        workspace / "orthogonal-rows-with-left-channel-request.json"
+    )
+    orthogonal_with_left_channel_request.write_text(
+        json.dumps(orthogonal_with_left_channel_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            orthogonal_with_left_channel_request,
+            "--output",
+            workspace / "orthogonal-rows-with-left-channel-result",
+        ),
+        "/composition/stages/2/leftChannel: "
+        "not applicable to strategy orthogonal-rows",
+        workspace / "orthogonal-rows-with-left-channel-result",
+    )
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))

@@ -4,6 +4,7 @@
 #include "rvrbotron/dsp/Sample.h"
 
 #include <cstddef>
+#include <vector>
 
 namespace rvrbotron::dsp {
 
@@ -23,11 +24,12 @@ private:
   DownmixStrategy strategy_;
   std::size_t inputChannels_;
   std::size_t outputChannels_;
-  std::size_t leftChannel_;
-  // Equals leftChannel_ under mono duplication (an omitted Resolved
-  // rightChannel), so processFrame needs no separate duplication branch.
-  std::size_t rightChannel_;
-  Sample compensation_;
+  // The compensation-scaled row each output reads: a dense dot product
+  // over every Channel, uniform across strategies (`select`'s rows are
+  // just one-hot) rather than an indexed fast path -- see issue #108.
+  // Allocated once at construction, never resized in processFrame.
+  std::vector<Sample> effectiveLeftRow_;
+  std::vector<Sample> effectiveRightRow_;
 };
 
 } // namespace rvrbotron::dsp

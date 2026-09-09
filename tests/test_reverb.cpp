@@ -1120,6 +1120,113 @@ int main() {
     }
   }
 
+  // orthogonal-rows (#108): rows 0 and 1 of the MAINDNMX-tagged N-by-N
+  // RandomOrthogonal matrix at (channels=4, seed=7), independently
+  // derived the same way as test_mix_matrix_resolution.cpp's own MAINDNMX
+  // fixed vectors (hand-verified Householder QR, same sign convention).
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    rvrbotron::config::DownmixConfig orthogonalRowsDownmix;
+    orthogonalRowsDownmix.strategy =
+        rvrbotron::dsp::DownmixStrategy::orthogonalRows;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(orthogonalRowsDownmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (downmix.leftChannel.has_value() ||
+        downmix.rightChannel.has_value()) {
+      std::cerr << "orthogonal-rows resolved a leftChannel/rightChannel "
+                   "it has no use for\n";
+      return 1;
+    }
+    const std::array<double, 4> expectedRow0{
+        -0.06277167196100764, 0.4333697441536047, 0.20815530399484583,
+        -0.8745980513757576};
+    const std::array<double, 4> expectedRow1{
+        0.6192030189721484, -0.6680724091585977, -0.10215450256737603,
+        -0.39978911318596055};
+    const auto expectedCompensation = std::sqrt(2.0);
+    if (downmix.compensation != expectedCompensation) {
+      std::cerr << "orthogonal-rows compensation did not match sqrt(N/2)\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (std::abs(downmix.leftRow[index] - expectedRow0[index]) > 1e-9 ||
+          std::abs(downmix.rightRow[index] - expectedRow1[index]) > 1e-9) {
+        std::cerr << "orthogonal-rows leftRow/rightRow did not match the "
+                     "independently derived MAINDNMX fixed vector\n";
+        return 1;
+      }
+      if (std::abs(
+              downmix.effectiveLeftRow[index] -
+              expectedRow0[index] * expectedCompensation) > 1e-9 ||
+          std::abs(
+              downmix.effectiveRightRow[index] -
+              expectedRow1[index] * expectedCompensation) > 1e-9) {
+        std::cerr << "orthogonal-rows effective rows did not match rows "
+                     "scaled by compensation\n";
+        return 1;
+      }
+    }
+    if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "orthogonal-rows Diffuser-only Downmix did not resolve "
+                   "aligned\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::Reverb orthogonalReverb(resolved);
+    std::array<rvrbotron::dsp::Sample, 1> orthogonalInput{
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 1> orthogonalLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> orthogonalRight{};
+    const rvrbotron::dsp::Sample* orthogonalInputs[]{
+        orthogonalInput.data()};
+    rvrbotron::dsp::Sample* orthogonalOutputs[]{
+        orthogonalLeft.data(), orthogonalRight.data()};
+    beginAllocationCount();
+    orthogonalReverb.process(orthogonalInputs, 1, orthogonalOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "orthogonal-rows Downmix allocated while processing\n";
+      return 1;
+    }
+
+    // N=1 has no row 1 to select: orthogonal-rows requires N >= 2.
+    auto singleChannelComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(
+        singleChannelComposition.stages[0])
+        .channels = 1;
+    rvrbotron::config::ReverbConfig singleChannelRequested;
+    singleChannelRequested.formatVersion = 2;
+    singleChannelRequested.seed = 7;
+    singleChannelRequested.composition = std::move(singleChannelComposition);
+    bool singleChannelRejected = false;
+    try {
+      static_cast<void>(rvrbotron::config::resolveConfig(
+          singleChannelRequested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      singleChannelRejected = true;
+    }
+    if (!singleChannelRejected) {
+      std::cerr << "resolveConfig accepted orthogonal-rows at N=1\n";
+      return 1;
+    }
+  }
+
   for (const auto channels : {1U, 2U, 4U, 8U, 16U}) {
     if (!reverbDiffusionStepIsAllPass(channels)) {
       std::cerr << "Diffusion Step changed pseudo-random input energy at "

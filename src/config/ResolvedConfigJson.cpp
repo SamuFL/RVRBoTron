@@ -26,6 +26,18 @@ const char* normalisationName(
       "unsupported normalisation");
 }
 
+const char* downmixStrategyName(const dsp::DownmixStrategy strategy) {
+  switch (strategy) {
+  case dsp::DownmixStrategy::select:
+    return "select";
+  case dsp::DownmixStrategy::orthogonalRows:
+    return "orthogonal-rows";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Downmix strategy");
+}
+
 const char* downmixAlignmentName(const dsp::DownmixAlignment alignment) {
   switch (alignment) {
   case dsp::DownmixAlignment::aligned:
@@ -284,8 +296,7 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
       {"type", "downmix"},
       {"inputChannels", downmix.inputChannels},
       {"outputChannels", downmix.outputChannels},
-      {"strategy", "select"},
-      {"leftChannel", downmix.leftChannel},
+      {"strategy", downmixStrategyName(downmix.strategy)},
       {"normalisation", normalisationName(downmix.normalisation)},
       {"compensation", downmix.compensation},
       {"leftRow", downmix.leftRow},
@@ -294,9 +305,13 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
       {"effectiveRightRow", downmix.effectiveRightRow},
       {"alignment", downmixAlignmentName(downmix.alignment)},
   };
-  // Omitted entirely (rather than emitted equal to leftChannel), so mono
-  // duplication round-trips as omission rather than as a distinct-looking
-  // but coincidentally equal Channel pair (see issue #107).
+  // leftChannel/rightChannel are `select`-specific (issue #108) and,
+  // within `select`, an omitted rightChannel means mono duplication
+  // (issue #107) -- both omitted entirely rather than emitted null/equal,
+  // so neither shape is confused with a coincidentally-equal Channel pair.
+  if (downmix.leftChannel.has_value()) {
+    document["leftChannel"] = *downmix.leftChannel;
+  }
   if (downmix.rightChannel.has_value()) {
     document["rightChannel"] = *downmix.rightChannel;
   }

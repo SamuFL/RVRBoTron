@@ -59,6 +59,15 @@ constexpr std::uint64_t kDiffusionModulationSeedUsage =
     0x44535445504d5344ULL;
 constexpr std::uint64_t kDiffusionModulationChannelSelectionUsage =
     0x44535445504d4353ULL;
+// The Main Downmix's own domain-separated RandomOrthogonal usage tag
+// ("MAINDNMX", ADR-0002, issue #108) -- distinct from
+// kMixMatrixRandomOrthogonalUsage ("MIXORTHO"), which the Diffuser and
+// Feedback Loop's own `random-orthogonal` mix continues to use unchanged,
+// so the two domains never draw the same value for the same (seed,
+// row/column). The future Early Reflections Downmix gets its own
+// "EARLDNMX" tag rather than reusing this one.
+constexpr std::uint64_t kMainDownmixRandomOrthogonalUsage =
+    0x4d41494e444e4d58ULL;
 
 [[noreturn]] void fail(const std::string_view path,
                        const std::string_view reason) {
@@ -843,7 +852,8 @@ dsp::ResolvedDiffuser resolveDiffuser(
         cachedMatrix = resolveHouseholderMatrix(channels);
         break;
       case dsp::MixMatrixType::randomOrthogonal: {
-        auto randomOrthogonal = resolveRandomOrthogonalMatrix(channels, seed);
+        auto randomOrthogonal = resolveRandomOrthogonalMatrix(
+            channels, seed, kMixMatrixRandomOrthogonalUsage);
         if (!randomOrthogonal.has_value()) {
           fail(
               "/composition/stages/1/steps/" + std::to_string(index) +
@@ -1057,7 +1067,8 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
     loop.matrix = resolveHouseholderMatrix(channels);
     break;
   case dsp::MixMatrixType::randomOrthogonal: {
-    auto randomOrthogonal = resolveRandomOrthogonalMatrix(channels, seed);
+    auto randomOrthogonal = resolveRandomOrthogonalMatrix(
+        channels, seed, kMixMatrixRandomOrthogonalUsage);
     if (!randomOrthogonal.has_value()) {
       fail(
           stagePath(stageIndex) + "/mix",
@@ -1239,9 +1250,28 @@ std::vector<double> scaledRow(
   return scaled;
 }
 
+struct DownmixRowPair {
+  std::vector<double> left;
+  std::vector<double> right;
+};
+
+// `orthogonal-rows`' intrinsic rows: rows 0 and 1 of a resolved dense
+// N-by-N matrix (ADR-0002). Shared by resolveDownmix and
+// validateResolvedConfig so the two never drift on how a row pair is cut
+// from the flat row-major matrix.
+DownmixRowPair extractDownmixRows(
+    const std::vector<double>& matrix, const std::uint32_t channels) {
+  return {
+      std::vector<double>(matrix.begin(), matrix.begin() + channels),
+      std::vector<double>(
+          matrix.begin() + channels, matrix.begin() + 2 * channels),
+  };
+}
+
 dsp::ResolvedDownmix resolveDownmix(
     const DownmixConfig& requested,
     const std::uint32_t channels,
+    const std::uint64_t seed,
     const dsp::DownmixAlignment alignment,
     const std::size_t stageIndex) {
   const auto strategy =
@@ -1256,18 +1286,64 @@ dsp::ResolvedDownmix resolveDownmix(
                 : channels == 1
                 ? 1.0 / std::sqrt(2.0)
                 : std::sqrt(static_cast<double>(channels) / 2.0);
-  // No fallback: `select` has no implicit Channel choice (issue #107), so
-  // a caller that reaches this without the JSON boundary's requireField
-  // (e.g. a direct C++ ReverbConfig construction) must still be rejected
-  // here rather than silently resolving to the archived Channel-0 default.
-  if (!requested.leftChannel.has_value()) {
-    fail(stagePath(stageIndex) + "/leftChannel", "required field is missing");
+
+  std::optional<std::uint32_t> leftChannel;
+  std::optional<std::uint32_t> rightChannel;
+  std::vector<double> leftRow;
+  std::vector<double> rightRow;
+
+  if (strategy == dsp::DownmixStrategy::select) {
+    // No fallback: `select` has no implicit Channel choice (issue #107),
+    // so a caller that reaches this without the JSON boundary's
+    // requireField (e.g. a direct C++ ReverbConfig construction) must
+    // still be rejected here rather than silently resolving to the
+    // archived Channel-0 default.
+    if (!requested.leftChannel.has_value()) {
+      fail(
+          stagePath(stageIndex) + "/leftChannel",
+          "required field is missing");
+    }
+    leftChannel = requested.leftChannel;
+    rightChannel = requested.rightChannel;
+    leftRow = selectRow(*leftChannel, channels);
+    rightRow = rightChannel.has_value()
+        ? selectRow(*rightChannel, channels)
+        : leftRow;
+  } else {
+    // leftChannel/rightChannel are `select`-specific (issue #108): a
+    // direct C++ construction that sets either alongside another
+    // strategy is rejected here too, mirroring the JSON boundary.
+    if (requested.leftChannel.has_value()) {
+      fail(
+          stagePath(stageIndex) + "/leftChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
+    if (requested.rightChannel.has_value()) {
+      fail(
+          stagePath(stageIndex) + "/rightChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
+    // orthogonal-rows requires N >= 2 to have a distinct row 1; resolution
+    // runs before validateResolvedConfig can reject a shorter N, so this
+    // defensively resolves an all-zero placeholder rather than indexing
+    // past the 0- or 1-row matrix fillRandomOrthogonalSeed would build.
+    if (channels < 2) {
+      leftRow.assign(channels, 0.0);
+      rightRow.assign(channels, 0.0);
+    } else {
+      auto matrix = resolveRandomOrthogonalMatrix(
+          channels, seed, kMainDownmixRandomOrthogonalUsage);
+      if (!matrix.has_value()) {
+        fail(
+            stagePath(stageIndex) + "/strategy",
+            "RandomOrthogonal construction was singular or near-singular");
+      }
+      auto rows = extractDownmixRows(*matrix, channels);
+      leftRow = std::move(rows.left);
+      rightRow = std::move(rows.right);
+    }
   }
-  const auto leftChannel = *requested.leftChannel;
-  auto leftRow = selectRow(leftChannel, channels);
-  auto rightRow = requested.rightChannel.has_value()
-      ? selectRow(*requested.rightChannel, channels)
-      : leftRow;
+
   auto effectiveLeftRow = scaledRow(leftRow, compensation);
   auto effectiveRightRow = scaledRow(rightRow, compensation);
   return {
@@ -1275,7 +1351,7 @@ dsp::ResolvedDownmix resolveDownmix(
       2,
       strategy,
       leftChannel,
-      requested.rightChannel,
+      rightChannel,
       normalisation,
       compensation,
       std::move(leftRow),
@@ -1452,7 +1528,11 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
             } else {
               resolved.composition.stages.emplace_back(
                   resolveDownmix(
-                      stageConfig, channels, mainAlignment, stageIndex));
+                      stageConfig,
+                      channels,
+                      resolved.seed,
+                      mainAlignment,
+                      stageIndex));
             }
           },
           stage);
@@ -2727,26 +2807,44 @@ void validateResolvedConfig(
         stagePath(downmixIndex),
         "Downmix dimensions must map the internal Channels to stereo");
   }
-  if (downmix.strategy != dsp::DownmixStrategy::select) {
-    fail(
-        stagePath(downmixIndex) + "/strategy",
-        "the first diffusion slice requires select");
-  }
-  if (downmix.leftChannel >= channels) {
-    fail(
-        stagePath(downmixIndex) + "/leftChannel",
-        "expected a Channel index within [0, N)");
-  }
-  if (downmix.rightChannel.has_value()) {
-    if (*downmix.rightChannel >= channels) {
+  if (downmix.strategy == dsp::DownmixStrategy::select) {
+    if (!downmix.leftChannel.has_value()) {
       fail(
-          stagePath(downmixIndex) + "/rightChannel",
+          stagePath(downmixIndex) + "/leftChannel",
+          "required field is missing");
+    }
+    if (*downmix.leftChannel >= channels) {
+      fail(
+          stagePath(downmixIndex) + "/leftChannel",
           "expected a Channel index within [0, N)");
     }
-    if (*downmix.rightChannel == downmix.leftChannel) {
+    if (downmix.rightChannel.has_value()) {
+      if (*downmix.rightChannel >= channels) {
+        fail(
+            stagePath(downmixIndex) + "/rightChannel",
+            "expected a Channel index within [0, N)");
+      }
+      if (*downmix.rightChannel == *downmix.leftChannel) {
+        fail(
+            stagePath(downmixIndex) + "/rightChannel",
+            "expected a Channel distinct from leftChannel");
+      }
+    }
+  } else {
+    if (downmix.leftChannel.has_value()) {
+      fail(
+          stagePath(downmixIndex) + "/leftChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
+    if (downmix.rightChannel.has_value()) {
       fail(
           stagePath(downmixIndex) + "/rightChannel",
-          "expected a Channel distinct from leftChannel");
+          "not applicable to strategy orthogonal-rows");
+    }
+    if (channels < 2) {
+      fail(
+          stagePath(downmixIndex) + "/strategy",
+          "orthogonal-rows requires at least two Channels");
     }
   }
   if (!(downmix.compensation > 0.0) ||
@@ -2776,19 +2874,34 @@ void validateResolvedConfig(
         stagePath(downmixIndex) + "/compensation",
         "expected gain derived from Downmix normalisation");
   }
-  const auto expectedLeftRow = selectRow(downmix.leftChannel, channels);
-  const auto expectedRightRow = downmix.rightChannel.has_value()
-      ? selectRow(*downmix.rightChannel, channels)
-      : expectedLeftRow;
+  std::vector<double> expectedLeftRow;
+  std::vector<double> expectedRightRow;
+  if (downmix.strategy == dsp::DownmixStrategy::select) {
+    expectedLeftRow = selectRow(*downmix.leftChannel, channels);
+    expectedRightRow = downmix.rightChannel.has_value()
+        ? selectRow(*downmix.rightChannel, channels)
+        : expectedLeftRow;
+  } else {
+    auto matrix = resolveRandomOrthogonalMatrix(
+        channels, resolved.seed, kMainDownmixRandomOrthogonalUsage);
+    if (!matrix.has_value()) {
+      fail(
+          stagePath(downmixIndex) + "/strategy",
+          "RandomOrthogonal construction was singular or near-singular");
+    }
+    auto rows = extractDownmixRows(*matrix, channels);
+    expectedLeftRow = std::move(rows.left);
+    expectedRightRow = std::move(rows.right);
+  }
   if (downmix.leftRow != expectedLeftRow) {
     fail(
         stagePath(downmixIndex) + "/leftRow",
-        "expected the unit-norm row derived from leftChannel");
+        "expected the unit-norm row derived from strategy");
   }
   if (downmix.rightRow != expectedRightRow) {
     fail(
         stagePath(downmixIndex) + "/rightRow",
-        "expected the unit-norm row derived from rightChannel");
+        "expected the unit-norm row derived from strategy");
   }
   if (downmix.effectiveLeftRow !=
       scaledRow(expectedLeftRow, downmix.compensation)) {
