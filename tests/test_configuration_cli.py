@@ -58,6 +58,42 @@ def zero_lag_correlation(a, b):
     return numerator / denominator
 
 
+def halves_row(channels, left_group):
+    # `halves` (#110): the first ceil(N/2) Channels map left, the
+    # remainder maps right, each group using equal 1/sqrt(groupSize)
+    # coefficients -- an independent Python re-derivation of
+    # src/config/ResolveConfig.cpp's halvesRow, for comparing against the
+    # rendered resolved.json rather than reusing that C++ code.
+    row = [0.0] * channels
+    left_count = (channels + 1) // 2
+    begin, end = (0, left_count) if left_group else (left_count, channels)
+    coefficient = 1.0 / math.sqrt(end - begin)
+    for index in range(begin, end):
+        row[index] = coefficient
+    return row
+
+
+def alternating_row(channels, left_group):
+    # `alternating` (#110): even Channel indices map left, odd indices
+    # map right, each group using equal 1/sqrt(groupSize) coefficients --
+    # an independent Python re-derivation of alternatingRow.
+    row = [0.0] * channels
+    first = 0 if left_group else 1
+    indices = list(range(first, channels, 2))
+    coefficient = 1.0 / math.sqrt(len(indices))
+    for index in indices:
+        row[index] = coefficient
+    return row
+
+
+def inter_channel_level_difference_db(left, right):
+    left_energy = math.fsum(v * v for v in left)
+    right_energy = math.fsum(v * v for v in right)
+    if left_energy <= 0.0 or right_energy <= 0.0:
+        return 0.0 if left_energy == right_energy else float("inf")
+    return 10.0 * math.log10(left_energy / right_energy)
+
+
 def dft_power_spectrum(samples):
     # A direct O(n^2) DFT is fine here: fixtures below are a few dozen
     # samples (a millisecond-scale Diffuser response), not a signal this
@@ -1528,8 +1564,10 @@ def main():
     # fixture (Split's own energy normalisation keeps per-Channel power at
     # 1/N of the fixed impulse energy, matching the design's expected-power
     # fixture), captured with --capture-stages all so the N-Channel signal
-    # entering the Downmix is available for level/correlation/spectral
-    # evidence.
+    # entering the Downmix is available for spectral evidence. Expected
+    # level and Output correlation are measured on a separate same-N
+    # Feedback-Loop (unaligned) render instead -- see the comment further
+    # below, at the point that second render is built.
     orthogonal_rows_energy_by_channels = {}
     for orthogonal_rows_channels in (4, 8):
         orthogonal_request_path = workspace / (
@@ -1688,14 +1726,69 @@ def main():
             orthogonal_rows_channels, diffusion_samples
         )
 
+        # Expected level independence and Output correlation are defined
+        # over seeded *unaligned* fixtures (docs/design/reverb/stages/
+        # 08-downmix.md: "Tests use seeded unaligned fixtures" and the
+        # Invariants section's "Expected level independence"), so those
+        # two are measured on a same-N, same-strategy Feedback-Loop
+        # (unaligned) render rather than the Diffuser-only (aligned)
+        # render above -- an aligned source's shared onset would let
+        # correlated interference confound both measurements. Spectral
+        # evidence stays on the aligned render above: the diffusion-step
+        # capture it depends on has no Feedback-Loop equivalent (see
+        # dsp::StageCaptureBoundary, which only captures split/
+        # diffusion-step boundaries), and the "Spectral evidence"
+        # invariant does not itself specify unaligned input.
+        orthogonal_unaligned_request_path = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-unaligned-"
+            f"request.json"
+        )
+        orthogonal_unaligned_document = json.loads(
+            orthogonal_request_path.read_text()
+        )
+        orthogonal_unaligned_document["composition"]["stages"][1] = {
+            "type": "feedback-loop",
+        }
+        orthogonal_unaligned_request_path.write_text(
+            json.dumps(orthogonal_unaligned_document)
+        )
+        orthogonal_unaligned_result = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-unaligned-result"
+        )
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                orthogonal_unaligned_request_path,
+                "--output",
+                orthogonal_unaligned_result,
+            )
+        )
+        orthogonal_unaligned_downmix = json.loads(
+            (orthogonal_unaligned_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if orthogonal_unaligned_downmix["alignment"] != "unaligned":
+            raise AssertionError(
+                f"orthogonal-rows Feedback Loop Downmix did not resolve "
+                f"unaligned: {orthogonal_unaligned_downmix}"
+            )
+        _, unaligned_output_samples = read_float_wav(
+            orthogonal_unaligned_result / "output.wav"
+        )
+        unaligned_left, unaligned_right = deinterleave(
+            2, unaligned_output_samples
+        )
+
         # Expected level: total downmix output energy, compared across N
         # below (compensation is designed to keep it roughly independent of
         # N under this fixed-total-power fixture -- an expected-power
         # contract, not exact per-instance equality; see issue #108 and
         # docs/design/reverb/stages/08-downmix.md).
-        output_energy = math.fsum(v * v for v in left) + math.fsum(
-            v * v for v in right
-        )
+        output_energy = math.fsum(
+            v * v for v in unaligned_left
+        ) + math.fsum(v * v for v in unaligned_right)
         orthogonal_rows_energy_by_channels[orthogonal_rows_channels] = (
             output_energy
         )
@@ -1704,7 +1797,7 @@ def main():
         # range, reported rather than gated against an acoustic threshold
         # (no universal pass/fail on decorrelation -- see the parent spec's
         # Out of Scope).
-        correlation = zero_lag_correlation(left, right)
+        correlation = zero_lag_correlation(unaligned_left, unaligned_right)
         if not math.isfinite(correlation) or abs(correlation) > 1.0 + 1e-9:
             raise AssertionError(
                 f"orthogonal-rows Output correlation is not a valid "
@@ -1716,7 +1809,8 @@ def main():
         # same N-Channel source's aggregate power spectrum, reported as
         # max/RMS band deviation -- again exposed as evidence, not an
         # acoustic pass/fail (docs/design/reverb/stages/08-downmix.md's own
-        # "Worth sweeping early" and Invariants sections).
+        # "Worth sweeping early" and Invariants sections). Measured on the
+        # aligned render (see the capture-boundary note above).
         aggregate_source_power = [0.0] * (len(left) // 2 + 1)
         for channel_samples in source_channels:
             channel_power = dft_power_spectrum(channel_samples)
@@ -1879,6 +1973,361 @@ def main():
         "not applicable to strategy orthogonal-rows",
         workspace / "orthogonal-rows-with-left-channel-result",
     )
+
+    # halves/alternating (#110): equal-coefficient disjoint Channel-group
+    # Main Downmixes. Diffuser-only (aligned) fixed-total-power fixtures at
+    # even and odd N verify row/compensation/replay and the "aligned"
+    # Alignment expectation; a same-N Feedback-Loop (unaligned) fixture
+    # supplies the expected-level/correlation/level-difference evidence
+    # (see the comment further below, at the point that render is built,
+    # for why) -- see docs/design/reverb/stages/08-downmix.md.
+    group_strategies = {
+        "halves": halves_row,
+        "alternating": alternating_row,
+    }
+    for strategy_name, expected_row_fn in group_strategies.items():
+        group_energy_by_channels = {}
+        for group_channels in (4, 5, 8):
+            group_request_path = workspace / (
+                f"{strategy_name}-{group_channels}-request.json"
+            )
+            group_result = (
+                workspace / f"{strategy_name}-{group_channels}-result"
+            )
+            group_rerender = (
+                workspace / f"{strategy_name}-{group_channels}-rerender"
+            )
+            group_request_path.write_text(
+                json.dumps(
+                    {
+                        "formatVersion": 2,
+                        "seed": 42,
+                        "composition": {
+                            "stages": [
+                                {
+                                    "type": "split",
+                                    "channels": group_channels,
+                                    "strategy": "duplicate",
+                                    "normalisation": "energy",
+                                },
+                                {
+                                    "type": "diffuser",
+                                    "steps": 1,
+                                    "totalMs": 1,
+                                    "distribution": "even",
+                                    "step": {
+                                        "delayStrategy": "segmented-random",
+                                        "mix": "householder",
+                                        "shuffle": True,
+                                        "polarity": "seeded-random",
+                                    },
+                                },
+                                {
+                                    "type": "downmix",
+                                    "strategy": strategy_name,
+                                    "normalisation": "energy",
+                                },
+                            ]
+                        },
+                    }
+                )
+            )
+            require_success(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--config",
+                    group_request_path,
+                    "--output",
+                    group_result,
+                )
+            )
+            group_downmix = json.loads(
+                (group_result / "resolved.json").read_text()
+            )["composition"]["stages"][2]
+            if (
+                "leftChannel" in group_downmix
+                or "rightChannel" in group_downmix
+            ):
+                raise AssertionError(
+                    f"{strategy_name} resolved a Channel selection it has "
+                    f"no use for: {group_downmix}"
+                )
+            expected_compensation = math.sqrt(group_channels / 2.0)
+            if (
+                group_downmix["strategy"] != strategy_name
+                or abs(group_downmix["compensation"] - expected_compensation)
+                > 1e-9
+                or group_downmix["alignment"] != "aligned"
+            ):
+                raise AssertionError(
+                    f"unexpected {strategy_name} resolved Downmix: "
+                    f"{group_downmix}"
+                )
+            expected_left_row = expected_row_fn(group_channels, True)
+            expected_right_row = expected_row_fn(group_channels, False)
+            for row_name, actual_row, expected_row in (
+                ("leftRow", group_downmix["leftRow"], expected_left_row),
+                ("rightRow", group_downmix["rightRow"], expected_right_row),
+            ):
+                if any(
+                    abs(actual - expected) > 1e-9
+                    for actual, expected in zip(actual_row, expected_row)
+                ):
+                    raise AssertionError(
+                        f"{strategy_name} {row_name} did not match the "
+                        f"expected equal-coefficient group at N="
+                        f"{group_channels}: {group_downmix}"
+                    )
+            for row_name, expected_row, effective_row_name in (
+                ("leftRow", expected_left_row, "effectiveLeftRow"),
+                ("rightRow", expected_right_row, "effectiveRightRow"),
+            ):
+                expected_effective_row = [
+                    value * expected_compensation for value in expected_row
+                ]
+                actual_effective_row = group_downmix[effective_row_name]
+                if any(
+                    abs(actual - expected) > 1e-9
+                    for actual, expected in zip(
+                        actual_effective_row, expected_effective_row
+                    )
+                ):
+                    raise AssertionError(
+                        f"{strategy_name} {effective_row_name} did not "
+                        f"match {row_name} scaled by compensation: "
+                        f"{group_downmix}"
+                    )
+
+            require_success(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--resolved",
+                    group_result / "resolved.json",
+                    "--output",
+                    group_rerender,
+                )
+            )
+            if (group_rerender / "resolved.json").read_bytes() != (
+                group_result / "resolved.json"
+            ).read_bytes():
+                raise AssertionError(
+                    f"{strategy_name} resolved rerender changed "
+                    f"configuration at N={group_channels}"
+                )
+            if (group_rerender / "output.wav").read_bytes() != (
+                group_result / "output.wav"
+            ).read_bytes():
+                raise AssertionError(
+                    f"{strategy_name} resolved rerender changed output at "
+                    f"N={group_channels}"
+                )
+
+            output_channels, output_samples = read_float_wav(
+                group_result / "output.wav"
+            )
+            if output_channels != 2:
+                raise AssertionError(
+                    f"unexpected output Channel count for {strategy_name} "
+                    f"at N={group_channels}: {output_channels}"
+                )
+
+            # Expected level independence and Output correlation are
+            # defined over seeded *unaligned* fixtures (docs/design/
+            # reverb/stages/08-downmix.md: "Tests use seeded unaligned
+            # fixtures" and the Invariants section's "Expected level
+            # independence"), so both are measured on a same-N,
+            # same-strategy Feedback-Loop (unaligned) render rather than
+            # the Diffuser-only (aligned) render above -- an aligned
+            # source's shared onset would let correlated interference
+            # confound both measurements.
+            unaligned_document = json.loads(group_request_path.read_text())
+            unaligned_document["composition"]["stages"][1] = {
+                "type": "feedback-loop",
+            }
+            unaligned_request = workspace / (
+                f"{strategy_name}-{group_channels}-unaligned-request.json"
+            )
+            unaligned_request.write_text(json.dumps(unaligned_document))
+            unaligned_result = workspace / (
+                f"{strategy_name}-{group_channels}-unaligned-result"
+            )
+            require_success(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--config",
+                    unaligned_request,
+                    "--output",
+                    unaligned_result,
+                )
+            )
+            unaligned_downmix = json.loads(
+                (unaligned_result / "resolved.json").read_text()
+            )["composition"]["stages"][2]
+            if unaligned_downmix["alignment"] != "unaligned":
+                raise AssertionError(
+                    f"{strategy_name} Feedback Loop Downmix did not "
+                    f"resolve unaligned at N={group_channels}: "
+                    f"{unaligned_downmix}"
+                )
+            _, unaligned_output_samples = read_float_wav(
+                unaligned_result / "output.wav"
+            )
+            left, right = deinterleave(2, unaligned_output_samples)
+
+            # Expected level: total downmix output energy, compared across
+            # N below (an expected-power contract, not exact per-instance
+            # equality; see issue #110 and
+            # docs/design/reverb/stages/08-downmix.md).
+            output_energy = math.fsum(v * v for v in left) + math.fsum(
+                v * v for v in right
+            )
+            group_energy_by_channels[group_channels] = output_energy
+
+            # Output correlation and inter-channel level difference:
+            # finite and reported, not gated against an acoustic threshold
+            # (issue #110's "no universal pass/fail on decorrelation").
+            correlation = zero_lag_correlation(left, right)
+            level_difference_db = inter_channel_level_difference_db(
+                left, right
+            )
+            if (
+                not math.isfinite(correlation)
+                or abs(correlation) > 1.0 + 1e-9
+            ):
+                raise AssertionError(
+                    f"{strategy_name} Output correlation is not a valid "
+                    f"correlation coefficient at N={group_channels}: "
+                    f"{correlation}"
+                )
+            if not math.isfinite(level_difference_db):
+                raise AssertionError(
+                    f"{strategy_name} inter-channel level difference is "
+                    f"not finite at N={group_channels}: "
+                    f"{level_difference_db}"
+                )
+            evidence_path = workspace / (
+                f"{strategy_name}-{group_channels}-evidence.json"
+            )
+            evidence_path.write_text(
+                json.dumps(
+                    {
+                        "channels": group_channels,
+                        "outputEnergy": output_energy,
+                        "outputCorrelation": correlation,
+                        "interChannelLevelDifferenceDb": level_difference_db,
+                    },
+                    indent=2,
+                )
+            )
+
+        group_energies = list(group_energy_by_channels.values())
+        # A silent Downmix would otherwise pass the ratio check below
+        # vacuously (see the analogous orthogonal-rows fix, issue #119).
+        if any(energy <= 0.0 for energy in group_energies):
+            raise AssertionError(
+                f"{strategy_name} output energy was not positive: "
+                f"{group_energy_by_channels}"
+            )
+        if max(group_energies) > 3.0 * min(group_energies):
+            raise AssertionError(
+                f"{strategy_name} output energy was not roughly "
+                f"level-independent of N: {group_energy_by_channels}"
+            )
+
+        # normalisation: "none" omits only the common compensation scalar
+        # -- rows stay the same unit-norm intrinsic rows as under
+        # "energy", but compensation and the effective rows collapse to
+        # 1.0/row itself.
+        none_document = json.loads(group_request_path.read_text())
+        none_document["composition"]["stages"][2]["normalisation"] = "none"
+        none_request = workspace / f"{strategy_name}-none-request.json"
+        none_request.write_text(json.dumps(none_document))
+        none_result = workspace / f"{strategy_name}-none-result"
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                none_request,
+                "--output",
+                none_result,
+            )
+        )
+        none_downmix = json.loads(
+            (none_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if (
+            none_downmix["normalisation"] != "none"
+            or none_downmix["compensation"] != 1.0
+            or none_downmix["leftRow"] != none_downmix["effectiveLeftRow"]
+            or none_downmix["rightRow"] != none_downmix["effectiveRightRow"]
+        ):
+            raise AssertionError(
+                f"unexpected {strategy_name} none-normalisation resolved "
+                f"Downmix: {none_downmix}"
+            )
+
+        # Both strategies require N >= 2 (#110).
+        single_channel_document = json.loads(group_request_path.read_text())
+        single_channel_document["composition"]["stages"][0][
+            "channels"
+        ] = 1
+        single_channel_request = (
+            workspace / f"{strategy_name}-single-channel-request.json"
+        )
+        single_channel_request.write_text(
+            json.dumps(single_channel_document)
+        )
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                single_channel_request,
+                "--output",
+                workspace / f"{strategy_name}-single-channel-result",
+            ),
+            f"/composition/stages/2/strategy: "
+            f"{strategy_name} requires at least two Channels",
+            workspace / f"{strategy_name}-single-channel-result",
+        )
+
+        # leftChannel/rightChannel are `select`-specific: providing either
+        # alongside halves/alternating is rejected, not silently ignored.
+        with_left_channel_document = json.loads(
+            group_request_path.read_text()
+        )
+        with_left_channel_document["composition"]["stages"][2][
+            "leftChannel"
+        ] = 0
+        with_left_channel_request = (
+            workspace / f"{strategy_name}-with-left-channel-request.json"
+        )
+        with_left_channel_request.write_text(
+            json.dumps(with_left_channel_document)
+        )
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                with_left_channel_request,
+                "--output",
+                workspace / f"{strategy_name}-with-left-channel-result",
+            ),
+            f"/composition/stages/2/leftChannel: "
+            f"not applicable to strategy {strategy_name}",
+            workspace / f"{strategy_name}-with-left-channel-result",
+        )
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))

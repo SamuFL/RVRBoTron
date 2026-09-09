@@ -274,9 +274,9 @@ is recorded in `resolved.json` alongside the Feedback Loop's own.
 
 | Field | Values | Default |
 | --- | --- | --- |
-| `strategy` | `"select"` \| `"orthogonal-rows"` | `"select"` |
-| `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to `orthogonal-rows` |
-| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to `orthogonal-rows` |
+| `strategy` | `"select"` \| `"orthogonal-rows"` \| `"halves"` \| `"alternating"` | `"select"` |
+| `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to any other strategy |
+| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to any other strategy |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
 
 `leftChannel` has no implicit default -- every `select` Downmix names its
@@ -284,14 +284,20 @@ Channel explicitly (see issue #107). `orthogonal-rows` (issue #108) instead
 fills a deterministic N-by-N dense matrix from the branch-specific
 RandomOrthogonal derivation (usage tag `MAINDNMX`; see
 [ADR-0002](docs/adr/0002-version-positional-random-resolution.md)) and takes
-its rows 0 and 1 as the left and right Downmix rows; it requires N at least
-2 and rejects `leftChannel`/`rightChannel` if either is present. Resolved
-Configuration records both strategies' rows as `leftRow`/`rightRow` (unit
-norm) and `effectiveLeftRow`/`effectiveRightRow` (scaled by `compensation`),
-plus each row's Alignment expectation (`"aligned"` or `"unaligned"`),
-derived from Composition wiring rather than settable by request: aligned
-for a Diffuser-only Main wet path, unaligned when it includes a Feedback
-Loop.
+its rows 0 and 1 as the left and right Downmix rows. `halves` and
+`alternating` (issue #110) instead partition the N Channels into two
+disjoint groups -- `halves` puts the first `ceil(N/2)` Channels left and
+the remainder right; `alternating` puts even indices left and odd indices
+right -- and each non-empty group gets equal `1/sqrt(groupSize)`
+coefficients, so an odd N produces two unequal-size but still unit-norm
+rows. `orthogonal-rows`, `halves`, and `alternating` each require N at
+least 2 and reject `leftChannel`/`rightChannel` if either is present.
+Resolved Configuration records every strategy's rows as
+`leftRow`/`rightRow` (unit norm) and
+`effectiveLeftRow`/`effectiveRightRow` (scaled by `compensation`), plus
+each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
+from Composition wiring rather than settable by request: aligned for a
+Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
 
 `delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for

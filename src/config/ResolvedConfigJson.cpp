@@ -32,6 +32,10 @@ const char* downmixStrategyName(const dsp::DownmixStrategy strategy) {
     return "select";
   case dsp::DownmixStrategy::orthogonalRows:
     return "orthogonal-rows";
+  case dsp::DownmixStrategy::halves:
+    return "halves";
+  case dsp::DownmixStrategy::alternating:
+    return "alternating";
   }
   throw HarnessError(
       ErrorCategory::invalidConfiguration,
