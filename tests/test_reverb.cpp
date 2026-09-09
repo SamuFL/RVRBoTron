@@ -941,7 +941,7 @@ int main() {
   }
 
   const rvrbotron::dsp::ResolvedConfig identityConfig{
-      1,
+      2,
       0,
       48000,
       {},

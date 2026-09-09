@@ -1198,13 +1198,19 @@ dsp::ResolvedConfig parseResolvedConfig(
       "/",
       {"formatVersion", "seed", "sampleRate", "composition"});
 
-  for (const auto field :
-       {"formatVersion", "seed", "sampleRate", "composition"}) {
+  requireField(json, "formatVersion", "");
+  const auto formatVersion =
+      parseUnsigned32(json.at("formatVersion"), "/formatVersion");
+  if (const auto reason = config::formatVersionRejectionReason(formatVersion)) {
+    fail("/formatVersion", *reason);
+  }
+
+  for (const auto field : {"seed", "sampleRate", "composition"}) {
     requireField(json, field, "");
   }
 
   const dsp::ResolvedConfig resolved{
-      parseUnsigned32(json.at("formatVersion"), "/formatVersion"),
+      formatVersion,
       parseSeed(json.at("seed")),
       parseUnsigned32(json.at("sampleRate"), "/sampleRate"),
       parseResolvedComposition(json.at("composition")),

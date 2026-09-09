@@ -377,6 +377,33 @@ def main():
             f"empty Composition was not rejected: {empty_composition.stderr}"
         )
 
+    # A Resolved v1 payload must fail fast at /formatVersion with the
+    # recovery message, even when its Composition is also malformed under
+    # v2 rules -- the version check must run before Composition parsing,
+    # not surface a stage-parsing error instead (issue #106 follow-up).
+    v1_resolved = workspace / "v1-resolved.json"
+    v1_resolved.write_text(
+        json.dumps(
+            {
+                "formatVersion": 1,
+                "seed": 0,
+                "sampleRate": 48000,
+                "composition": {"stages": [{}]},
+            }
+        )
+    )
+    v1_rejected = run(renderer, "benchmark", "--resolved", v1_resolved)
+    if v1_rejected.returncode == 0 or (
+        "invalid_configuration at /formatVersion: reverb configuration "
+        "format 1 is unsupported by this build; use tag format-v1-final "
+        "(commit 8a4e718) to render or analyze format-1 configurations"
+        not in v1_rejected.stderr
+    ):
+        raise AssertionError(
+            f"Resolved formatVersion 1 was not rejected before Composition "
+            f"parsing: {v1_rejected.stderr}"
+        )
+
 
 if __name__ == "__main__":
     main()
