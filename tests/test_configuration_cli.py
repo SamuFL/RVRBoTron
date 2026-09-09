@@ -1564,8 +1564,10 @@ def main():
     # fixture (Split's own energy normalisation keeps per-Channel power at
     # 1/N of the fixed impulse energy, matching the design's expected-power
     # fixture), captured with --capture-stages all so the N-Channel signal
-    # entering the Downmix is available for level/correlation/spectral
-    # evidence.
+    # entering the Downmix is available for spectral evidence. Expected
+    # level and Output correlation are measured on a separate same-N
+    # Feedback-Loop (unaligned) render instead -- see the comment further
+    # below, at the point that second render is built.
     orthogonal_rows_energy_by_channels = {}
     for orthogonal_rows_channels in (4, 8):
         orthogonal_request_path = workspace / (
@@ -1724,14 +1726,69 @@ def main():
             orthogonal_rows_channels, diffusion_samples
         )
 
+        # Expected level independence and Output correlation are defined
+        # over seeded *unaligned* fixtures (docs/design/reverb/stages/
+        # 08-downmix.md: "Tests use seeded unaligned fixtures" and the
+        # Invariants section's "Expected level independence"), so those
+        # two are measured on a same-N, same-strategy Feedback-Loop
+        # (unaligned) render rather than the Diffuser-only (aligned)
+        # render above -- an aligned source's shared onset would let
+        # correlated interference confound both measurements. Spectral
+        # evidence stays on the aligned render above: the diffusion-step
+        # capture it depends on has no Feedback-Loop equivalent (see
+        # dsp::StageCaptureBoundary, which only captures split/
+        # diffusion-step boundaries), and the "Spectral evidence"
+        # invariant does not itself specify unaligned input.
+        orthogonal_unaligned_request_path = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-unaligned-"
+            f"request.json"
+        )
+        orthogonal_unaligned_document = json.loads(
+            orthogonal_request_path.read_text()
+        )
+        orthogonal_unaligned_document["composition"]["stages"][1] = {
+            "type": "feedback-loop",
+        }
+        orthogonal_unaligned_request_path.write_text(
+            json.dumps(orthogonal_unaligned_document)
+        )
+        orthogonal_unaligned_result = workspace / (
+            f"orthogonal-rows-{orthogonal_rows_channels}-unaligned-result"
+        )
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                orthogonal_unaligned_request_path,
+                "--output",
+                orthogonal_unaligned_result,
+            )
+        )
+        orthogonal_unaligned_downmix = json.loads(
+            (orthogonal_unaligned_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if orthogonal_unaligned_downmix["alignment"] != "unaligned":
+            raise AssertionError(
+                f"orthogonal-rows Feedback Loop Downmix did not resolve "
+                f"unaligned: {orthogonal_unaligned_downmix}"
+            )
+        _, unaligned_output_samples = read_float_wav(
+            orthogonal_unaligned_result / "output.wav"
+        )
+        unaligned_left, unaligned_right = deinterleave(
+            2, unaligned_output_samples
+        )
+
         # Expected level: total downmix output energy, compared across N
         # below (compensation is designed to keep it roughly independent of
         # N under this fixed-total-power fixture -- an expected-power
         # contract, not exact per-instance equality; see issue #108 and
         # docs/design/reverb/stages/08-downmix.md).
-        output_energy = math.fsum(v * v for v in left) + math.fsum(
-            v * v for v in right
-        )
+        output_energy = math.fsum(
+            v * v for v in unaligned_left
+        ) + math.fsum(v * v for v in unaligned_right)
         orthogonal_rows_energy_by_channels[orthogonal_rows_channels] = (
             output_energy
         )
@@ -1740,7 +1797,7 @@ def main():
         # range, reported rather than gated against an acoustic threshold
         # (no universal pass/fail on decorrelation -- see the parent spec's
         # Out of Scope).
-        correlation = zero_lag_correlation(left, right)
+        correlation = zero_lag_correlation(unaligned_left, unaligned_right)
         if not math.isfinite(correlation) or abs(correlation) > 1.0 + 1e-9:
             raise AssertionError(
                 f"orthogonal-rows Output correlation is not a valid "
@@ -1752,7 +1809,8 @@ def main():
         # same N-Channel source's aggregate power spectrum, reported as
         # max/RMS band deviation -- again exposed as evidence, not an
         # acoustic pass/fail (docs/design/reverb/stages/08-downmix.md's own
-        # "Worth sweeping early" and Invariants sections).
+        # "Worth sweeping early" and Invariants sections). Measured on the
+        # aligned render (see the capture-boundary note above).
         aggregate_source_power = [0.0] * (len(left) // 2 + 1)
         for channel_samples in source_channels:
             channel_power = dft_power_spectrum(channel_samples)
@@ -1917,9 +1975,12 @@ def main():
     )
 
     # halves/alternating (#110): equal-coefficient disjoint Channel-group
-    # Main Downmixes. Diffuser-only (aligned) fixed-total-power fixtures
-    # at even and odd N, both normalisation modes, and a Feedback-Loop
-    # (unaligned) fixture -- see docs/design/reverb/stages/08-downmix.md.
+    # Main Downmixes. Diffuser-only (aligned) fixed-total-power fixtures at
+    # even and odd N verify row/compensation/replay and the "aligned"
+    # Alignment expectation; a same-N Feedback-Loop (unaligned) fixture
+    # supplies the expected-level/correlation/level-difference evidence
+    # (see the comment further below, at the point that render is built,
+    # for why) -- see docs/design/reverb/stages/08-downmix.md.
     group_strategies = {
         "halves": halves_row,
         "alternating": alternating_row,
@@ -2073,7 +2134,51 @@ def main():
                     f"unexpected output Channel count for {strategy_name} "
                     f"at N={group_channels}: {output_channels}"
                 )
-            left, right = deinterleave(2, output_samples)
+
+            # Expected level independence and Output correlation are
+            # defined over seeded *unaligned* fixtures (docs/design/
+            # reverb/stages/08-downmix.md: "Tests use seeded unaligned
+            # fixtures" and the Invariants section's "Expected level
+            # independence"), so both are measured on a same-N,
+            # same-strategy Feedback-Loop (unaligned) render rather than
+            # the Diffuser-only (aligned) render above -- an aligned
+            # source's shared onset would let correlated interference
+            # confound both measurements.
+            unaligned_document = json.loads(group_request_path.read_text())
+            unaligned_document["composition"]["stages"][1] = {
+                "type": "feedback-loop",
+            }
+            unaligned_request = workspace / (
+                f"{strategy_name}-{group_channels}-unaligned-request.json"
+            )
+            unaligned_request.write_text(json.dumps(unaligned_document))
+            unaligned_result = workspace / (
+                f"{strategy_name}-{group_channels}-unaligned-result"
+            )
+            require_success(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--config",
+                    unaligned_request,
+                    "--output",
+                    unaligned_result,
+                )
+            )
+            unaligned_downmix = json.loads(
+                (unaligned_result / "resolved.json").read_text()
+            )["composition"]["stages"][2]
+            if unaligned_downmix["alignment"] != "unaligned":
+                raise AssertionError(
+                    f"{strategy_name} Feedback Loop Downmix did not "
+                    f"resolve unaligned at N={group_channels}: "
+                    f"{unaligned_downmix}"
+                )
+            _, unaligned_output_samples = read_float_wav(
+                unaligned_result / "output.wav"
+            )
+            left, right = deinterleave(2, unaligned_output_samples)
 
             # Expected level: total downmix output energy, compared across
             # N below (an expected-power contract, not exact per-instance
@@ -2167,37 +2272,6 @@ def main():
             raise AssertionError(
                 f"unexpected {strategy_name} none-normalisation resolved "
                 f"Downmix: {none_downmix}"
-            )
-
-        # Feedback Loop source (#110): Alignment expectation must resolve
-        # unaligned, unlike the Diffuser-only fixtures above.
-        unaligned_document = json.loads(group_request_path.read_text())
-        unaligned_document["composition"]["stages"][1] = {
-            "type": "feedback-loop",
-        }
-        unaligned_request = (
-            workspace / f"{strategy_name}-unaligned-request.json"
-        )
-        unaligned_request.write_text(json.dumps(unaligned_document))
-        unaligned_result = workspace / f"{strategy_name}-unaligned-result"
-        require_success(
-            run_renderer(
-                renderer,
-                "--input",
-                fixture,
-                "--config",
-                unaligned_request,
-                "--output",
-                unaligned_result,
-            )
-        )
-        unaligned_downmix = json.loads(
-            (unaligned_result / "resolved.json").read_text()
-        )["composition"]["stages"][2]
-        if unaligned_downmix["alignment"] != "unaligned":
-            raise AssertionError(
-                f"{strategy_name} Feedback Loop Downmix did not resolve "
-                f"unaligned: {unaligned_downmix}"
             )
 
         # Both strategies require N >= 2 (#110).
