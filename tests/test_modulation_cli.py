@@ -67,7 +67,7 @@ def base_request(modulation=None, channels=2) -> dict:
                     "normalisation": "energy",
                 },
                 loop,
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }

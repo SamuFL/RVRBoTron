@@ -26,6 +26,18 @@ const char* normalisationName(
       "unsupported normalisation");
 }
 
+const char* downmixAlignmentName(const dsp::DownmixAlignment alignment) {
+  switch (alignment) {
+  case dsp::DownmixAlignment::aligned:
+    return "aligned";
+  case dsp::DownmixAlignment::unaligned:
+    return "unaligned";
+  }
+  throw HarnessError(
+      ErrorCategory::invalidConfiguration,
+      "unsupported Downmix Alignment expectation");
+}
+
 const char* delayStrategyName(const dsp::DelayStrategy strategy) {
   switch (strategy) {
   case dsp::DelayStrategy::segmentedRandom:
@@ -268,14 +280,27 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
 }
 
 Json downmixJson(const dsp::ResolvedDownmix& downmix) {
-  return {
+  Json document{
       {"type", "downmix"},
       {"inputChannels", downmix.inputChannels},
       {"outputChannels", downmix.outputChannels},
       {"strategy", "select"},
+      {"leftChannel", downmix.leftChannel},
       {"normalisation", normalisationName(downmix.normalisation)},
       {"compensation", downmix.compensation},
+      {"leftRow", downmix.leftRow},
+      {"rightRow", downmix.rightRow},
+      {"effectiveLeftRow", downmix.effectiveLeftRow},
+      {"effectiveRightRow", downmix.effectiveRightRow},
+      {"alignment", downmixAlignmentName(downmix.alignment)},
   };
+  // Omitted entirely (rather than emitted equal to leftChannel), so mono
+  // duplication round-trips as omission rather than as a distinct-looking
+  // but coincidentally equal Channel pair (see issue #107).
+  if (downmix.rightChannel.has_value()) {
+    document["rightChannel"] = *downmix.rightChannel;
+  }
+  return document;
 }
 
 Json compositionJson(const dsp::ResolvedComposition& composition) {

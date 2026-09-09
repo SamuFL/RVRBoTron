@@ -95,7 +95,7 @@ def request(depth_ms, rate_hz, interpolation, rt60_sec):
                         "interpolation": interpolation,
                     },
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }

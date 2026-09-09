@@ -82,7 +82,7 @@ def main():
                             "rt60Sec": 1.0,
                             "mix": "householder",
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             }

@@ -75,7 +75,7 @@ def feedback_loop_request(
                     "normalisation": "energy",
                 },
                 loop,
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -314,7 +314,7 @@ def main():
                         "polarity": "seeded-random",
                     },
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -412,7 +412,7 @@ def main():
                         "interpolation": "linear",
                     },
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -512,7 +512,7 @@ def main():
                         "interpolation": "linear",
                     },
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }

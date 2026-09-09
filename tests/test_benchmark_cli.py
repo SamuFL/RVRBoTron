@@ -50,7 +50,7 @@ def main():
                                 "polarity": "seeded-random",
                             },
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             }
@@ -266,7 +266,7 @@ def main():
                             "mix": "householder",
                             "modulation": {"depthMs": 0.4, "rateHz": 0.7},
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             }

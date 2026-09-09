@@ -315,6 +315,19 @@ dsp::DownmixStrategy parseDownmixStrategy(
   return dsp::DownmixStrategy::select;
 }
 
+dsp::DownmixAlignment parseDownmixAlignment(
+    const Json& value,
+    const std::string_view path) {
+  const auto name = parseString(value, path);
+  if (name == "aligned") {
+    return dsp::DownmixAlignment::aligned;
+  }
+  if (name == "unaligned") {
+    return dsp::DownmixAlignment::unaligned;
+  }
+  fail(path, "expected aligned or unaligned");
+}
+
 config::DiffusionDistribution parseDistribution(
     const Json& value,
     const std::string_view path) {
@@ -581,11 +594,20 @@ config::DownmixConfig parseRequestedDownmix(
     const Json& value,
     const std::string_view path) {
   rejectUnknownFields(
-      value, path, {"type", "strategy", "normalisation"});
+      value,
+      path,
+      {"type", "strategy", "leftChannel", "rightChannel", "normalisation"});
   config::DownmixConfig downmix;
   if (value.contains("strategy")) {
     downmix.strategy = parseDownmixStrategy(
         value.at("strategy"), std::string(path) + "/strategy");
+  }
+  requireField(value, "leftChannel", path);
+  downmix.leftChannel = parseUnsigned32(
+      value.at("leftChannel"), std::string(path) + "/leftChannel");
+  if (value.contains("rightChannel")) {
+    downmix.rightChannel = parseUnsigned32(
+        value.at("rightChannel"), std::string(path) + "/rightChannel");
   }
   if (value.contains("normalisation")) {
     downmix.normalisation = parseNormalisation(
@@ -1106,28 +1128,59 @@ dsp::ResolvedDownmix parseResolvedDownmix(
        "inputChannels",
        "outputChannels",
        "strategy",
+       "leftChannel",
+       "rightChannel",
        "normalisation",
-       "compensation"});
+       "compensation",
+       "leftRow",
+       "rightRow",
+       "effectiveLeftRow",
+       "effectiveRightRow",
+       "alignment"});
   for (const auto field :
        {"inputChannels",
         "outputChannels",
         "strategy",
+        "leftChannel",
         "normalisation",
-        "compensation"}) {
+        "compensation",
+        "leftRow",
+        "rightRow",
+        "effectiveLeftRow",
+        "effectiveRightRow",
+        "alignment"}) {
     requireField(value, field, path);
   }
-  return {
-      parseUnsigned32(
-          value.at("inputChannels"), std::string(path) + "/inputChannels"),
-      parseUnsigned32(
-          value.at("outputChannels"), std::string(path) + "/outputChannels"),
-      parseDownmixStrategy(
-          value.at("strategy"), std::string(path) + "/strategy"),
-      parseNormalisation(
-          value.at("normalisation"), std::string(path) + "/normalisation"),
-      parseNumber(
-          value.at("compensation"), std::string(path) + "/compensation"),
-  };
+  dsp::ResolvedDownmix downmix;
+  downmix.inputChannels = parseUnsigned32(
+      value.at("inputChannels"), std::string(path) + "/inputChannels");
+  downmix.outputChannels = parseUnsigned32(
+      value.at("outputChannels"), std::string(path) + "/outputChannels");
+  downmix.strategy = parseDownmixStrategy(
+      value.at("strategy"), std::string(path) + "/strategy");
+  downmix.leftChannel = parseUnsigned32(
+      value.at("leftChannel"), std::string(path) + "/leftChannel");
+  if (value.contains("rightChannel")) {
+    downmix.rightChannel = parseUnsigned32(
+        value.at("rightChannel"), std::string(path) + "/rightChannel");
+  }
+  downmix.normalisation = parseNormalisation(
+      value.at("normalisation"), std::string(path) + "/normalisation");
+  downmix.compensation = parseNumber(
+      value.at("compensation"), std::string(path) + "/compensation");
+  downmix.leftRow = parseNumberArray(
+      value.at("leftRow"), std::string(path) + "/leftRow");
+  downmix.rightRow = parseNumberArray(
+      value.at("rightRow"), std::string(path) + "/rightRow");
+  downmix.effectiveLeftRow = parseNumberArray(
+      value.at("effectiveLeftRow"),
+      std::string(path) + "/effectiveLeftRow");
+  downmix.effectiveRightRow = parseNumberArray(
+      value.at("effectiveRightRow"),
+      std::string(path) + "/effectiveRightRow");
+  downmix.alignment = parseDownmixAlignment(
+      value.at("alignment"), std::string(path) + "/alignment");
+  return downmix;
 }
 
 dsp::ResolvedComposition parseResolvedComposition(const Json& value) {

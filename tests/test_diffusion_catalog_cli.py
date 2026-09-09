@@ -59,7 +59,13 @@ def main():
                         "polarity": "seeded-random",
                     },
                 },
-                {"type": "downmix", "strategy": "select", "normalisation": "energy"},
+                {
+                    "type": "downmix",
+                    "strategy": "select",
+                    "leftChannel": 0,
+                    "rightChannel": 1,
+                    "normalisation": "energy",
+                },
             ]
         },
     }

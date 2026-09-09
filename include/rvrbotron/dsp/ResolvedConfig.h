@@ -39,6 +39,16 @@ enum class DownmixStrategy {
   select,
 };
 
+// Whether a Downmix's source Channels carry independent echo times
+// (unaligned, e.g. a Feedback Loop) or share the same onset (aligned, e.g.
+// direct Diffuser output) -- see docs/design/reverb/stages/08-downmix.md
+// and issue #107. Composition wiring derives this; Requested configuration
+// cannot set it.
+enum class DownmixAlignment {
+  aligned,
+  unaligned,
+};
+
 enum class GainMode {
   perChannel,
   uniform,
@@ -295,8 +305,21 @@ struct ResolvedDownmix {
   std::uint32_t inputChannels = 0;
   std::uint32_t outputChannels = 2;
   DownmixStrategy strategy = DownmixStrategy::select;
+  // `select`-specific provenance: the zero-based Channel each output row
+  // was built from. An omitted rightChannel means the right row duplicates
+  // the left (mono duplication) rather than reading a second Channel.
+  std::uint32_t leftChannel = 0;
+  std::optional<std::uint32_t> rightChannel;
   EnergyNormalisation normalisation = EnergyNormalisation::energy;
   double compensation = 0.0;
+  // Unit-norm intrinsic rows (length inputChannels), and the same rows
+  // scaled by compensation -- resolved once and serialized so replay does
+  // not recompute either (see docs/design/reverb/stages/08-downmix.md).
+  std::vector<double> leftRow;
+  std::vector<double> rightRow;
+  std::vector<double> effectiveLeftRow;
+  std::vector<double> effectiveRightRow;
+  DownmixAlignment alignment = DownmixAlignment::aligned;
 };
 
 using ResolvedStage = std::variant<

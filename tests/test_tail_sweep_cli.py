@@ -56,7 +56,7 @@ def main():
                     "mix": "householder",
                     "gainMode": "per-channel",
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }

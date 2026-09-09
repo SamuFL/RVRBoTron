@@ -186,8 +186,15 @@ rvrbotron::dsp::ResolvedConfig twoChannelDiffusionConfig() {
           2,
           2,
           rvrbotron::dsp::DownmixStrategy::select,
+          0,
+          1,
           rvrbotron::dsp::EnergyNormalisation::energy,
           1.0,
+          {1.0, 0.0},
+          {0.0, 1.0},
+          {1.0, 0.0},
+          {0.0, 1.0},
+          rvrbotron::dsp::DownmixAlignment::aligned,
       });
   return config;
 }
@@ -235,6 +242,21 @@ rvrbotron::dsp::Sample nextInputSample(
       static_cast<double>(value) / 1000.0);
 }
 
+// Selects Channel 0 (and Channel 1, when there is one) so every helper
+// below keeps rendering true stereo instead of falling back to this
+// select Downmix's mono-duplication-on-omission default (issue #107).
+rvrbotron::config::DownmixConfig referenceSelectDownmixConfig(
+    const std::uint32_t channels) {
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  downmix.leftChannel = 0;
+  if (channels > 1) {
+    downmix.rightChannel = 1;
+  }
+  return downmix;
+}
+
 rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -256,10 +278,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
   diffuser.distribution = rvrbotron::config::DiffusionDistribution::even;
   diffuser.step = step;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation =
-      rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -299,9 +318,7 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   loop.mix = mix;
   loop.gainMode = gainMode;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -344,9 +361,7 @@ rvrbotron::dsp::ResolvedConfig resolvedModulatedLoopConfig(
   loop.gainMode = rvrbotron::dsp::GainMode::perChannel;
   loop.modulation = modulation;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -402,9 +417,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserStepModulatedConfig(
         std::vector<rvrbotron::config::DiffusionStepOverride>{override};
   }
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -457,9 +470,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserThenLoopConfig(
   loop.rt60Sec = rt60Sec;
   loop.mix = mix;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -1070,6 +1081,43 @@ int main() {
       !close(ablationRight[1], -0.7071067811865476)) {
     std::cerr << "Diffusion ablations or Downmix none are incorrect\n";
     return 1;
+  }
+
+  // resolveConfig is a public non-JSON entry point too, so a select
+  // Downmix with no leftChannel must be rejected there directly (#107)
+  // rather than silently resolving Channel 0 -- the JSON parser's own
+  // requireField is not the only place this contract has to hold.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 2.0;
+    rvrbotron::config::DownmixConfig downmixWithoutLeftChannel;
+    downmixWithoutLeftChannel.strategy =
+        rvrbotron::dsp::DownmixStrategy::select;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmixWithoutLeftChannel);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.composition = std::move(composition);
+    bool rejected = false;
+    try {
+      static_cast<void>(
+          rvrbotron::config::resolveConfig(requested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "resolveConfig accepted a select Downmix with no "
+                   "leftChannel\n";
+      return 1;
+    }
   }
 
   for (const auto channels : {1U, 2U, 4U, 8U, 16U}) {

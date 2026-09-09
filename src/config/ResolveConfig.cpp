@@ -1216,9 +1216,34 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   return loop;
 }
 
+// A `select` Downmix's unit-norm intrinsic row: a single 1.0 at `channel`
+// over `channels` total positions. Left with no 1.0 entry (norm zero, not
+// unit) when `channel` is out of range or `channels` is zero -- resolution
+// runs before validateResolvedConfig can reject either, and this helper
+// must not throw or index out of bounds on the way there.
+std::vector<double> selectRow(
+    const std::uint32_t channel, const std::uint32_t channels) {
+  std::vector<double> row(channels, 0.0);
+  if (channel < channels) {
+    row[channel] = 1.0;
+  }
+  return row;
+}
+
+std::vector<double> scaledRow(
+    const std::vector<double>& row, const double compensation) {
+  std::vector<double> scaled(row.size());
+  for (std::size_t index = 0; index < row.size(); ++index) {
+    scaled[index] = row[index] * compensation;
+  }
+  return scaled;
+}
+
 dsp::ResolvedDownmix resolveDownmix(
     const DownmixConfig& requested,
-    const std::uint32_t channels) {
+    const std::uint32_t channels,
+    const dsp::DownmixAlignment alignment,
+    const std::size_t stageIndex) {
   const auto strategy =
       requested.strategy.value_or(dsp::DownmixStrategy::select);
   const auto normalisation = requested.normalisation.value_or(
@@ -1231,12 +1256,33 @@ dsp::ResolvedDownmix resolveDownmix(
                 : channels == 1
                 ? 1.0 / std::sqrt(2.0)
                 : std::sqrt(static_cast<double>(channels) / 2.0);
+  // No fallback: `select` has no implicit Channel choice (issue #107), so
+  // a caller that reaches this without the JSON boundary's requireField
+  // (e.g. a direct C++ ReverbConfig construction) must still be rejected
+  // here rather than silently resolving to the archived Channel-0 default.
+  if (!requested.leftChannel.has_value()) {
+    fail(stagePath(stageIndex) + "/leftChannel", "required field is missing");
+  }
+  const auto leftChannel = *requested.leftChannel;
+  auto leftRow = selectRow(leftChannel, channels);
+  auto rightRow = requested.rightChannel.has_value()
+      ? selectRow(*requested.rightChannel, channels)
+      : leftRow;
+  auto effectiveLeftRow = scaledRow(leftRow, compensation);
+  auto effectiveRightRow = scaledRow(rightRow, compensation);
   return {
       channels,
       2,
       strategy,
+      leftChannel,
+      requested.rightChannel,
       normalisation,
       compensation,
+      std::move(leftRow),
+      std::move(rightRow),
+      std::move(effectiveLeftRow),
+      std::move(effectiveRightRow),
+      alignment,
   };
 }
 
@@ -1316,6 +1362,19 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         inputChannels > 0 &&
         inputChannels <= 2 &&
         canonicalShape;
+    // The Main Downmix's Alignment expectation: unaligned when its source
+    // includes a Feedback Loop, aligned otherwise (Diffuser-only) -- see
+    // docs/design/reverb/stages/08-downmix.md and issue #107. Requested
+    // configuration cannot set this directly.
+    const auto hasFeedbackLoop = std::any_of(
+        requestedComposition->stages.begin(),
+        requestedComposition->stages.end(),
+        [](const StageConfig& stage) {
+          return std::holds_alternative<FeedbackLoopConfig>(stage);
+        });
+    const auto mainAlignment = hasFeedbackLoop
+        ? dsp::DownmixAlignment::unaligned
+        : dsp::DownmixAlignment::aligned;
     std::uint32_t channels = 0;
     for (std::size_t stageIndex = 0; stageIndex < requestedStageCount;
          ++stageIndex) {
@@ -1392,7 +1451,8 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                       stageIndex));
             } else {
               resolved.composition.stages.emplace_back(
-                  resolveDownmix(stageConfig, channels));
+                  resolveDownmix(
+                      stageConfig, channels, mainAlignment, stageIndex));
             }
           },
           stage);
@@ -2628,6 +2688,7 @@ void validateResolvedConfig(
 
   const auto matrixElements = matrixElementCount(channels);
 
+  auto containsFeedbackLoop = false;
   for (std::size_t stageIndex = 1; stageIndex < downmixIndex; ++stageIndex) {
     std::visit(
         [&](const auto& stage) {
@@ -2643,6 +2704,7 @@ void validateResolvedConfig(
                 stageIndex);
           } else if constexpr (
               std::is_same_v<Stage, dsp::ResolvedFeedbackLoop>) {
+            containsFeedbackLoop = true;
             validateFeedbackLoopStage(
                 resolved,
                 stage,
@@ -2670,6 +2732,23 @@ void validateResolvedConfig(
         stagePath(downmixIndex) + "/strategy",
         "the first diffusion slice requires select");
   }
+  if (downmix.leftChannel >= channels) {
+    fail(
+        stagePath(downmixIndex) + "/leftChannel",
+        "expected a Channel index within [0, N)");
+  }
+  if (downmix.rightChannel.has_value()) {
+    if (*downmix.rightChannel >= channels) {
+      fail(
+          stagePath(downmixIndex) + "/rightChannel",
+          "expected a Channel index within [0, N)");
+    }
+    if (*downmix.rightChannel == downmix.leftChannel) {
+      fail(
+          stagePath(downmixIndex) + "/rightChannel",
+          "expected a Channel distinct from leftChannel");
+    }
+  }
   if (!(downmix.compensation > 0.0) ||
       !std::isfinite(downmix.compensation)) {
     fail(
@@ -2696,6 +2775,41 @@ void validateResolvedConfig(
     fail(
         stagePath(downmixIndex) + "/compensation",
         "expected gain derived from Downmix normalisation");
+  }
+  const auto expectedLeftRow = selectRow(downmix.leftChannel, channels);
+  const auto expectedRightRow = downmix.rightChannel.has_value()
+      ? selectRow(*downmix.rightChannel, channels)
+      : expectedLeftRow;
+  if (downmix.leftRow != expectedLeftRow) {
+    fail(
+        stagePath(downmixIndex) + "/leftRow",
+        "expected the unit-norm row derived from leftChannel");
+  }
+  if (downmix.rightRow != expectedRightRow) {
+    fail(
+        stagePath(downmixIndex) + "/rightRow",
+        "expected the unit-norm row derived from rightChannel");
+  }
+  if (downmix.effectiveLeftRow !=
+      scaledRow(expectedLeftRow, downmix.compensation)) {
+    fail(
+        stagePath(downmixIndex) + "/effectiveLeftRow",
+        "expected leftRow scaled by compensation");
+  }
+  if (downmix.effectiveRightRow !=
+      scaledRow(expectedRightRow, downmix.compensation)) {
+    fail(
+        stagePath(downmixIndex) + "/effectiveRightRow",
+        "expected rightRow scaled by compensation");
+  }
+  const auto expectedAlignment = containsFeedbackLoop
+      ? dsp::DownmixAlignment::unaligned
+      : dsp::DownmixAlignment::aligned;
+  if (downmix.alignment != expectedAlignment) {
+    fail(
+        stagePath(downmixIndex) + "/alignment",
+        "expected the Alignment expectation derived from Composition "
+        "wiring");
   }
 }
 
