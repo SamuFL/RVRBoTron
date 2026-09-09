@@ -23,6 +23,8 @@
         {
           "type": "downmix",
           "strategy": "select",
+          "leftChannel": 0,
+          "rightChannel": 1,
           "normalisation": "energy"
         }
       ]

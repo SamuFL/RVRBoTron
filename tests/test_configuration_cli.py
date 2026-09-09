@@ -213,7 +213,12 @@ def main():
                                 "polarity": "seeded-random",
                             },
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {
+                            "type": "downmix",
+                            "strategy": "select",
+                            "leftChannel": 0,
+                            "rightChannel": 1,
+                        },
                     ]
                 },
             },
@@ -285,8 +290,15 @@ def main():
         "inputChannels": 8,
         "outputChannels": 2,
         "strategy": "select",
+        "leftChannel": 0,
+        "rightChannel": 1,
         "normalisation": "energy",
         "compensation": 2.0,
+        "leftRow": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "rightRow": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "effectiveLeftRow": [2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "effectiveRightRow": [0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "alignment": "aligned",
     }:
         raise AssertionError(f"unexpected resolved Downmix: {stages[2]}")
 
@@ -588,6 +600,7 @@ def main():
                         {
                             "type": "downmix",
                             "strategy": "select",
+                            "leftChannel": 0,
                             "normalisation": "none",
                         },
                     ]
@@ -635,6 +648,24 @@ def main():
         raise AssertionError("Downmix ablation did not round-trip")
     if ablation_stages[2]["compensation"] != 1.0:
         raise AssertionError("Downmix none normalisation compensated select")
+    # An omitted rightChannel duplicates leftChannel to mono (issue #107),
+    # covering the "one selected Channel" acceptance scenario at N=4.
+    if "rightChannel" in ablation_stages[2]:
+        raise AssertionError(
+            f"omitted rightChannel did not stay omitted: {ablation_stages[2]}"
+        )
+    if (
+        ablation_stages[2]["leftRow"] != [1.0, 0.0, 0.0, 0.0]
+        or ablation_stages[2]["rightRow"] != [1.0, 0.0, 0.0, 0.0]
+    ):
+        raise AssertionError(
+            f"omitted rightChannel did not duplicate leftChannel's row: "
+            f"{ablation_stages[2]}"
+        )
+    if ablation_stages[2]["alignment"] != "aligned":
+        raise AssertionError(
+            f"Diffuser-only Downmix did not resolve aligned: {ablation_stages[2]}"
+        )
 
     require_success(
         run_renderer(
@@ -689,7 +720,7 @@ def main():
                                 "polarity": "seeded-random",
                             },
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             },
@@ -823,7 +854,7 @@ def main():
                                 "polarity": "seeded-random",
                             },
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             },
@@ -918,7 +949,7 @@ def main():
                                 "polarity": "seeded-random",
                             },
                         },
-                        {"type": "downmix", "strategy": "select"},
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
                     ]
                 },
             },
@@ -1147,6 +1178,128 @@ def main():
         raise AssertionError("single-Channel even delay is not deterministic")
     if single_channel_stages[2]["compensation"] != 1.0:
         raise AssertionError("single-Channel Downmix none changed select level")
+    # N=1: leftChannel 0 is the only valid index, and rightChannel stays
+    # omitted (mono duplication), covering the N=1 acceptance scenario.
+    if (
+        single_channel_stages[2]["leftChannel"] != 0
+        or "rightChannel" in single_channel_stages[2]
+        or single_channel_stages[2]["leftRow"] != [1.0]
+        or single_channel_stages[2]["rightRow"] != [1.0]
+    ):
+        raise AssertionError(
+            f"unexpected single-Channel resolved Downmix: "
+            f"{single_channel_stages[2]}"
+        )
+
+    single_channel_rerender = workspace / "single-channel-ablation-rerender"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            single_channel_result / "resolved.json",
+            "--output",
+            single_channel_rerender,
+        )
+    )
+    if (single_channel_rerender / "resolved.json").read_bytes() != (
+        single_channel_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError("single-Channel resolved rerender changed configuration")
+    if (single_channel_rerender / "output.wav").read_bytes() != (
+        single_channel_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("single-Channel resolved rerender changed output")
+
+    # A Feedback Loop source resolves the Main Downmix's Alignment
+    # expectation as "unaligned" (Composition wiring, not Requested
+    # configuration, decides this -- issue #107), covering the "unaligned
+    # Feedback Loop input" acceptance scenario with two selected Channels.
+    feedback_loop_downmix_request = workspace / "feedback-loop-downmix-request.json"
+    feedback_loop_downmix_result = workspace / "feedback-loop-downmix-result"
+    feedback_loop_downmix_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 2,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 2,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "feedback-loop",
+                            "delayMinMs": 1.0,
+                            "delayMaxMs": 2.0,
+                            "delayStrategy": "even",
+                            "rt60Sec": 1.0,
+                            "mix": "householder",
+                        },
+                        {
+                            "type": "downmix",
+                            "strategy": "select",
+                            "leftChannel": 0,
+                            "rightChannel": 1,
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            feedback_loop_downmix_request,
+            "--output",
+            feedback_loop_downmix_result,
+            "--block-size",
+            "32",
+        )
+    )
+    feedback_loop_downmix = json.loads(
+        (feedback_loop_downmix_result / "resolved.json").read_text()
+    )["composition"]["stages"][2]
+    if (
+        feedback_loop_downmix["alignment"] != "unaligned"
+        or feedback_loop_downmix["leftChannel"] != 0
+        or feedback_loop_downmix["rightChannel"] != 1
+        or feedback_loop_downmix["leftRow"] != [1.0, 0.0]
+        or feedback_loop_downmix["rightRow"] != [0.0, 1.0]
+    ):
+        raise AssertionError(
+            f"unexpected Feedback Loop resolved Downmix: {feedback_loop_downmix}"
+        )
+
+    feedback_loop_downmix_rerender = workspace / "feedback-loop-downmix-rerender"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            feedback_loop_downmix_result / "resolved.json",
+            "--output",
+            feedback_loop_downmix_rerender,
+            "--block-size",
+            "32",
+        )
+    )
+    if (feedback_loop_downmix_rerender / "resolved.json").read_bytes() != (
+        feedback_loop_downmix_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "unaligned Feedback Loop resolved rerender changed configuration"
+        )
+    if (feedback_loop_downmix_rerender / "output.wav").read_bytes() != (
+        feedback_loop_downmix_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("unaligned Feedback Loop resolved rerender changed output")
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))
@@ -1288,6 +1441,16 @@ def main():
     sub_sample_request["composition"]["stages"][1]["totalMs"] = 0.000001
     oversized_total_request = json.loads(reference_request.read_text())
     oversized_total_request["composition"]["stages"][1]["totalMs"] = 1e300
+    downmix_left_out_of_range_request = json.loads(reference_request.read_text())
+    downmix_left_out_of_range_request["composition"]["stages"][2][
+        "leftChannel"
+    ] = 8
+    downmix_right_out_of_range_request = json.loads(reference_request.read_text())
+    downmix_right_out_of_range_request["composition"]["stages"][2][
+        "rightChannel"
+    ] = 8
+    downmix_non_distinct_request = json.loads(reference_request.read_text())
+    downmix_non_distinct_request["composition"]["stages"][2]["rightChannel"] = 0
     short_delay_request = json.loads(reference_request.read_text())
     short_delay_request["composition"]["stages"][1]["totalMs"] = 0.1
     # Same short budget and Channel count as the accepted uniform-random
@@ -1375,13 +1538,13 @@ def main():
         ),
         (
             '{"formatVersion": 2, "composition": {"stages": '
-            '[{"type": "downmix"}, {"type": "split"}]}}',
+            '[{"type": "downmix", "leftChannel": 0}, {"type": "split"}]}}',
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
         (
             '{"formatVersion": 2, "composition": {"stages": ['
             '{"type": "split"}, {"type": "feedback-loop"}, '
-            '{"type": "diffuser"}, {"type": "downmix"}'
+            '{"type": "diffuser"}, {"type": "downmix", "leftChannel": 0}'
             ']}}',
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
@@ -1389,7 +1552,7 @@ def main():
             '{"formatVersion": 2, "composition": {"stages": ['
             '{"type": "split"}, {"type": "diffuser"}, '
             '{"type": "diffuser"}, {"type": "feedback-loop"}, '
-            '{"type": "downmix"}'
+            '{"type": "downmix", "leftChannel": 0}'
             ']}}',
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
@@ -1397,6 +1560,28 @@ def main():
             json.dumps(invalid_channels_request),
             "invalid_configuration at /composition/stages/0/channels: "
             "expected value greater than zero",
+        ),
+        (
+            json.dumps(downmix_left_out_of_range_request),
+            "invalid_configuration at /composition/stages/2/leftChannel: "
+            "expected a Channel index within [0, N)",
+        ),
+        (
+            json.dumps(downmix_right_out_of_range_request),
+            "invalid_configuration at /composition/stages/2/rightChannel: "
+            "expected a Channel index within [0, N)",
+        ),
+        (
+            json.dumps(downmix_non_distinct_request),
+            "invalid_configuration at /composition/stages/2/rightChannel: "
+            "expected a Channel distinct from leftChannel",
+        ),
+        (
+            '{"formatVersion": 2, "composition": {"stages": ['
+            '{"type": "split"}, {"type": "diffuser"}, {"type": "downmix"}'
+            ']}}',
+            "invalid_configuration at /composition/stages/2/leftChannel: "
+            "required field is missing",
         ),
         (
             json.dumps(invalid_total_request),

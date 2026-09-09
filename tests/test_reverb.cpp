@@ -186,8 +186,15 @@ rvrbotron::dsp::ResolvedConfig twoChannelDiffusionConfig() {
           2,
           2,
           rvrbotron::dsp::DownmixStrategy::select,
+          0,
+          1,
           rvrbotron::dsp::EnergyNormalisation::energy,
           1.0,
+          {1.0, 0.0},
+          {0.0, 1.0},
+          {1.0, 0.0},
+          {0.0, 1.0},
+          rvrbotron::dsp::DownmixAlignment::aligned,
       });
   return config;
 }
@@ -235,6 +242,21 @@ rvrbotron::dsp::Sample nextInputSample(
       static_cast<double>(value) / 1000.0);
 }
 
+// Selects Channel 0 (and Channel 1, when there is one) so every helper
+// below keeps rendering true stereo instead of falling back to this
+// select Downmix's mono-duplication-on-omission default (issue #107).
+rvrbotron::config::DownmixConfig referenceSelectDownmixConfig(
+    const std::uint32_t channels) {
+  rvrbotron::config::DownmixConfig downmix;
+  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
+  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  downmix.leftChannel = 0;
+  if (channels > 1) {
+    downmix.rightChannel = 1;
+  }
+  return downmix;
+}
+
 rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -256,10 +278,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
   diffuser.distribution = rvrbotron::config::DiffusionDistribution::even;
   diffuser.step = step;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation =
-      rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -299,9 +318,7 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   loop.mix = mix;
   loop.gainMode = gainMode;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -344,9 +361,7 @@ rvrbotron::dsp::ResolvedConfig resolvedModulatedLoopConfig(
   loop.gainMode = rvrbotron::dsp::GainMode::perChannel;
   loop.modulation = modulation;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -402,9 +417,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserStepModulatedConfig(
         std::vector<rvrbotron::config::DiffusionStepOverride>{override};
   }
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;
@@ -457,9 +470,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserThenLoopConfig(
   loop.rt60Sec = rt60Sec;
   loop.mix = mix;
 
-  rvrbotron::config::DownmixConfig downmix;
-  downmix.strategy = rvrbotron::dsp::DownmixStrategy::select;
-  downmix.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+  auto downmix = referenceSelectDownmixConfig(channels);
 
   rvrbotron::config::CompositionConfig composition;
   composition.stagesSpecified = true;

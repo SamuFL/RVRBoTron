@@ -151,6 +151,8 @@ support `normalisation: "none"`, `delayStrategy: "even"` or
       {
         "type": "downmix",
         "strategy": "select",
+        "leftChannel": 0,
+        "rightChannel": 1,
         "normalisation": "energy"
       }
     ]
@@ -273,7 +275,15 @@ is recorded in `resolved.json` alongside the Feedback Loop's own.
 | Field | Values | Default |
 | --- | --- | --- |
 | `strategy` | `"select"` | `"select"` (only option) |
+| `leftChannel` | zero-based Channel index within `[0, N)` | required, no default |
+| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`) |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
+
+`leftChannel` has no implicit default -- every `select` Downmix names its
+Channel explicitly (see issue #107). Resolved Configuration also records
+each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
+from Composition wiring rather than settable by request: aligned for a
+Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
 
 `delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for
@@ -326,7 +336,9 @@ build/default/rvrbotron render \
       },
       {
         "type": "downmix",
-        "strategy": "select"
+        "strategy": "select",
+        "leftChannel": 0,
+        "rightChannel": 1
       }
     ]
   }

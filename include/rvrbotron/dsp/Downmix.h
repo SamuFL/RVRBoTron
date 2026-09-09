@@ -23,6 +23,10 @@ private:
   DownmixStrategy strategy_;
   std::size_t inputChannels_;
   std::size_t outputChannels_;
+  std::size_t leftChannel_;
+  // Equals leftChannel_ under mono duplication (an omitted Resolved
+  // rightChannel), so processFrame needs no separate duplication branch.
+  std::size_t rightChannel_;
   Sample compensation_;
 };
 

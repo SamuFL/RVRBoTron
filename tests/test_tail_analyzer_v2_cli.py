@@ -74,7 +74,7 @@ def feedback_loop_request(channels=2, damping=None, seed=7, **overrides):
                     "normalisation": "energy",
                 },
                 loop,
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -343,7 +343,7 @@ def main():
                         "polarity": "seeded-random",
                     },
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }

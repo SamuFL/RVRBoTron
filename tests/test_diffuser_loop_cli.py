@@ -89,7 +89,7 @@ def main():
                     "rt60Sec": 1.0,
                     "mix": "householder",
                 },
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -112,7 +112,7 @@ def main():
                     },
                 },
                 loop_only_request["composition"]["stages"][1],
-                {"type": "downmix", "strategy": "select"},
+                {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             ]
         },
     }
@@ -244,7 +244,7 @@ def main():
     diffusion_only_request["composition"]["stages"] = [
         diffuser_loop_request["composition"]["stages"][0],
         diffuser_loop_request["composition"]["stages"][1],
-        {"type": "downmix", "strategy": "select"},
+        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
     ]
     diffusion_only_path = workspace / "diffusion-only-request.json"
     diffusion_only_path.write_text(json.dumps(diffusion_only_request, indent=2))
@@ -277,19 +277,19 @@ def main():
             diffuser_loop_request["composition"]["stages"][0],
             diffuser_loop_request["composition"]["stages"][2],
             diffuser_loop_request["composition"]["stages"][1],
-            {"type": "downmix", "strategy": "select"},
+            {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
         ],
         "downmix-not-last": [
             diffuser_loop_request["composition"]["stages"][0],
             diffuser_loop_request["composition"]["stages"][1],
-            {"type": "downmix", "strategy": "select"},
+            {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
             diffuser_loop_request["composition"]["stages"][2],
         ],
         "split-not-first": [
             diffuser_loop_request["composition"]["stages"][1],
             diffuser_loop_request["composition"]["stages"][0],
             diffuser_loop_request["composition"]["stages"][2],
-            {"type": "downmix", "strategy": "select"},
+            {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
         ],
     }
     for name, stages in wrong_orderings.items():
