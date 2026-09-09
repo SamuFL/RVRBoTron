@@ -2,9 +2,40 @@
 
 import json
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
+
+
+def read_float_wav(path: Path):
+    data = path.read_bytes()
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise AssertionError(f"{path} is not a RIFF/WAVE file")
+
+    offset = 12
+    channels = bits_per_sample = None
+    data_chunk = None
+    while offset + 8 <= len(data):
+        chunk_id = data[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", data, offset + 4)[0]
+        chunk = data[offset + 8 : offset + 8 + chunk_size]
+        if chunk_id == b"fmt ":
+            _, channels, _ = struct.unpack_from("<HHI", chunk)
+            bits_per_sample = struct.unpack_from("<H", chunk, 14)[0]
+        elif chunk_id == b"data":
+            data_chunk = chunk
+        offset += 8 + chunk_size + (chunk_size % 2)
+
+    if data_chunk is None:
+        raise AssertionError(f"{path} has no audio data")
+    if bits_per_sample == 32:
+        samples = struct.unpack("<" + "f" * (len(data_chunk) // 4), data_chunk)
+    elif bits_per_sample == 64:
+        samples = struct.unpack("<" + "d" * (len(data_chunk) // 8), data_chunk)
+    else:
+        raise AssertionError(f"unexpected bits per sample: {bits_per_sample}")
+    return channels, samples
 
 
 def run_renderer(renderer: Path, *arguments: str):
@@ -1212,6 +1243,71 @@ def main():
     ).read_bytes():
         raise AssertionError("single-Channel resolved rerender changed output")
 
+    # N=1 under the default `energy` normalisation (the ablation fixture
+    # above uses `none`) must resolve the documented 1/sqrt(2) mono
+    # duplication compensation, not the N>1 sqrt(N/2) formula.
+    single_channel_energy_request = workspace / "single-channel-energy-request.json"
+    single_channel_energy_result = workspace / "single-channel-energy-result"
+    single_channel_energy_rerender = workspace / "single-channel-energy-rerender"
+    single_channel_energy_document = json.loads(reference_request.read_text())
+    single_channel_energy_document["composition"]["stages"][0]["channels"] = 1
+    del single_channel_energy_document["composition"]["stages"][2]["rightChannel"]
+    single_channel_energy_request.write_text(
+        json.dumps(single_channel_energy_document, indent=2) + "\n"
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            single_channel_energy_request,
+            "--output",
+            single_channel_energy_result,
+        )
+    )
+    single_channel_energy_downmix = json.loads(
+        (single_channel_energy_result / "resolved.json").read_text()
+    )["composition"]["stages"][2]
+    expected_mono_energy_compensation = 0.7071067811865475
+    if (
+        single_channel_energy_downmix["normalisation"] != "energy"
+        or single_channel_energy_downmix["compensation"]
+        != expected_mono_energy_compensation
+        or single_channel_energy_downmix["leftRow"] != [1.0]
+        or single_channel_energy_downmix["rightRow"] != [1.0]
+        or single_channel_energy_downmix["effectiveLeftRow"]
+        != [expected_mono_energy_compensation]
+        or single_channel_energy_downmix["effectiveRightRow"]
+        != [expected_mono_energy_compensation]
+        or "rightChannel" in single_channel_energy_downmix
+    ):
+        raise AssertionError(
+            f"unexpected N=1 energy-normalized resolved Downmix: "
+            f"{single_channel_energy_downmix}"
+        )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            single_channel_energy_result / "resolved.json",
+            "--output",
+            single_channel_energy_rerender,
+        )
+    )
+    if (single_channel_energy_rerender / "resolved.json").read_bytes() != (
+        single_channel_energy_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "N=1 energy-normalized resolved rerender changed configuration"
+        )
+    if (single_channel_energy_rerender / "output.wav").read_bytes() != (
+        single_channel_energy_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("N=1 energy-normalized resolved rerender changed output")
+
     # A Feedback Loop source resolves the Main Downmix's Alignment
     # expectation as "unaligned" (Composition wiring, not Requested
     # configuration, decides this -- issue #107), covering the "unaligned
@@ -1300,6 +1396,93 @@ def main():
         feedback_loop_downmix_result / "output.wav"
     ).read_bytes():
         raise AssertionError("unaligned Feedback Loop resolved rerender changed output")
+
+    # A non-default Channel pair (2/3 of N=4, rather than the legacy 0/1)
+    # must actually drive the DSP: capture the N-Channel signal entering
+    # the Downmix and verify output.wav reads exactly Channels 2 and 3 of
+    # it, not the archived implicit pair -- a regression that silently
+    # kept reading Channels 0/1 would pass every other Downmix scenario
+    # above, since they all happen to select 0 (and 1).
+    non_default_channel_request = workspace / "non-default-channel-request.json"
+    non_default_channel_result = workspace / "non-default-channel-result"
+    non_default_channel_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 2,
+                "seed": 7,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 4,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 1,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "hadamard",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {
+                            "type": "downmix",
+                            "strategy": "select",
+                            "leftChannel": 2,
+                            "rightChannel": 3,
+                            "normalisation": "none",
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            non_default_channel_request,
+            "--capture-stages",
+            "all",
+            "--output",
+            non_default_channel_result,
+        )
+    )
+    output_channels, output_samples = read_float_wav(
+        non_default_channel_result / "output.wav"
+    )
+    diffusion_channels, diffusion_samples = read_float_wav(
+        non_default_channel_result / "captures" / "01-diffusion-step-0.wav"
+    )
+    if output_channels != 2 or diffusion_channels != 4:
+        raise AssertionError(
+            f"unexpected Channel counts: output={output_channels}, "
+            f"captured diffusion-step={diffusion_channels}"
+        )
+    frame_count = len(output_samples) // 2
+    if len(diffusion_samples) != frame_count * 4:
+        raise AssertionError(
+            "captured Diffusion Step did not share output.wav's timeline"
+        )
+    for frame in range(frame_count):
+        expected_left = diffusion_samples[frame * 4 + 2]
+        expected_right = diffusion_samples[frame * 4 + 3]
+        actual_left = output_samples[frame * 2]
+        actual_right = output_samples[frame * 2 + 1]
+        if actual_left != expected_left or actual_right != expected_right:
+            raise AssertionError(
+                f"select Downmix did not read the requested non-default "
+                f"Channels 2/3 at frame {frame}: "
+                f"({actual_left}, {actual_right}) != "
+                f"({expected_left}, {expected_right})"
+            )
 
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))

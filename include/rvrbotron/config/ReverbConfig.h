@@ -108,11 +108,13 @@ struct DiffuserConfig {
 
 struct DownmixConfig {
   std::optional<dsp::DownmixStrategy> strategy;
-  // Required for `select` at the JSON boundary (ConfigJson.cpp), unlike
-  // the archived format-version-1 diagnostic Downmix's implicit Channel
-  // 0/1 choice (issue #107) -- this optional itself carries no default,
-  // the same split as formatVersion's. rightChannel omitted duplicates
-  // leftChannel to mono.
+  // Required for `select`, unlike the archived format-version-1
+  // diagnostic Downmix's implicit Channel 0/1 choice (issue #107): a
+  // missing leftChannel is rejected both at the JSON boundary
+  // (ConfigJson.cpp's requireField) and again in resolveDownmix, which
+  // has no fallback of its own -- so a direct (non-JSON) caller that
+  // omits it is rejected rather than silently resolved to Channel 0.
+  // rightChannel omitted duplicates leftChannel to mono.
   std::optional<std::uint32_t> leftChannel;
   std::optional<std::uint32_t> rightChannel;
   std::optional<dsp::EnergyNormalisation> normalisation;

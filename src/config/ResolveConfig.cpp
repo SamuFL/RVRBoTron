@@ -1242,7 +1242,8 @@ std::vector<double> scaledRow(
 dsp::ResolvedDownmix resolveDownmix(
     const DownmixConfig& requested,
     const std::uint32_t channels,
-    const dsp::DownmixAlignment alignment) {
+    const dsp::DownmixAlignment alignment,
+    const std::size_t stageIndex) {
   const auto strategy =
       requested.strategy.value_or(dsp::DownmixStrategy::select);
   const auto normalisation = requested.normalisation.value_or(
@@ -1255,7 +1256,14 @@ dsp::ResolvedDownmix resolveDownmix(
                 : channels == 1
                 ? 1.0 / std::sqrt(2.0)
                 : std::sqrt(static_cast<double>(channels) / 2.0);
-  const auto leftChannel = requested.leftChannel.value_or(0);
+  // No fallback: `select` has no implicit Channel choice (issue #107), so
+  // a caller that reaches this without the JSON boundary's requireField
+  // (e.g. a direct C++ ReverbConfig construction) must still be rejected
+  // here rather than silently resolving to the archived Channel-0 default.
+  if (!requested.leftChannel.has_value()) {
+    fail(stagePath(stageIndex) + "/leftChannel", "required field is missing");
+  }
+  const auto leftChannel = *requested.leftChannel;
   auto leftRow = selectRow(leftChannel, channels);
   auto rightRow = requested.rightChannel.has_value()
       ? selectRow(*requested.rightChannel, channels)
@@ -1443,7 +1451,8 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                       stageIndex));
             } else {
               resolved.composition.stages.emplace_back(
-                  resolveDownmix(stageConfig, channels, mainAlignment));
+                  resolveDownmix(
+                      stageConfig, channels, mainAlignment, stageIndex));
             }
           },
           stage);

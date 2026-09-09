@@ -1083,6 +1083,43 @@ int main() {
     return 1;
   }
 
+  // resolveConfig is a public non-JSON entry point too, so a select
+  // Downmix with no leftChannel must be rejected there directly (#107)
+  // rather than silently resolving Channel 0 -- the JSON parser's own
+  // requireField is not the only place this contract has to hold.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 2.0;
+    rvrbotron::config::DownmixConfig downmixWithoutLeftChannel;
+    downmixWithoutLeftChannel.strategy =
+        rvrbotron::dsp::DownmixStrategy::select;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmixWithoutLeftChannel);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.composition = std::move(composition);
+    bool rejected = false;
+    try {
+      static_cast<void>(
+          rvrbotron::config::resolveConfig(requested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "resolveConfig accepted a select Downmix with no "
+                   "leftChannel\n";
+      return 1;
+    }
+  }
+
   for (const auto channels : {1U, 2U, 4U, 8U, 16U}) {
     if (!reverbDiffusionStepIsAllPass(channels)) {
       std::cerr << "Diffusion Step changed pseudo-random input energy at "
