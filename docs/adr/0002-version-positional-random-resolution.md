@@ -36,3 +36,17 @@ numerically stable convention that avoids subtracting two nearly equal
 numbers — and a pivot or reflection norm at or below `1e-9` is treated as
 singular or near-singular and rejected outright rather than silently
 repaired.
+
+## Format version 2 continuity
+
+Format version 2 preserves every version-1 positional derivation and numeric
+result for existing randomized quantities. Complete Downmix adds two new
+domain-separated usage sites, `main-downmix` and `early-downmix`. Each fills an
+N×N matrix with `itemIndex = row`, `valueIndex = column`, and `drawIndex = 0`,
+then applies the same deterministic Householder QR and sign convention as
+RandomOrthogonal; rows 0 and 1 become the left and right Downmix rows. Their
+literal 64-bit usage tags are `0x4d41494e444e4d58` (`MAINDNMX`) and
+`0x4541524c444e4d58` (`EARLDNMX`) respectively. The schema compatibility break
+does not perturb established Diffusion Step, Feedback Loop, Damping, or
+Modulation experiments. See
+[ADR-0006](0006-format-v2-compatibility-boundary.md).

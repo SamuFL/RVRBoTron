@@ -79,7 +79,11 @@ One-pole shelves. Gentle slopes, minimal ringing, negligible phase disturbance r
 
 Ratios above 1.0 are permitted where stable — unnatural, occasionally useful, and the stability check decides.
 
-`damping` is optional inside the Feedback Loop configuration. Omission disables it and preserves existing format-version-1 behavior. When the object is present, omitted fields resolve to the values above: a meaningful research baseline rather than a product default. Explicit unity ratios remain available for identity experiments.
+`damping` is optional inside the Feedback Loop configuration. Omission disables
+it, matching the sonic behavior archived at `format-v1-final`. When the object
+is present, omitted fields resolve to the values above: a meaningful research
+baseline rather than a product default. Explicit unity ratios remain available
+for identity experiments.
 
 ---
 

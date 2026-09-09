@@ -41,7 +41,7 @@ Consequence: which knobs eventually appear in the plugin is explicitly undecided
 | **Echo path** | One structural propagation route through the Diffuser. k steps over N Channels create Nᵏ paths before timing collisions or cancellation. |
 | **Distinct arrival** | One output time containing energy from one or more Echo paths after timing collisions and cancellation. |
 | **Echo density** | Distinct arrivals per second. Around 2000–4000/s they fuse into continuous sound. |
-| **Aligned** | All channels carry the same echo times, differing in sign or amplitude. The diffuser produces aligned output; the feedback loop destroys alignment. Determines whether channels may be summed. |
+| **Aligned** | All channels carry the same echo times, differing in sign or amplitude. The diffuser produces aligned output; the feedback loop destroys alignment. Determines how summing behaves and which Downmix is appropriate. |
 | **Alignment score** | Pairwise overlap of active arrival times between Channels, independent of amplitude sign. |
 | **Coloration** | Timbral character imposed by the reverb itself, usually from regularity in the phase response. |
 | **RT60** | Time to decay 60 dB. An input the user requests; gain is solved from it. Defined at the undamped reference band. |
@@ -64,16 +64,16 @@ Validity is enforced at configuration load, loudly. Hadamard at N=20 is a hard e
 ## Part III — The shape of the reverb
 
 ```
-                                              ┌──────────────────┐
-                                        ┌────►│ EarlyReflections ├────┐
-                                        │     └──────────────────┘    ▼
-  in ─► Split ─► Diffuser ──────────────┴────► FeedbackLoop ──────► Downmix ─► out
+                    ┌──── taps ───► EarlyReflections ─► Downmix ─────┐
+                    │                                                ▼
+  in ─► Split ─► Diffuser ─────────────► FeedbackLoop ─► Downmix ─► sum ─► out
            │         │                              │
         N chans  DiffusionStep × k          delays, decay gain, mix
                  + Modulation               + Damping + Modulation
 ```
 
-Everything between Split and Downmix is multi-channel. The two halves do separate jobs:
+Everything before either Downmix is multi-channel. The Main wet path and its
+optional parallel Early Reflections branch do separate jobs:
 
 - **Diffuser** makes the sound *diffuse*. All-pass throughout, no feedback, so it imposes no coloration.
 - **FeedbackLoop** makes the sound *long-lasting*. Contains feedback, so it isn't all-pass — but needn't build echo density, because the diffuser already did.
@@ -107,7 +107,9 @@ Each stage document follows the same shape: what it does musically, what it does
 5. **Matrix validity.** No matrix constructed for an unsupported N.
 6. **Numerical hygiene.** No NaN, no denormal stalls, monotonic decay after input ceases.
 7. **Dependency direction.** `dsp/` includes nothing outside the standard library.
-8. **Level independence.** Output level is unchanged by N, by strategy choices, and by width.
+8. **Level independence.** Downmix uses expected-power normalization so N and
+   strategy do not silently become level controls. Width preserves expected
+   power for decorrelated stereo input; actual energy change is measured.
 9. **Identity at neutral.** Every optional component, at its neutral setting, produces output bit-identical to that component disabled.
 
 ---
