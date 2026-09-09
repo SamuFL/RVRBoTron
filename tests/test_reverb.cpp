@@ -261,6 +261,29 @@ rvrbotron::config::DownmixConfig referenceSelectDownmixConfig(
   return downmix;
 }
 
+// An independent re-derivation of resolveWidthMatrix (issue #109,
+// docs/design/reverb/stages/08-downmix.md's "Width as a constant-power
+// mid/side law"), shared by every Width test below so the trig formula
+// is written once rather than copy-pasted at each call site.
+std::array<double, 4> expectedWidthMatrix(const double widthDeg) {
+  const auto half = 1.0 / std::sqrt(2.0);
+  if (widthDeg == 0.0) {
+    return {half, half, half, half};
+  }
+  if (widthDeg == 90.0) {
+    return {1.0, 0.0, 0.0, 1.0};
+  }
+  if (widthDeg == 180.0) {
+    return {half, -half, -half, half};
+  }
+  const auto halfAngleRad = widthDeg * (rvrbotron::dsp::kPi / 180.0) / 2.0;
+  const auto cosHalf = std::cos(halfAngleRad);
+  const auto sinHalf = std::sin(halfAngleRad);
+  const auto a = (cosHalf + sinHalf) * half;
+  const auto b = (cosHalf - sinHalf) * half;
+  return {a, b, b, a};
+}
+
 rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
     const std::uint32_t channels,
     const rvrbotron::dsp::MixMatrixType mix =
@@ -1565,23 +1588,7 @@ int main() {
       std::cerr << "Width did not resolve the requested widthDeg\n";
       return 1;
     }
-    const auto half = 1.0 / std::sqrt(2.0);
-    std::array<double, 4> expectedMatrix{};
-    if (widthDeg == 0.0) {
-      expectedMatrix = {half, half, half, half};
-    } else if (widthDeg == 90.0) {
-      expectedMatrix = {1.0, 0.0, 0.0, 1.0};
-    } else if (widthDeg == 180.0) {
-      expectedMatrix = {half, -half, -half, half};
-    } else {
-      const auto halfAngleRad =
-          widthDeg * (rvrbotron::dsp::kPi / 180.0) / 2.0;
-      const auto cosHalf = std::cos(halfAngleRad);
-      const auto sinHalf = std::sin(halfAngleRad);
-      const auto a = (cosHalf + sinHalf) * half;
-      const auto b = (cosHalf - sinHalf) * half;
-      expectedMatrix = {a, b, b, a};
-    }
+    const auto expectedMatrix = expectedWidthMatrix(widthDeg);
     if (resolvedDownmix.widthMatrix.size() != 4) {
       std::cerr << "Width matrix did not resolve to 4 elements\n";
       return 1;
@@ -1609,22 +1616,8 @@ int main() {
       config.normalisation = rvrbotron::dsp::EnergyNormalisation::none;
       config.compensation = 1.0;
       config.widthDeg = widthDeg;
-      const auto half = 1.0 / std::sqrt(2.0);
-      if (widthDeg == 0.0) {
-        config.widthMatrix = {half, half, half, half};
-      } else if (widthDeg == 90.0) {
-        config.widthMatrix = {1.0, 0.0, 0.0, 1.0};
-      } else if (widthDeg == 180.0) {
-        config.widthMatrix = {half, -half, -half, half};
-      } else {
-        const auto halfAngleRad =
-            widthDeg * (rvrbotron::dsp::kPi / 180.0) / 2.0;
-        const auto cosHalf = std::cos(halfAngleRad);
-        const auto sinHalf = std::sin(halfAngleRad);
-        const auto a = (cosHalf + sinHalf) * half;
-        const auto b = (cosHalf - sinHalf) * half;
-        config.widthMatrix = {a, b, b, a};
-      }
+      const auto matrix = expectedWidthMatrix(widthDeg);
+      config.widthMatrix.assign(matrix.begin(), matrix.end());
       return rvrbotron::dsp::Downmix(config);
     };
     const auto preWidthLeft = static_cast<rvrbotron::dsp::Sample>(0.6);
@@ -1709,18 +1702,13 @@ int main() {
       std::array<rvrbotron::dsp::Sample, 1> right{};
       rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
       downmix.processFrame(channelsData, outputs, 0);
-      const auto halfAngleRad = 45.0 * (rvrbotron::dsp::kPi / 180.0) / 2.0;
-      const auto cosHalf = std::cos(halfAngleRad);
-      const auto sinHalf = std::sin(halfAngleRad);
-      const auto half = 1.0 / std::sqrt(2.0);
-      const auto a = (cosHalf + sinHalf) * half;
-      const auto b = (cosHalf - sinHalf) * half;
+      const auto matrix45 = expectedWidthMatrix(45.0);
       const auto expectedLeft =
-          a * static_cast<double>(preWidthLeft) +
-          b * static_cast<double>(preWidthRight);
+          matrix45[0] * static_cast<double>(preWidthLeft) +
+          matrix45[1] * static_cast<double>(preWidthRight);
       const auto expectedRight =
-          b * static_cast<double>(preWidthLeft) +
-          a * static_cast<double>(preWidthRight);
+          matrix45[2] * static_cast<double>(preWidthLeft) +
+          matrix45[3] * static_cast<double>(preWidthRight);
       if (!close(left[0], expectedLeft) || !close(right[0], expectedRight)) {
         std::cerr << "Width at 45 degrees did not match the documented "
                      "formula\n";

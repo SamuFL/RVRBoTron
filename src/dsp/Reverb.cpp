@@ -172,9 +172,14 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(), state.midStageValues.data());
     }
 
-    // A disabled Main wet path skips Downmix processing entirely and
-    // contributes exact stereo zero (issue #109), rather than a
-    // zero-multiplied value.
+    // A disabled Main wet path skips its own Downmix (and Width, and
+    // level) processing entirely and contributes exact stereo zero
+    // (issue #109), rather than a zero-multiplied value. Split/Diffuser/
+    // Feedback Loop above run unconditionally regardless of mainEnabled:
+    // they are shared interior signal, not Main-branch-specific -- the
+    // still-unimplemented Early Reflections branch (#105) will tap the
+    // same Diffuser's per-step output even when Main is disabled, so
+    // this is not a shortcut that a future branch would need to undo.
     if (state.mainEnabled) {
       state.downmix->processFrame(
           state.midStageValues.data(), outputs, frame);

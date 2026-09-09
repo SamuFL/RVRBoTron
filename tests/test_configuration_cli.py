@@ -2663,6 +2663,20 @@ def main():
             )
         width_energy_by_degrees[width_deg] = width_energy
 
+    # Width actually changes energy on this fixture -- not a universal
+    # acoustic threshold (docs/design/reverb/stages/08-downmix.md's
+    # "Width evidence" explicitly reports rather than gates this), but a
+    # genuinely measured change rather than the same value reported three
+    # times over.
+    distinct_width_energies = {
+        round(value, 9) for value in width_energy_by_degrees.values()
+    }
+    if len(distinct_width_energies) < 2:
+        raise AssertionError(
+            f"Width did not measurably change output energy across "
+            f"0/90/180 degrees: {width_energy_by_degrees}"
+        )
+
     width_evidence_path = workspace / "main-width-energy-evidence.json"
     width_evidence_path.write_text(
         json.dumps(width_energy_by_degrees, indent=2)
@@ -2670,31 +2684,38 @@ def main():
 
     # widthDeg must stay within its declared structural domain (#109,
     # docs/design/reverb/stages/09-composition.md's Rules table: "width
-    # must be finite and in their declared structural domains").
-    width_out_of_range_document = json.loads(json.dumps(main_base_document))
-    width_out_of_range_document["composition"]["stages"][2][
-        "widthDeg"
-    ] = 200.0
-    width_out_of_range_request = workspace / (
-        "main-width-out-of-range-request.json"
-    )
-    width_out_of_range_request.write_text(
-        json.dumps(width_out_of_range_document)
-    )
-    require_failure(
-        run_renderer(
-            renderer,
-            "--input",
-            fixture,
-            "--config",
-            width_out_of_range_request,
-            "--output",
-            workspace / "main-width-out-of-range-result",
-        ),
-        "/composition/stages/2/widthDeg: "
-        "expected a finite value within [0, 180]",
-        workspace / "main-width-out-of-range-result",
-    )
+    # must be finite and in their declared structural domains") -- both
+    # above 180 and below 0.
+    for out_of_range_width_deg in (200.0, -10.0):
+        width_out_of_range_document = json.loads(
+            json.dumps(main_base_document)
+        )
+        width_out_of_range_document["composition"]["stages"][2][
+            "widthDeg"
+        ] = out_of_range_width_deg
+        width_out_of_range_request = workspace / (
+            f"main-width-out-of-range-{out_of_range_width_deg}-"
+            f"request.json"
+        )
+        width_out_of_range_request.write_text(
+            json.dumps(width_out_of_range_document)
+        )
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                width_out_of_range_request,
+                "--output",
+                workspace
+                / f"main-width-out-of-range-{out_of_range_width_deg}-result",
+            ),
+            "/composition/stages/2/widthDeg: "
+            "expected a finite value within [0, 180]",
+            workspace
+            / f"main-width-out-of-range-{out_of_range_width_deg}-result",
+        )
 
     # An extreme mainLevelDb whose derived linear mainGain overflows to
     # infinity is rejected rather than propagated into a non-finite gain.
