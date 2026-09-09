@@ -38,7 +38,7 @@ remains an explicit measurable ablation handled by Stage 7.
 
 `select` and `sum-all` support N≥1. The other strategies require N≥2.
 Selected Channel indices are zero-based, explicit in Resolved Configuration,
-and must be distinct when both are present.
+must be within `[0, N)`, and must be distinct when both are present.
 
 ### Width as a constant-power mid/side law
 

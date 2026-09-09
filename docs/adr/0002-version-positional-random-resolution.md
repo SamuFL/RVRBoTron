@@ -45,8 +45,8 @@ domain-separated usage sites, `main-downmix` and `early-downmix`. Each fills an
 N×N matrix with `itemIndex = row`, `valueIndex = column`, and `drawIndex = 0`,
 then applies the same deterministic Householder QR and sign convention as
 RandomOrthogonal; rows 0 and 1 become the left and right Downmix rows. Their
-literal 64-bit usage tags must be recorded here as part of the format contract
-when the implementation assigns them. The schema compatibility break does not
-perturb established Diffusion Step, Feedback Loop, Damping, or Modulation
-experiments. See
+literal 64-bit usage tags are `0x4d41494e444e4d58` (`MAINDNMX`) and
+`0x4541524c444e4d58` (`EARLDNMX`) respectively. The schema compatibility break
+does not perturb established Diffusion Step, Feedback Loop, Damping, or
+Modulation experiments. See
 [ADR-0006](0006-format-v2-compatibility-boundary.md).

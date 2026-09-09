@@ -128,6 +128,7 @@ empty identity Composition.
 | Damping must preserve the 1 kHz RT60 contract and remain conservatively contractive after float32 and float64 quantisation | Stage 5 |
 | Downmix Alignment expectation must match its source path | Stage 8 |
 | Tap indices must reference existing diffusion steps | Stage 7 |
+| Selected Downmix Channel indices must be within `[0, N)` and distinct when both are present | Stage 8 |
 | Delay buffers must cover nominal delay + symmetric modulation Excursion + a worst-case Interpolation margin, and every modulated Channel's resolved delay less that Excursion must exceed the margin | Stage 6 |
 | Resolved step lengths must sum to `totalMs` | Stage 3 |
 | Requested gains, levels, envelope slopes, and width must be finite and in their declared structural domains | Stages 7–8 |
@@ -204,8 +205,9 @@ Reverb           : owns the stages, built from ResolvedConfig
 Version 2 requires an explicit `formatVersion`. Missing versions, version 1,
 and unsupported future versions fail at `/formatVersion`; the version-1 error
 names the compatibility tag and exact commit. Rejection lands atomically with
-usable version-2 parsing and resolution rather than creating a commit that can
-load no configuration.
+usable version-2 parsing and resolution plus the matching README request-field
+reference rather than creating a commit that can load no documented
+configuration.
 
 **Research evidence stays outside sonic configuration.** `--capture-stages all` is a renderer option recorded in `render.json`, not part of Requested or Resolved Configuration. It writes manifested multi-Channel Stage captures through an optional capture-sink seam on `Reverb`; see [ADR-0003](../../../adr/0003-capture-internal-stage-evidence.md).
 
