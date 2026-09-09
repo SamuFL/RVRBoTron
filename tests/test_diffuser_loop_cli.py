@@ -71,7 +71,7 @@ def main():
     # identical to a loop-only render's -- proving loop time is unaffected
     # by the Diffuser placed in front of it.
     loop_only_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [
@@ -94,7 +94,7 @@ def main():
         },
     }
     diffuser_loop_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

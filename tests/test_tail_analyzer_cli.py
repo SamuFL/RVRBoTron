@@ -97,7 +97,7 @@ def feedback_loop_request(channels=2, **overrides):
     }
     loop.update(overrides)
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [
@@ -116,7 +116,7 @@ def feedback_loop_request(channels=2, **overrides):
 
 def diffuser_only_request():
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 42,
         "composition": {
             "stages": [

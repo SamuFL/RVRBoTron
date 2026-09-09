@@ -64,7 +64,7 @@ Create `request.json`:
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "seed": 0,
   "composition": {"stages": []}
 }
@@ -116,7 +116,7 @@ build/default/rvrbotron render \
 
 ### Render the first Reference Diffusion Step
 
-Format version 1 also accepts the ordered `[split, diffuser, downmix]` and
+Format version 2 also accepts the ordered `[split, diffuser, downmix]` and
 `[split, feedback-loop, downmix]` Composition shapes (the latter documented
 in [Sustain a Response with a Feedback Loop](#sustain-a-response-with-a-feedback-loop)
 below). The Diffuser resolves to an ordered chain of Hadamard Diffusion
@@ -126,7 +126,7 @@ support `normalisation: "none"`, `delayStrategy: "even"` or
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "seed": 42,
   "composition": {
     "stages": [
@@ -196,7 +196,7 @@ build/default/rvrbotron render \
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `formatVersion` | integer | `1` | Only `1` is supported. |
+| `formatVersion` | integer | *(required)* | Must be `2`. Missing or unsupported values fail at `/formatVersion`; version `1` fails with the exact recovery message naming tag `format-v1-final` (commit `8a4e718`), the last build able to render or analyze it. See [ADR-0006](docs/adr/0006-format-v2-compatibility-boundary.md). |
 | `seed` | unsigned 64-bit integer | `0` | Drives every seeded-random derivation (delays, shuffle, polarity). |
 | `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`. |
 
@@ -303,7 +303,7 @@ build/default/rvrbotron render \
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "seed": 0,
   "composition": {
     "stages": [

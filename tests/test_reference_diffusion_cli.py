@@ -57,7 +57,7 @@ def main():
     request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [

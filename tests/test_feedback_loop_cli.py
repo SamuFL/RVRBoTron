@@ -62,7 +62,7 @@ def main():
     # channel) is 0 for channel 0 and lastPosition for channel 1, so the two
     # resolved delays land exactly on delayMinMs and delayMaxMs.
     request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

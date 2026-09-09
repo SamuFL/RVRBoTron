@@ -268,7 +268,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffusionConfig(
   composition.stages.emplace_back(downmix);
 
   rvrbotron::config::ReverbConfig requested;
-  requested.formatVersion = 1;
+  requested.formatVersion = 2;
   requested.seed = 0xd1b54a32d192ed03ULL;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, 48000, 1);
@@ -310,7 +310,7 @@ rvrbotron::dsp::ResolvedConfig resolvedFeedbackLoopConfig(
   composition.stages.emplace_back(downmix);
 
   rvrbotron::config::ReverbConfig requested;
-  requested.formatVersion = 1;
+  requested.formatVersion = 2;
   requested.seed = 0x9e3779b97f4a7c15ULL;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
@@ -355,7 +355,7 @@ rvrbotron::dsp::ResolvedConfig resolvedModulatedLoopConfig(
   composition.stages.emplace_back(downmix);
 
   rvrbotron::config::ReverbConfig requested;
-  requested.formatVersion = 1;
+  requested.formatVersion = 2;
   requested.seed = seed;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
@@ -413,7 +413,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserStepModulatedConfig(
   composition.stages.emplace_back(downmix);
 
   rvrbotron::config::ReverbConfig requested;
-  requested.formatVersion = 1;
+  requested.formatVersion = 2;
   requested.seed = seed;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, 48000, 1);
@@ -469,7 +469,7 @@ rvrbotron::dsp::ResolvedConfig resolvedDiffuserThenLoopConfig(
   composition.stages.emplace_back(downmix);
 
   rvrbotron::config::ReverbConfig requested;
-  requested.formatVersion = 1;
+  requested.formatVersion = 2;
   requested.seed = 0x9e3779b97f4a7c15ULL;
   requested.composition = std::move(composition);
   return rvrbotron::config::resolveConfig(requested, sampleRate, 1);
@@ -941,7 +941,7 @@ int main() {
   }
 
   const rvrbotron::dsp::ResolvedConfig identityConfig{
-      1,
+      2,
       0,
       48000,
       {},

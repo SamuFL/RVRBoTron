@@ -4,10 +4,42 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 namespace rvrbotron::config {
+
+// The only reverb configuration format version this build parses (see
+// ADR-0006 and issue #106). Requested and Resolved reverb configuration
+// both require this exact value at `/formatVersion`.
+constexpr std::uint32_t kReverbConfigFormatVersion = 2;
+
+// The archived build that still renders and analyzes format-version-1
+// configuration (see ADR-0006). Named here, once, so every `/formatVersion`
+// rejection message quotes the same tag and commit.
+constexpr std::string_view kFormatVersion1RecoveryReason =
+    "reverb configuration format 1 is unsupported by this build; use tag "
+    "format-v1-final (commit 8a4e718) to render or analyze format-1 "
+    "configurations";
+
+// The reason to report at `/formatVersion` for an unsupported version, or
+// nullopt when `version` is the one supported format. Shared by Requested
+// and Resolved configuration parsing so both name the same archived build
+// for version 1 and the same wording -- derived from
+// kReverbConfigFormatVersion rather than a second hardcoded literal -- for
+// every other unsupported version.
+inline std::optional<std::string> formatVersionRejectionReason(
+    const std::uint32_t version) {
+  if (version == kReverbConfigFormatVersion) {
+    return std::nullopt;
+  }
+  if (version == 1) {
+    return std::string(kFormatVersion1RecoveryReason);
+  }
+  return "expected integer " + std::to_string(kReverbConfigFormatVersion);
+}
 
 // Reference-configuration defaults for an omitted Diffuser stage (see
 // docs/design/reverb/stages/03-diffuser.md): four Diffusion Steps spanning

@@ -1169,12 +1169,15 @@ config::ReverbConfig parseRequestedConfig(const std::string_view contents) {
   requireObject(json, "/");
   rejectUnknownFields(
       json, "/", {"formatVersion", "seed", "composition"});
+  requireField(json, "formatVersion", "");
+  const auto formatVersion =
+      parseUnsigned32(json.at("formatVersion"), "/formatVersion");
+  if (const auto reason = config::formatVersionRejectionReason(formatVersion)) {
+    fail("/formatVersion", *reason);
+  }
 
   config::ReverbConfig requested;
-  if (json.contains("formatVersion")) {
-    requested.formatVersion =
-        parseUnsigned32(json.at("formatVersion"), "/formatVersion");
-  }
+  requested.formatVersion = formatVersion;
   if (json.contains("seed")) {
     requested.seed = parseSeed(json.at("seed"));
   }
@@ -1195,13 +1198,19 @@ dsp::ResolvedConfig parseResolvedConfig(
       "/",
       {"formatVersion", "seed", "sampleRate", "composition"});
 
-  for (const auto field :
-       {"formatVersion", "seed", "sampleRate", "composition"}) {
+  requireField(json, "formatVersion", "");
+  const auto formatVersion =
+      parseUnsigned32(json.at("formatVersion"), "/formatVersion");
+  if (const auto reason = config::formatVersionRejectionReason(formatVersion)) {
+    fail("/formatVersion", *reason);
+  }
+
+  for (const auto field : {"seed", "sampleRate", "composition"}) {
     requireField(json, field, "");
   }
 
   const dsp::ResolvedConfig resolved{
-      parseUnsigned32(json.at("formatVersion"), "/formatVersion"),
+      formatVersion,
       parseSeed(json.at("seed")),
       parseUnsigned32(json.at("sampleRate"), "/sampleRate"),
       parseResolvedComposition(json.at("composition")),

@@ -63,7 +63,7 @@ def feedback_loop_request(channels=2, damping=None, seed=7, **overrides):
         loop["damping"] = damping
     loop.update(overrides)
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": seed,
         "composition": {
             "stages": [
@@ -321,7 +321,7 @@ def main():
 
     # A Composition without a Feedback Loop is rejected, mirroring tail-v1.
     diffuser_only_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 42,
         "composition": {
             "stages": [

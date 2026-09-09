@@ -56,7 +56,7 @@ def base_request(modulation=None, channels=2) -> dict:
     if modulation is not None:
         loop["modulation"] = modulation
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

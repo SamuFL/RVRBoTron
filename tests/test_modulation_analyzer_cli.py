@@ -64,7 +64,7 @@ def feedback_loop_request(
         loop["modulation"] = modulation
     loop.update(overrides)
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": seed,
         "composition": {
             "stages": [
@@ -292,7 +292,7 @@ def main():
 
     # A Composition without a Feedback Loop is rejected.
     diffuser_only_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 42,
         "composition": {
             "stages": [
@@ -370,7 +370,7 @@ def main():
     # Composition) is reported under its own distinct owner, alongside the
     # Feedback Loop's.
     combined_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 11,
         "composition": {
             "stages": [
@@ -475,7 +475,7 @@ def main():
     # A bypassed Diffusion Step Modulation alongside an active Feedback
     # Loop Modulation: only the Feedback Loop counts as active.
     diffuser_bypass_request = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 13,
         "composition": {
             "stages": [

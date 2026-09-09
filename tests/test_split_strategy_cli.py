@@ -62,7 +62,7 @@ def stereo_request(
     strategy: str, channels: int = 4, normalisation: str = "energy"
 ):
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 1,
         "composition": {
             "stages": [

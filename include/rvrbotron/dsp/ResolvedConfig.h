@@ -310,7 +310,7 @@ struct ResolvedComposition {
 };
 
 struct ResolvedConfig {
-  std::uint32_t formatVersion = 1;
+  std::uint32_t formatVersion = 2;
   std::uint64_t seed = 0;
   std::uint32_t sampleRate = 0;
   ResolvedComposition composition;

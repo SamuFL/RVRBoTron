@@ -52,7 +52,7 @@ def main():
     # low-corner axis does), so the sweep produces exactly three points:
     # reference, high-ratio/strong, low-corner/100Hz.
     reference = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [
