@@ -37,7 +37,7 @@ def main():
     # produces exactly three points: reference, delay-range/large,
     # gain-mode/uniform.
     reference = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

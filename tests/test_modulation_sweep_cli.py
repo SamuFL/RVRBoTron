@@ -53,7 +53,7 @@ def main():
     # Loop's own Modulation) real modulation_sweep_v1.json's own target axis
     # uses.
     reference = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

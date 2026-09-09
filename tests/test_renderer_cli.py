@@ -100,7 +100,7 @@ def main():
 
     resolved = json.loads((result / "resolved.json").read_text())
     if resolved != {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 0,
         "sampleRate": 48000,
         "composition": {"stages": []},

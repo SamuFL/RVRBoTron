@@ -1169,12 +1169,15 @@ config::ReverbConfig parseRequestedConfig(const std::string_view contents) {
   requireObject(json, "/");
   rejectUnknownFields(
       json, "/", {"formatVersion", "seed", "composition"});
+  requireField(json, "formatVersion", "");
+  const auto formatVersion =
+      parseUnsigned32(json.at("formatVersion"), "/formatVersion");
+  if (const auto reason = config::formatVersionRejectionReason(formatVersion)) {
+    fail("/formatVersion", *reason);
+  }
 
   config::ReverbConfig requested;
-  if (json.contains("formatVersion")) {
-    requested.formatVersion =
-        parseUnsigned32(json.at("formatVersion"), "/formatVersion");
-  }
+  requested.formatVersion = formatVersion;
   if (json.contains("seed")) {
     requested.seed = parseSeed(json.at("seed"));
   }

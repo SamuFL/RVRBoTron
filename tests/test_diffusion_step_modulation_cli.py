@@ -76,7 +76,7 @@ def base_request(
     if loop_modulation is not None:
         loop["modulation"] = loop_modulation
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 11,
         "composition": {
             "stages": [

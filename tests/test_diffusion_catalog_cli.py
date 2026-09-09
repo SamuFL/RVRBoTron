@@ -37,7 +37,7 @@ def main():
     # JSON Pointer, one at render time via an invalid resolved value), and
     # two listening cases -- one whose sample is present, one that is not.
     reference = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 7,
         "composition": {
             "stages": [

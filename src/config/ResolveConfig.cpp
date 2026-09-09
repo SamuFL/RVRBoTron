@@ -1283,7 +1283,7 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                                   const std::uint32_t inputChannels,
                                   const std::uint64_t memoryBudgetBytes) {
   dsp::ResolvedConfig resolved{
-      requested.formatVersion.value_or(1),
+      requested.formatVersion.value_or(kReverbConfigFormatVersion),
       requested.seed.value_or(0),
       sampleRate,
       {},
@@ -1311,7 +1311,7 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           std::holds_alternative<FeedbackLoopConfig>(
               requestedComposition->stages[2])));
     const auto deriveChannelValues =
-        resolved.formatVersion == 1 &&
+        resolved.formatVersion == kReverbConfigFormatVersion &&
         sampleRate != 0 &&
         inputChannels > 0 &&
         inputChannels <= 2 &&
@@ -2543,8 +2543,8 @@ void validateResolvedConfig(
     const dsp::ResolvedConfig& resolved,
     const ResolutionEvidence* const resolutionEvidence,
     const std::uint64_t memoryBudgetBytes) {
-  if (resolved.formatVersion != 1) {
-    fail("/formatVersion", "expected integer 1");
+  if (const auto reason = formatVersionRejectionReason(resolved.formatVersion)) {
+    fail("/formatVersion", *reason);
   }
   if (resolved.sampleRate == 0) {
     fail("/sampleRate", "expected value greater than zero");

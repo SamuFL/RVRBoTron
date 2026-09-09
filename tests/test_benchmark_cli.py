@@ -28,7 +28,7 @@ def main():
     request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -225,7 +225,7 @@ def main():
     modulation_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -362,7 +362,7 @@ def main():
     empty_resolved.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 0,
                 "sampleRate": 48000,
                 "composition": {"stages": []},

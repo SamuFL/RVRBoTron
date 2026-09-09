@@ -47,7 +47,7 @@ def main():
     resolved_result = workspace / "resolved-result"
     request_bytes = (
         b"{\r\n"
-        b'  "formatVersion": 1,\n'
+        b'  "formatVersion": 2,\n'
         b'  "seed": 18446744073709551615,\r\n'
         b'  "composition": {"stages": []}\n'
         b"}\r\n"
@@ -77,7 +77,7 @@ def main():
 
     resolved = json.loads((requested_result / "resolved.json").read_text())
     expected = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 18446744073709551615,
         "sampleRate": 48000,
         "composition": {"stages": []},
@@ -114,32 +114,54 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved rerender changed identity output")
 
+    # A totally empty request is missing the now-mandatory formatVersion
+    # and must fail at /formatVersion rather than silently defaulting.
     empty_request = workspace / "empty-request.json"
     empty_result = workspace / "empty-result"
     empty_request.write_text("{}\n")
-    empty = run_renderer(
-        renderer,
-        "--input",
-        fixture,
-        "--config",
-        empty_request,
-        "--output",
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            empty_request,
+            "--output",
+            empty_result,
+        ),
+        "invalid_configuration at /formatVersion: required field is missing",
         empty_result,
     )
-    require_success(empty)
-    if json.loads((empty_result / "resolved.json").read_text()) != {
-        "formatVersion": 1,
+
+    minimal_request = workspace / "minimal-request.json"
+    minimal_result = workspace / "minimal-result"
+    minimal_request.write_text('{"formatVersion": 2}\n')
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            minimal_request,
+            "--output",
+            minimal_result,
+        )
+    )
+    if json.loads((minimal_result / "resolved.json").read_text()) != {
+        "formatVersion": 2,
         "seed": 0,
         "sampleRate": 48000,
         "composition": {"stages": []},
     }:
-        raise AssertionError("empty request did not use current defaults")
-    if (empty_result / "request.json").read_text() != "{}\n":
-        raise AssertionError("empty raw request was not preserved")
+        raise AssertionError("minimal request did not use current defaults")
+    if (minimal_result / "request.json").read_text() != '{"formatVersion": 2}\n':
+        raise AssertionError("minimal raw request was not preserved")
 
     omitted_stages_request = workspace / "omitted-stages-request.json"
     omitted_stages_result = workspace / "omitted-stages-result"
-    omitted_stages_request.write_text('{"composition": {}}\n')
+    omitted_stages_request.write_text(
+        '{"formatVersion": 2, "composition": {}}\n'
+    )
     require_success(
         run_renderer(
             renderer,
@@ -152,11 +174,11 @@ def main():
         )
     )
     if (omitted_stages_result / "output.wav").read_bytes() != (
-        empty_result / "output.wav"
+        minimal_result / "output.wav"
     ).read_bytes():
         raise AssertionError("omitted stages were not exact identity")
     if json.loads((omitted_stages_result / "resolved.json").read_text()) != {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": 0,
         "sampleRate": 48000,
         "composition": {"stages": []},
@@ -169,7 +191,7 @@ def main():
     reference_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -542,7 +564,7 @@ def main():
     ablation_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "composition": {
                     "stages": [
                         {
@@ -645,7 +667,7 @@ def main():
     uniform_random_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -779,7 +801,7 @@ def main():
     householder_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -874,7 +896,7 @@ def main():
     random_orthogonal_request.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 42,
                 "composition": {
                     "stages": [
@@ -1312,8 +1334,12 @@ def main():
         "totalMs": 300,
         "distribution": "doubling",
     }
+    # An unsupported formatVersion (neither 2 nor the archived 1) alongside
+    # otherwise catastrophic parameters: the format check must still fail
+    # fast and cleanly rather than the resolver hanging or crashing on a
+    # billion-Channel, 30000-second Diffuser.
     unsafe_format_request = json.loads(reference_request.read_text())
-    unsafe_format_request["formatVersion"] = 2
+    unsafe_format_request["formatVersion"] = 3
     unsafe_format_request["composition"]["stages"][0]["channels"] = 1073741824
     unsafe_format_request["composition"]["stages"][1]["totalMs"] = 30000000
     invalid_requests = [
@@ -1322,38 +1348,45 @@ def main():
             "invalid_configuration at /unexpected: unknown field",
         ),
         (
-            '{"composition": {"unexpected": true}}',
+            '{"formatVersion": 2, "composition": {"unexpected": true}}',
             "invalid_configuration at /composition/unexpected: unknown field",
         ),
         (
-            '{"formatVersion": 2}',
-            "invalid_configuration at /formatVersion: expected integer 1",
+            '{}',
+            "invalid_configuration at /formatVersion: required field is missing",
+        ),
+        (
+            '{"formatVersion": 1, "composition": {"stages": []}}',
+            "invalid_configuration at /formatVersion: reverb configuration "
+            "format 1 is unsupported by this build; use tag format-v1-final "
+            "(commit 8a4e718) to render or analyze format-1 configurations",
         ),
         (
             json.dumps(unsafe_format_request),
-            "invalid_configuration at /formatVersion: expected integer 1",
+            "invalid_configuration at /formatVersion: expected integer 2",
         ),
         (
-            '{"seed": -1}',
+            '{"formatVersion": 2, "seed": -1}',
             "invalid_configuration at /seed: expected unsigned 64-bit integer",
         ),
         (
-            '{"composition": {"stages": [{}]}}',
+            '{"formatVersion": 2, "composition": {"stages": [{}]}}',
             "invalid_configuration at /composition/stages/0/type: required field is missing",
         ),
         (
-            '{"composition": {"stages": [{"type": "downmix"}, {"type": "split"}]}}',
+            '{"formatVersion": 2, "composition": {"stages": '
+            '[{"type": "downmix"}, {"type": "split"}]}}',
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
         (
-            '{"composition": {"stages": ['
+            '{"formatVersion": 2, "composition": {"stages": ['
             '{"type": "split"}, {"type": "feedback-loop"}, '
             '{"type": "diffuser"}, {"type": "downmix"}'
             ']}}',
             "invalid_configuration at /composition/stages: expected [split, diffuser, downmix]",
         ),
         (
-            '{"composition": {"stages": ['
+            '{"formatVersion": 2, "composition": {"stages": ['
             '{"type": "split"}, {"type": "diffuser"}, '
             '{"type": "diffuser"}, {"type": "feedback-loop"}, '
             '{"type": "downmix"}'
@@ -1445,7 +1478,7 @@ def main():
     mismatched_resolved.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 0,
                 "sampleRate": 44100,
                 "composition": {"stages": []},
@@ -1472,7 +1505,7 @@ def main():
     oversized_resolved.write_text(
         json.dumps(
             {
-                "formatVersion": 1,
+                "formatVersion": 2,
                 "seed": 0,
                 "sampleRate": 4294967297,
                 "composition": {"stages": []},

@@ -71,7 +71,7 @@ DELAY_MAX_MS = 60.0
 
 def request(depth_ms, rate_hz, interpolation, rt60_sec):
     return {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "seed": SEED,
         "composition": {
             "stages": [
