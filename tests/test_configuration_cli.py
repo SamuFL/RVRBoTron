@@ -1926,7 +1926,6 @@ def main():
     }
     for strategy_name, expected_row_fn in group_strategies.items():
         group_energy_by_channels = {}
-        group_request_path = workspace / "unused"
         for group_channels in (4, 5, 8):
             group_request_path = workspace / (
                 f"{strategy_name}-{group_channels}-request.json"
