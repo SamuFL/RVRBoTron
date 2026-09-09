@@ -25,6 +25,11 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   // no Feedback Loop is present, meaning no bound applies.
   std::uint64_t blockSizeBound = 0;
   StageCaptureSink* captureSink = nullptr;
+  // The Main wet path's own enablement and level (issue #109). Moot while
+  // `identity` is true. Disabled skips the Downmix call entirely below,
+  // contributing exact stereo zero rather than a zero-multiplied value.
+  bool mainEnabled = true;
+  Sample mainGain{1};
 
   std::unique_ptr<Split> split;
   std::unique_ptr<Diffuser> diffuser;
@@ -73,6 +78,8 @@ Reverb::Reverb(const ResolvedConfig& config,
   state.inputChannels = split.inputChannels;
   state.outputChannels = downmix.outputChannels;
   state.channels = split.channels;
+  state.mainEnabled = config.composition.mainEnabled;
+  state.mainGain = static_cast<Sample>(config.composition.mainGain);
   state.split = std::make_unique<Split>(split);
 
   // Middle stages: none, a Diffuser alone, a Feedback Loop alone, or a
@@ -165,8 +172,23 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(), state.midStageValues.data());
     }
 
-    state.downmix->processFrame(
-        state.midStageValues.data(), outputs, frame);
+    // A disabled Main wet path skips its own Downmix (and Width, and
+    // level) processing entirely and contributes exact stereo zero
+    // (issue #109), rather than a zero-multiplied value. Split/Diffuser/
+    // Feedback Loop above run unconditionally regardless of mainEnabled:
+    // they are shared interior signal, not Main-branch-specific -- the
+    // still-unimplemented Early Reflections branch (#105) will tap the
+    // same Diffuser's per-step output even when Main is disabled, so
+    // this is not a shortcut that a future branch would need to undo.
+    if (state.mainEnabled) {
+      state.downmix->processFrame(
+          state.midStageValues.data(), outputs, frame);
+      outputs[0][frame] *= state.mainGain;
+      outputs[1][frame] *= state.mainGain;
+    } else {
+      outputs[0][frame] = Sample{0};
+      outputs[1][frame] = Sample{0};
+    }
   }
 }
 

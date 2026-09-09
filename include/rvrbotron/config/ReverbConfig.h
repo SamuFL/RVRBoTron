@@ -118,6 +118,9 @@ struct DownmixConfig {
   std::optional<std::uint32_t> leftChannel;
   std::optional<std::uint32_t> rightChannel;
   std::optional<dsp::EnergyNormalisation> normalisation;
+  // Stereo Width in degrees, 0 (mono) through 180 (side-only, out of
+  // phase); defaults to 90 (unmodified) -- issue #109.
+  std::optional<double> widthDeg;
 };
 
 // Reference-configuration defaults for an omitted Feedback Loop stage (see
@@ -189,6 +192,11 @@ using StageConfig = std::
 struct CompositionConfig {
   bool stagesSpecified = false;
   std::vector<StageConfig> stages;
+  // The Main wet path's enablement and level (issue #109): not
+  // applicable, and rejected, on the empty identity Composition (empty
+  // `stages`). Defaults to enabled at 0 dB for a non-empty Composition.
+  std::optional<bool> mainEnabled;
+  std::optional<double> mainLevelDb;
 };
 
 struct ReverbConfig {
