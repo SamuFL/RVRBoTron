@@ -1,0 +1,264 @@
+{
+  "formatVersion": 1,
+  "reference": {
+    "formatVersion": 1,
+    "seed": 42,
+    "composition": {
+      "stages": [
+        {
+          "type": "split",
+          "channels": 8,
+          "strategy": "duplicate",
+          "normalisation": "energy"
+        },
+        {
+          "type": "feedback-loop",
+          "delayMinMs": 100,
+          "delayMaxMs": 200,
+          "delayStrategy": "segmented-random",
+          "rt60Sec": 2.4,
+          "mix": "householder",
+          "gainMode": "per-channel",
+          "damping": {
+            "highRatio": 1.0,
+            "highHz": 4000,
+            "lowRatio": 1.0,
+            "lowHz": 200
+          },
+          "modulation": {
+            "depthMs": 2.0,
+            "rateHz": 3.0,
+            "shape": "smoothed-random",
+            "channelFraction": 1.0,
+            "interpolation": "lagrange3"
+          }
+        },
+        {
+          "type": "downmix",
+          "strategy": "select",
+          "normalisation": "energy"
+        }
+      ]
+    }
+  },
+  "axes": [
+    {
+      "name": "depth",
+      "hypothesis": "depthMs at fixed rate is one half of the product relationship (stage 06-modulation.md, 'Worth sweeping early'). The omitted and zero points must render byte-identical output -- Identity at zero is guaranteed by construction, not by arithmetic -- so the sweep asserts and publishes that invariant directly rather than only in a test.",
+      "values": [
+        {
+          "label": "omitted",
+          "overrides": [
+            {"op": "remove", "path": "/composition/stages/1/modulation"}
+          ]
+        },
+        {
+          "label": "zero",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 0.0}
+          ]
+        },
+        {
+          "label": "subtle",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 0.5}
+          ]
+        },
+        {
+          "label": "strong",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rate",
+      "hypothesis": "rateHz at fixed depth is the other half of the product relationship. rateHz: 0 is the control that isolates interpolation error (a static, non-zero fractional delay read every block) from movement artefact (stage 06-modulation.md, 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "zero",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 0.0}
+          ]
+        },
+        {
+          "label": "slow",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 0.3}
+          ]
+        },
+        {
+          "label": "fast",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 6.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "detune-product",
+      "hypothesis": "Perceived detuning is claimed to be governed by depthMs * rateHz rather than either alone (stage 06-modulation.md, 'Worth sweeping early'). The Reference's own product is 2.0 * 3.0 = 6.0: two points hold that same product at a different depth/rate split, two more scale it up and down, testing the claim and showing where it breaks down.",
+      "values": [
+        {
+          "label": "same-product-shallow-fast",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 1.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 6.0}
+          ]
+        },
+        {
+          "label": "same-product-deep-slow",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 1.0}
+          ]
+        },
+        {
+          "label": "half-product",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 1.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 3.0}
+          ]
+        },
+        {
+          "label": "double-product",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 4.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 3.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "interpolation",
+      "hypothesis": "Interpolation method at high depth against Decay tilt is the sweep most likely to produce something worth publishing: it quantifies each method's own hidden damping. The rateHz: 0 points are each method's own control, separating static interpolation error from movement artefact; the moving points show what movement adds on top (stage 06-modulation.md, 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "lagrange3-static",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 0.0}
+          ]
+        },
+        {
+          "label": "linear-static",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 0.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/interpolation", "value": "linear"}
+          ]
+        },
+        {
+          "label": "allpass-static",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/rateHz", "value": 0.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/interpolation", "value": "allpass"}
+          ]
+        },
+        {
+          "label": "linear-moving",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/interpolation", "value": "linear"}
+          ]
+        },
+        {
+          "label": "allpass-moving",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/interpolation", "value": "allpass"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "target",
+      "hypothesis": "Modulating a Diffusion Step instead of the Feedback Loop, at matched depth and rate, isolates the compounding-loop artefact from the one-shot chorus effect Diffusion Step Modulation produces (stage 06-modulation.md, 'Worth sweeping early'; ADR-0005's per-Channel decorrelation is structural in both cases).",
+      "values": [
+        {
+          "label": "diffusion-step",
+          "overrides": [
+            {
+              "op": "add",
+              "path": "/composition/stages/1",
+              "value": {
+                "type": "diffuser",
+                "steps": 1,
+                "totalMs": 200,
+                "distribution": "even",
+                "step": {
+                  "delayStrategy": "segmented-random",
+                  "mix": "hadamard",
+                  "shuffle": true,
+                  "polarity": "seeded-random",
+                  "modulation": {
+                    "depthMs": 2.0,
+                    "rateHz": 3.0,
+                    "shape": "smoothed-random",
+                    "channelFraction": 1.0,
+                    "interpolation": "lagrange3"
+                  }
+                }
+              }
+            },
+            {"op": "remove", "path": "/composition/stages/2/modulation"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "shape",
+      "hypothesis": "sine against smoothed-random (the Reference's own shape) at high depth (stage 06-modulation.md, 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "sine",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/shape", "value": "sine"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "channel-fraction",
+      "hypothesis": "0.25 / 0.5 / 1.0 at a shared high depth tests whether the mix matrix really does distribute detuning, and how fast, by watching the output metrics converge as more Channels move (stage 06-modulation.md, 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "quarter",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/channelFraction", "value": 0.25}
+          ]
+        },
+        {
+          "label": "half",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0},
+            {"op": "replace", "path": "/composition/stages/1/modulation/channelFraction", "value": 0.5}
+          ]
+        },
+        {
+          "label": "full",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/modulation/depthMs", "value": 6.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "damping-interaction",
+      "hypothesis": "One point re-enabling the Damping baseline, so the interaction between deliberate Damping and Modulation's own hidden damping is measured deliberately in exactly one place instead of contaminating every other axis, whose Reference stays at Damping unity (stage 06-modulation.md, 'Worth sweeping early'; issue #95).",
+      "values": [
+        {
+          "label": "research-baseline",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/highRatio", "value": 0.5},
+            {"op": "replace", "path": "/composition/stages/1/damping/lowRatio", "value": 0.7}
+          ]
+        }
+      ]
+    }
+  ]
+}
