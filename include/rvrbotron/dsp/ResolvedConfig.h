@@ -37,6 +37,7 @@ enum class PolarityStrategy {
 
 enum class DownmixStrategy {
   select,
+  orthogonalRows,
 };
 
 // Whether a Downmix's source Channels carry independent echo times
@@ -306,9 +307,10 @@ struct ResolvedDownmix {
   std::uint32_t outputChannels = 2;
   DownmixStrategy strategy = DownmixStrategy::select;
   // `select`-specific provenance: the zero-based Channel each output row
-  // was built from. An omitted rightChannel means the right row duplicates
-  // the left (mono duplication) rather than reading a second Channel.
-  std::uint32_t leftChannel = 0;
+  // was built from -- absent for every other strategy (issue #108). An
+  // omitted rightChannel means the right row duplicates the left (mono
+  // duplication) rather than reading a second Channel.
+  std::optional<std::uint32_t> leftChannel;
   std::optional<std::uint32_t> rightChannel;
   EnergyNormalisation normalisation = EnergyNormalisation::energy;
   double compensation = 0.0;

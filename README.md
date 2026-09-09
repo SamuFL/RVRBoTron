@@ -274,16 +274,24 @@ is recorded in `resolved.json` alongside the Feedback Loop's own.
 
 | Field | Values | Default |
 | --- | --- | --- |
-| `strategy` | `"select"` | `"select"` (only option) |
-| `leftChannel` | zero-based Channel index within `[0, N)` | required, no default |
-| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`) |
+| `strategy` | `"select"` \| `"orthogonal-rows"` | `"select"` |
+| `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to `orthogonal-rows` |
+| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to `orthogonal-rows` |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
 
 `leftChannel` has no implicit default -- every `select` Downmix names its
-Channel explicitly (see issue #107). Resolved Configuration also records
-each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
-from Composition wiring rather than settable by request: aligned for a
-Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
+Channel explicitly (see issue #107). `orthogonal-rows` (issue #108) instead
+fills a deterministic N-by-N dense matrix from the branch-specific
+RandomOrthogonal derivation (usage tag `MAINDNMX`; see
+[ADR-0002](docs/adr/0002-version-positional-random-resolution.md)) and takes
+its rows 0 and 1 as the left and right Downmix rows; it requires N at least
+2 and rejects `leftChannel`/`rightChannel` if either is present. Resolved
+Configuration records both strategies' rows as `leftRow`/`rightRow` (unit
+norm) and `effectiveLeftRow`/`effectiveRightRow` (scaled by `compensation`),
+plus each row's Alignment expectation (`"aligned"` or `"unaligned"`),
+derived from Composition wiring rather than settable by request: aligned
+for a Diffuser-only Main wet path, unaligned when it includes a Feedback
+Loop.
 
 `delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for

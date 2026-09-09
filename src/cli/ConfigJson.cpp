@@ -309,10 +309,14 @@ dsp::PolarityStrategy parsePolarity(
 dsp::DownmixStrategy parseDownmixStrategy(
     const Json& value,
     const std::string_view path) {
-  if (parseString(value, path) != "select") {
-    fail(path, "expected select");
+  const auto name = parseString(value, path);
+  if (name == "select") {
+    return dsp::DownmixStrategy::select;
   }
-  return dsp::DownmixStrategy::select;
+  if (name == "orthogonal-rows") {
+    return dsp::DownmixStrategy::orthogonalRows;
+  }
+  fail(path, "expected select or orthogonal-rows");
 }
 
 dsp::DownmixAlignment parseDownmixAlignment(
@@ -602,12 +606,26 @@ config::DownmixConfig parseRequestedDownmix(
     downmix.strategy = parseDownmixStrategy(
         value.at("strategy"), std::string(path) + "/strategy");
   }
-  requireField(value, "leftChannel", path);
-  downmix.leftChannel = parseUnsigned32(
-      value.at("leftChannel"), std::string(path) + "/leftChannel");
-  if (value.contains("rightChannel")) {
-    downmix.rightChannel = parseUnsigned32(
-        value.at("rightChannel"), std::string(path) + "/rightChannel");
+  if (downmix.strategy.value_or(dsp::DownmixStrategy::select) ==
+      dsp::DownmixStrategy::select) {
+    requireField(value, "leftChannel", path);
+    downmix.leftChannel = parseUnsigned32(
+        value.at("leftChannel"), std::string(path) + "/leftChannel");
+    if (value.contains("rightChannel")) {
+      downmix.rightChannel = parseUnsigned32(
+          value.at("rightChannel"), std::string(path) + "/rightChannel");
+    }
+  } else {
+    if (value.contains("leftChannel")) {
+      fail(
+          std::string(path) + "/leftChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
+    if (value.contains("rightChannel")) {
+      fail(
+          std::string(path) + "/rightChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
   }
   if (value.contains("normalisation")) {
     downmix.normalisation = parseNormalisation(
@@ -1141,7 +1159,6 @@ dsp::ResolvedDownmix parseResolvedDownmix(
        {"inputChannels",
         "outputChannels",
         "strategy",
-        "leftChannel",
         "normalisation",
         "compensation",
         "leftRow",
@@ -1158,11 +1175,25 @@ dsp::ResolvedDownmix parseResolvedDownmix(
       value.at("outputChannels"), std::string(path) + "/outputChannels");
   downmix.strategy = parseDownmixStrategy(
       value.at("strategy"), std::string(path) + "/strategy");
-  downmix.leftChannel = parseUnsigned32(
-      value.at("leftChannel"), std::string(path) + "/leftChannel");
-  if (value.contains("rightChannel")) {
-    downmix.rightChannel = parseUnsigned32(
-        value.at("rightChannel"), std::string(path) + "/rightChannel");
+  if (downmix.strategy == dsp::DownmixStrategy::select) {
+    requireField(value, "leftChannel", path);
+    downmix.leftChannel = parseUnsigned32(
+        value.at("leftChannel"), std::string(path) + "/leftChannel");
+    if (value.contains("rightChannel")) {
+      downmix.rightChannel = parseUnsigned32(
+          value.at("rightChannel"), std::string(path) + "/rightChannel");
+    }
+  } else {
+    if (value.contains("leftChannel")) {
+      fail(
+          std::string(path) + "/leftChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
+    if (value.contains("rightChannel")) {
+      fail(
+          std::string(path) + "/rightChannel",
+          "not applicable to strategy orthogonal-rows");
+    }
   }
   downmix.normalisation = parseNormalisation(
       value.at("normalisation"), std::string(path) + "/normalisation");
