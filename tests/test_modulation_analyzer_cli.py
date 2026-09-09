@@ -437,6 +437,106 @@ def main():
             f"unexpected combined coherent-pitch-movement owners: {rate_owners}"
         )
 
+    # depthMs: 0 and channelFraction: 0 are both resolved bypasses
+    # (src/config/ResolveConfig.cpp): the Modulation object stays present
+    # in resolved.json but its channelModulated is empty rather than one
+    # flag per Channel. Both explicit-zero forms must analyze successfully
+    # and report Modulation as absent, not crash on the shape mismatch.
+    def assert_bypass_analyzes_as_absent(name, request):
+        request_path = workspace / f"{name}-request.json"
+        request_path.write_text(json.dumps(request))
+        result = workspace / f"{name}-result"
+        run_renderer(renderer, request_path, result, fixture, block_size=32)
+        analyzed = run_analyzer(modulation_analyzer, result, fixture)
+        if analyzed.returncode != 0:
+            raise AssertionError(f"{name}: {analyzed.stderr}")
+        analysis = json.loads((result / "analysis" / "modulation-v1.json").read_text())
+        if analysis["modulationPresent"] is not False:
+            raise AssertionError(
+                f"{name}: modulationPresent was not False for a resolved "
+                f"bypass: {analysis}"
+            )
+        if analysis["activeModulations"] != []:
+            raise AssertionError(
+                f"{name}: a resolved bypass reported active Modulations: "
+                f"{analysis}"
+            )
+
+    assert_bypass_analyzes_as_absent(
+        "zero-depth", feedback_loop_request(modulation={"depthMs": 0.0})
+    )
+    assert_bypass_analyzes_as_absent(
+        "zero-channel-fraction",
+        feedback_loop_request(
+            modulation={"depthMs": 0.4, "rateHz": 0.7, "channelFraction": 0.0}
+        ),
+    )
+
+    # A bypassed Diffusion Step Modulation alongside an active Feedback
+    # Loop Modulation: only the Feedback Loop counts as active.
+    diffuser_bypass_request = {
+        "formatVersion": 1,
+        "seed": 13,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 2,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {
+                    "type": "diffuser",
+                    "steps": 1,
+                    "totalMs": 1,
+                    "distribution": "even",
+                    "step": {
+                        "delayStrategy": "segmented-random",
+                        "mix": "hadamard",
+                        "shuffle": True,
+                        "polarity": "seeded-random",
+                        "modulation": {"depthMs": 0.0},
+                    },
+                },
+                {
+                    "type": "feedback-loop",
+                    "delayMinMs": 1.0,
+                    "delayMaxMs": 2.0,
+                    "delayStrategy": "even",
+                    "rt60Sec": 1.0,
+                    "mix": "householder",
+                    "modulation": {
+                        "depthMs": 0.4,
+                        "rateHz": 0.7,
+                        "shape": "sine",
+                        "interpolation": "linear",
+                    },
+                },
+                {"type": "downmix", "strategy": "select"},
+            ]
+        },
+    }
+    diffuser_bypass_path = workspace / "diffuser-bypass-request.json"
+    diffuser_bypass_path.write_text(json.dumps(diffuser_bypass_request))
+    diffuser_bypass_result = workspace / "diffuser-bypass-result"
+    run_renderer(renderer, diffuser_bypass_path, diffuser_bypass_result, fixture)
+    diffuser_bypass_analyzed = run_analyzer(
+        modulation_analyzer, diffuser_bypass_result, fixture
+    )
+    if diffuser_bypass_analyzed.returncode != 0:
+        raise AssertionError(diffuser_bypass_analyzed.stderr)
+    diffuser_bypass_analysis = json.loads(
+        (diffuser_bypass_result / "analysis" / "modulation-v1.json").read_text()
+    )
+    bypass_owners = {
+        entry["owner"] for entry in diffuser_bypass_analysis["activeModulations"]
+    }
+    if bypass_owners != {"feedback-loop"}:
+        raise AssertionError(
+            f"a bypassed Diffusion Step Modulation was reported as active: "
+            f"{bypass_owners}"
+        )
+
 
 if __name__ == "__main__":
     main()

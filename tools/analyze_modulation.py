@@ -117,11 +117,19 @@ def validate_modulation_shape(modulation, channels, owner_label):
             f"{owner_label} interpolation is unrecognized"
         )
     modulated = modulation.get("channelModulated")
-    if not isinstance(modulated, list) or len(modulated) != channels:
+    # depthMs of 0 and channelFraction of 0 are both resolved bypasses
+    # (src/config/ResolveConfig.cpp's own comment: "no seeds, no rates, no
+    # phases, no bypass mask"): channelModulated stays empty rather than
+    # one flag per Channel, even though the Modulation object itself is
+    # still present. Both shapes are valid; only an in-between length is
+    # inconsistent.
+    if not isinstance(modulated, list) or (
+        len(modulated) != channels and len(modulated) != 0
+    ):
         raise ValueError(
             "resolved Modulation evidence is inconsistent: "
-            f"{owner_label} channelModulated does not have one flag per "
-            "Channel"
+            f"{owner_label} channelModulated is neither empty (the "
+            "resolved bypass shape) nor one flag per Channel"
         )
 
 
@@ -157,18 +165,29 @@ def modulation_summary(owner, modulation):
     }
 
 
+def modulation_is_active(modulation):
+    """A resolved Modulation object is only actually active when its
+    bypass mask moved at least one Channel: depthMs of 0 and
+    channelFraction of 0 both resolve to a present Modulation object with
+    an empty channelModulated (see validate_modulation_shape), which is
+    movement evidence's own definition of "no movement," not merely a
+    config-shape detail."""
+    return bool(modulation is not None and modulation.get("channelModulated"))
+
+
 def collect_active_modulations(split, diffuser, loop):
     """Validates every resolved Modulation object present (Feedback Loop
-    and/or each Diffusion Step) and returns their activeModulations
-    summary list. Each entry's own "owner"/"rateHz" fields already carry
-    what coherent-pitch-movement evidence needs, so callers derive that
-    lookup directly from this one list rather than this function
+    and/or each Diffusion Step) and returns the activeModulations summary
+    list for the ones that actually moved at least one Channel (see
+    modulation_is_active). Each entry's own "owner"/"rateHz" fields already
+    carry what coherent-pitch-movement evidence needs, so callers derive
+    that lookup directly from this one list rather than this function
     returning a second, parallel one."""
     active_modulations = []
 
     loop_modulation = loop.get("modulation")
     validate_modulation_shape(loop_modulation, len(loop["gains"]), "Feedback Loop")
-    if loop_modulation is not None:
+    if modulation_is_active(loop_modulation):
         active_modulations.append(modulation_summary("feedback-loop", loop_modulation))
 
     if diffuser is not None:
@@ -176,7 +195,7 @@ def collect_active_modulations(split, diffuser, loop):
             owner = f'diffusion-step[{step["index"]}]'
             step_modulation = step.get("modulation")
             validate_modulation_shape(step_modulation, split["channels"], owner)
-            if step_modulation is not None:
+            if modulation_is_active(step_modulation):
                 active_modulations.append(modulation_summary(owner, step_modulation))
 
     return active_modulations
