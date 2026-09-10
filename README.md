@@ -203,6 +203,7 @@ build/default/rvrbotron render \
 | `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`, `[split, feedback-loop, downmix]`, or `[split, diffuser, feedback-loop, downmix]`. |
 | `composition.mainEnabled` | boolean | `true` | The Main wet path's enablement. Not applicable, and rejected, when `composition.stages` is empty (issue #109). `false` skips Downmix/Width processing and contributes exact stereo zero. |
 | `composition.mainLevelDb` | finite number (dB) | `0` | The Main wet path's level, applied once after its Downmix (including Width). Not applicable, and rejected, when `composition.stages` is empty (issue #109). Resolved Configuration additionally records the derived linear `mainGain`. |
+| `composition.early` | object, or omitted | omitted (no branch) | The parallel Early Reflections branch, tapped from the Main wet path's own Diffuser (issue #111). Valid only when `composition.stages` includes exactly one Diffuser; not applicable, and rejected, when `composition.stages` is empty. See [`early` branch](#early-branch) below. |
 
 #### `split` stage
 
@@ -313,6 +314,44 @@ Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for
 isolating one DSP behavior at a time; they are not intended as listening
 presets.
+
+#### `early` branch
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `enabled` | boolean | `true` |
+| `levelDb` | finite number (dB) | `0` |
+| `taps` | array of `{stepIndex}` | required |
+| `taps[].stepIndex` | zero-based Diffusion Step index within `[0, stepCount)` | *(required)* |
+| `downmix` | object, or omitted | omitted (`select` Channels 0/1, or Channel 0 duplicated at N=1) |
+
+The parallel Early Reflections branch (issue #111, docs/design/reverb/stages/
+07-early-reflections.md): a tap on the Main wet path's own Diffuser, summed
+and Downmixed independently, then added into the same stereo output --
+never fed into a Feedback Loop. Valid only when `composition.stages`
+contains exactly one Diffuser (a Diffuser-only or Diffuser-then-Feedback-Loop
+Main wet path); rejected when the Main wet path has no Diffuser.
+
+Omitting `composition.early`, an empty `early: {}`, and an explicit
+`early: {"taps": []}` all mean no branch, and `enabled`/`levelDb`/`downmix`
+are then rejected since they could not affect sound. A present, non-empty
+`taps` accepts exactly one entry this milestone -- multiple taps, per-tap
+gain offsets, and the branch decay slope are issue #112's own extension.
+
+`downmix` accepts the same fields as the Main Downmix's own `downmix` stage
+above, with one difference: `strategy: "select"` defaults `leftChannel`/
+`rightChannel` to Channels 0/1 (Channel 0 duplicated to mono at N=1) rather
+than requiring `leftChannel` explicitly. Its resolved Alignment expectation
+is always `"aligned"` (the Diffuser's own output shares one onset across
+Channels), and its `orthogonal-rows` strategy draws from its own
+domain-separated RandomOrthogonal derivation (usage tag `EARLDNMX`, distinct
+from the Main Downmix's own `MAINDNMX`; see
+[ADR-0002](docs/adr/0002-version-positional-random-resolution.md)).
+
+Resolved Configuration records `enabled`, `levelDb`, the derived linear
+`gain`, canonical `taps`, and the full resolved `downmix` object -- omitted
+entirely, like `mainEnabled`/`mainLevelDb`/`mainGain`, when no branch is
+configured.
 
 Keep this table in sync whenever a request field, its accepted values, or its
 default changes.

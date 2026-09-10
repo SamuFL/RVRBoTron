@@ -2,6 +2,7 @@
 
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/EarlyReflections.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
 #include "rvrbotron/dsp/Split.h"
@@ -35,6 +36,10 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   std::unique_ptr<Diffuser> diffuser;
   std::unique_ptr<FeedbackLoop> feedbackLoop;
   std::unique_ptr<Downmix> downmix;
+  // The parallel Early Reflections branch (issue #111). Null when no
+  // branch is configured; valid only when `diffuser` is also non-null
+  // (validated upstream in resolveConfig/validateResolvedConfig).
+  std::unique_ptr<EarlyReflections> early;
 
   std::vector<Sample> splitValues;
   // Whatever the last middle stage (Diffuser or Feedback Loop) writes: the
@@ -108,6 +113,10 @@ Reverb::Reverb(const ResolvedConfig& config,
   if (state.diffuser != nullptr && state.feedbackLoop != nullptr) {
     state.diffuserOutputValues.resize(state.channels);
   }
+  if (config.composition.early.has_value()) {
+    state.early =
+        std::make_unique<EarlyReflections>(*config.composition.early);
+  }
 }
 
 Reverb::~Reverb() = default;
@@ -155,18 +164,31 @@ void Reverb::process(const Sample* const* inputs,
           state.channels);
     }
 
+    // The Early Reflections tap (issue #111): a caller-owned accumulator
+    // handed to the Diffuser below, populated as a side effect of its
+    // normal per-step processing -- never perturbing the Diffuser's own
+    // Main output, and never entering the Feedback Loop.
+    DiffuserEarlyTap earlyTap{};
+    const DiffuserEarlyTap* earlyTapPointer = nullptr;
+    if (state.early != nullptr) {
+      earlyTap = state.early->beginFrame();
+      earlyTapPointer = &earlyTap;
+    }
+
     if (state.diffuser != nullptr && state.feedbackLoop != nullptr) {
       state.diffuser->processFrame(
           state.splitValues.data(),
           state.diffuserOutputValues.data(),
-          state.captureSink != nullptr ? &state : nullptr);
+          state.captureSink != nullptr ? &state : nullptr,
+          earlyTapPointer);
       state.feedbackLoop->processFrame(
           state.diffuserOutputValues.data(), state.midStageValues.data());
     } else if (state.diffuser != nullptr) {
       state.diffuser->processFrame(
           state.splitValues.data(),
           state.midStageValues.data(),
-          state.captureSink != nullptr ? &state : nullptr);
+          state.captureSink != nullptr ? &state : nullptr,
+          earlyTapPointer);
     } else {
       state.feedbackLoop->processFrame(
           state.splitValues.data(), state.midStageValues.data());
@@ -177,9 +199,8 @@ void Reverb::process(const Sample* const* inputs,
     // (issue #109), rather than a zero-multiplied value. Split/Diffuser/
     // Feedback Loop above run unconditionally regardless of mainEnabled:
     // they are shared interior signal, not Main-branch-specific -- the
-    // still-unimplemented Early Reflections branch (#105) will tap the
-    // same Diffuser's per-step output even when Main is disabled, so
-    // this is not a shortcut that a future branch would need to undo.
+    // Early Reflections branch (#111) taps the same Diffuser's per-step
+    // output even when Main is disabled.
     if (state.mainEnabled) {
       state.downmix->processFrame(
           state.midStageValues.data(), outputs, frame);
@@ -188,6 +209,13 @@ void Reverb::process(const Sample* const* inputs,
     } else {
       outputs[0][frame] = Sample{0};
       outputs[1][frame] = Sample{0};
+    }
+
+    // Early's own stereo contribution is added (superposed) onto
+    // whatever the Main wet path just wrote, including exact zero when
+    // Main is disabled (issue #111's branch-superposition invariant).
+    if (state.early != nullptr && state.early->enabled()) {
+      state.early->processFrame(outputs, frame);
     }
   }
 }
@@ -220,6 +248,9 @@ std::size_t Reverb::ownedBytes() const noexcept {
   }
   if (state.downmix != nullptr) {
     total += state.downmix->ownedBytes();
+  }
+  if (state.early != nullptr) {
+    total += state.early->ownedBytes();
   }
   return total;
 }

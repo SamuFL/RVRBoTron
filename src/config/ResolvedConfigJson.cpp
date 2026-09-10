@@ -324,6 +324,20 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
   return document;
 }
 
+Json earlyJson(const dsp::ResolvedEarlyReflections& early) {
+  Json taps = Json::array();
+  for (const auto& tap : early.taps) {
+    taps.push_back({{"stepIndex", tap.stepIndex}});
+  }
+  return {
+      {"enabled", early.enabled},
+      {"levelDb", early.levelDb},
+      {"gain", early.gain},
+      {"taps", std::move(taps)},
+      {"downmix", downmixJson(early.downmix)},
+  };
+}
+
 Json compositionJson(const dsp::ResolvedComposition& composition) {
   Json stages = Json::array();
   for (const auto& stage : composition.stages) {
@@ -352,6 +366,14 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
     document["mainEnabled"] = composition.mainEnabled;
     document["mainLevelDb"] = composition.mainLevelDb;
     document["mainGain"] = composition.mainGain;
+  }
+  // Omitted entirely (rather than emitted as null) when no branch is
+  // configured (issue #111), mirroring mainEnabled/mainLevelDb/mainGain
+  // above -- an existing Resolved Configuration written before Early
+  // Reflections existed remains byte-identical to one produced with no
+  // branch configured today, and loads back as no branch.
+  if (composition.early.has_value()) {
+    document["early"] = earlyJson(*composition.early);
   }
   return document;
 }

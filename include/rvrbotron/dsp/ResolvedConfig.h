@@ -340,6 +340,36 @@ using ResolvedStage = std::variant<
     ResolvedFeedbackLoop,
     ResolvedDownmix>;
 
+// One canonical, zero-based Diffusion Step tap (issue #111): the character
+// control described in docs/design/reverb/stages/07-early-reflections.md.
+// Multi-tap shaping (gain offset, envelope slope, support bounds) is
+// issue #112's own extension; this milestone's Resolved Configuration
+// records only the tap's source step.
+struct ResolvedEarlyTap {
+  std::uint32_t stepIndex = 0;
+};
+
+// The parallel Early Reflections branch (issue #111, docs/design/reverb/
+// stages/07-early-reflections.md): a Diffuser-sourced tap set, summed and
+// Downmixed independently of the serial Main wet path, then added into the
+// same stereo output. `gain` is `levelDb` converted to a linear multiplier
+// -- resolved once, before construction, mirroring `ResolvedComposition::
+// mainGain` (issue #109). Valid only when the Main wet path contains one
+// Diffuser; omitted (nullopt) when no tap is configured, exactly like an
+// omitted, empty, or empty-tapped `early` request object.
+struct ResolvedEarlyReflections {
+  bool enabled = true;
+  double levelDb = 0.0;
+  double gain = 1.0;
+  // Exactly one entry for this milestone (issue #111); canonical sorting
+  // and multiple taps are issue #112's own extension.
+  std::vector<ResolvedEarlyTap> taps;
+  // Early's own Downmix, resolved independently of the Main Downmix
+  // (separate RandomOrthogonal usage domain, always an aligned Alignment
+  // expectation -- see docs/design/reverb/stages/08-downmix.md).
+  ResolvedDownmix downmix;
+};
+
 struct ResolvedComposition {
   std::vector<ResolvedStage> stages;
   // The Main wet path's own enablement and level (issue #109): moot and
@@ -351,6 +381,11 @@ struct ResolvedComposition {
   bool mainEnabled = true;
   double mainLevelDb = 0.0;
   double mainGain = 1.0;
+  // The parallel Early Reflections branch (issue #111): moot and
+  // unserialized for the empty identity Composition, exactly like
+  // mainEnabled/mainLevelDb above. Omitted (nullopt) when no branch is
+  // configured.
+  std::optional<ResolvedEarlyReflections> early;
 };
 
 struct ResolvedConfig {
