@@ -1276,6 +1276,8 @@ const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
     return "halves";
   case dsp::DownmixStrategy::alternating:
     return "alternating";
+  case dsp::DownmixStrategy::sumAll:
+    return "sum-all";
   }
   fail("/composition", "unsupported Downmix strategy");
 }
@@ -1335,6 +1337,22 @@ std::vector<double> alternatingRow(
   for (std::uint32_t index = first; index < channels; index += 2U) {
     row[index] = coefficient;
   }
+  return row;
+}
+
+// `sum-all`'s intrinsic row (issue #114): equal `1/sqrt(channels)`
+// coefficients over every Channel, the same row duplicated to both L and
+// R -- the diagnostic Coherent Downmix ablation (docs/design/reverb/
+// stages/08-downmix.md). Unlike halvesRow/alternatingRow, this supports
+// N>=1 like selectRow: at channels==0 it defensively returns an empty
+// row rather than dividing by zero, mirroring their own placeholder.
+std::vector<double> sumAllRow(const std::uint32_t channels) {
+  std::vector<double> row(channels, 0.0);
+  if (channels == 0) {
+    return row;
+  }
+  const auto coefficient = 1.0 / std::sqrt(static_cast<double>(channels));
+  std::fill(row.begin(), row.end(), coefficient);
   return row;
 }
 
@@ -1477,11 +1495,18 @@ dsp::ResolvedDownmix resolveDownmix(
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(strategy));
     }
-    // Every non-select strategy requires N >= 2 to have a distinct row 1
-    // (issue #108/#110); resolution runs before validateResolvedConfig can
-    // reject a shorter N, so this defensively resolves an all-zero
-    // placeholder rather than indexing past a too-short row.
-    if (channels < 2) {
+    // `sum-all` supports N>=1 like `select` (issue #114): unlike the
+    // remaining strategies below, it never needs a distinct row 1, so it
+    // is resolved before the N>=2 guard those require.
+    if (strategy == dsp::DownmixStrategy::sumAll) {
+      leftRow = sumAllRow(channels);
+      rightRow = leftRow;
+    } else if (channels < 2) {
+      // Every remaining non-select strategy requires N >= 2 to have a
+      // distinct row 1 (issue #108/#110); resolution runs before
+      // validateResolvedConfig can reject a shorter N, so this
+      // defensively resolves an all-zero placeholder rather than
+      // indexing past a too-short row.
       leftRow.assign(channels, 0.0);
       rightRow.assign(channels, 0.0);
     } else if (strategy == dsp::DownmixStrategy::halves) {
@@ -3147,7 +3172,10 @@ void validateResolvedDownmixFields(
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(downmix.strategy));
     }
-    if (channels < 2) {
+    // `sum-all` supports N>=1 like `select` (issue #114), so it is
+    // exempted first here, mirroring resolveDownmix's own early
+    // dedicated branch for the same rule above.
+    if (downmix.strategy != dsp::DownmixStrategy::sumAll && channels < 2) {
       fail(
           path + "/strategy",
           std::string(downmixStrategyLabel(downmix.strategy)) +
@@ -3189,6 +3217,9 @@ void validateResolvedDownmixFields(
   } else if (downmix.strategy == dsp::DownmixStrategy::alternating) {
     expectedLeftRow = alternatingRow(channels, /*leftGroup=*/true);
     expectedRightRow = alternatingRow(channels, /*leftGroup=*/false);
+  } else if (downmix.strategy == dsp::DownmixStrategy::sumAll) {
+    expectedLeftRow = sumAllRow(channels);
+    expectedRightRow = expectedLeftRow;
   } else {
     auto matrix = resolveRandomOrthogonalMatrix(
         channels, resolved.seed, orthogonalUsage);

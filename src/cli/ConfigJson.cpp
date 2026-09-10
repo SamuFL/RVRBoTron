@@ -322,7 +322,12 @@ dsp::DownmixStrategy parseDownmixStrategy(
   if (name == "alternating") {
     return dsp::DownmixStrategy::alternating;
   }
-  fail(path, "expected select, orthogonal-rows, halves, or alternating");
+  if (name == "sum-all") {
+    return dsp::DownmixStrategy::sumAll;
+  }
+  fail(
+      path,
+      "expected select, orthogonal-rows, halves, alternating, or sum-all");
 }
 
 // Named for error messages naming the actual requested strategy (issue
@@ -338,6 +343,8 @@ const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
     return "halves";
   case dsp::DownmixStrategy::alternating:
     return "alternating";
+  case dsp::DownmixStrategy::sumAll:
+    return "sum-all";
   }
   fail("/composition", "unsupported Downmix strategy");
 }

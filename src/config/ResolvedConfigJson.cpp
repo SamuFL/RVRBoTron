@@ -36,6 +36,8 @@ const char* downmixStrategyName(const dsp::DownmixStrategy strategy) {
     return "halves";
   case dsp::DownmixStrategy::alternating:
     return "alternating";
+  case dsp::DownmixStrategy::sumAll:
+    return "sum-all";
   }
   throw HarnessError(
       ErrorCategory::invalidConfiguration,

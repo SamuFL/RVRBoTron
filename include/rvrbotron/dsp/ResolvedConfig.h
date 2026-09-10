@@ -40,6 +40,10 @@ enum class DownmixStrategy {
   orthogonalRows,
   halves,
   alternating,
+  // The diagnostic Coherent Downmix ablation (issue #114): the same
+  // `1/sqrt(N)` row duplicated to both L/R. Supports N>=1, like `select`,
+  // unlike halves/alternating/orthogonalRows, which require N>=2.
+  sumAll,
 };
 
 // Whether a Downmix's source Channels carry independent echo times

@@ -1664,13 +1664,132 @@ int main() {
     }
   }
 
-  // halves/alternating through a Feedback Loop (#110): Alignment
-  // expectation is derived from Composition wiring, so a source that
-  // includes a Feedback Loop must resolve unaligned for either strategy,
-  // exactly as it already does for select/orthogonal-rows.
+  // `sum-all` (#114): the diagnostic Coherent Downmix ablation -- the
+  // same `1/sqrt(N)` row duplicated to both L and R. Unlike halves/
+  // alternating/orthogonal-rows, it supports N>=1 like `select`
+  // (docs/design/reverb/stages/08-downmix.md), so N=1 resolves rather
+  // than being rejected.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 4;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    // Householder (unlike the default Hadamard) is valid at the N=1
+    // Channel count exercised below, and at N=4.
+    rvrbotron::config::DiffusionStepConfig step;
+    step.mix = rvrbotron::dsp::MixMatrixType::householder;
+    diffuser.step = step;
+    rvrbotron::config::DownmixConfig sumAllDownmix;
+    sumAllDownmix.strategy = rvrbotron::dsp::DownmixStrategy::sumAll;
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(sumAllDownmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+    const auto resolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 1);
+    const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
+        resolved.composition.stages[2]);
+    if (downmix.leftChannel.has_value() ||
+        downmix.rightChannel.has_value()) {
+      std::cerr << "sum-all resolved a leftChannel/rightChannel it has no "
+                   "use for\n";
+      return 1;
+    }
+    const auto coefficient = 0.5; // 1/sqrt(4)
+    const std::array<double, 4> expectedRow{
+        coefficient, coefficient, coefficient, coefficient};
+    const auto expectedCompensation = std::sqrt(2.0);
+    if (downmix.compensation != expectedCompensation) {
+      std::cerr << "sum-all compensation did not match sqrt(N/2)\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+      if (downmix.leftRow[index] != expectedRow[index] ||
+          downmix.rightRow[index] != expectedRow[index]) {
+        std::cerr << "sum-all leftRow/rightRow did not match the expected "
+                     "duplicated 1/sqrt(N) row\n";
+        return 1;
+      }
+      if (downmix.effectiveLeftRow[index] !=
+              expectedRow[index] * expectedCompensation ||
+          downmix.effectiveRightRow[index] !=
+              expectedRow[index] * expectedCompensation) {
+        std::cerr << "sum-all effective rows did not match rows scaled by "
+                     "compensation\n";
+        return 1;
+      }
+    }
+    if (downmix.leftRow != downmix.rightRow) {
+      std::cerr << "sum-all leftRow/rightRow were not the same duplicated "
+                   "row\n";
+      return 1;
+    }
+    if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "sum-all Diffuser-only Downmix did not resolve "
+                   "aligned\n";
+      return 1;
+    }
+
+    rvrbotron::dsp::Reverb sumAllReverb(resolved);
+    std::array<rvrbotron::dsp::Sample, 1> sumAllInput{
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 1> sumAllLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> sumAllRight{};
+    const rvrbotron::dsp::Sample* sumAllInputs[]{sumAllInput.data()};
+    rvrbotron::dsp::Sample* sumAllOutputs[]{
+        sumAllLeft.data(), sumAllRight.data()};
+    beginAllocationCount();
+    sumAllReverb.process(sumAllInputs, 1, sumAllOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "sum-all Downmix allocated while processing\n";
+      return 1;
+    }
+    // N=1 has no second Channel, unlike halves/alternating, but sum-all
+    // supports N>=1 like select (#114): resolution must succeed, not
+    // reject, and duplicates the sole Channel with the same N=1 energy
+    // compensation select's own mono duplication uses.
+    auto singleChannelComposition = composition;
+    std::get<rvrbotron::config::SplitConfig>(
+        singleChannelComposition.stages[0])
+        .channels = 1;
+    rvrbotron::config::ReverbConfig singleChannelRequested;
+    singleChannelRequested.formatVersion = 2;
+    singleChannelRequested.seed = 7;
+    singleChannelRequested.composition =
+        std::move(singleChannelComposition);
+    const auto singleChannelResolved = rvrbotron::config::resolveConfig(
+        singleChannelRequested, 48000, 1);
+    const auto& singleChannelDownmix =
+        std::get<rvrbotron::dsp::ResolvedDownmix>(
+            singleChannelResolved.composition.stages[2]);
+    const auto singleChannelCompensation = 1.0 / std::sqrt(2.0);
+    if (singleChannelDownmix.leftRow.size() != 1 ||
+        singleChannelDownmix.leftRow[0] != 1.0 ||
+        singleChannelDownmix.rightRow != singleChannelDownmix.leftRow ||
+        singleChannelDownmix.compensation != singleChannelCompensation) {
+      std::cerr << "sum-all at N=1 did not resolve the expected "
+                   "single-Channel duplicated row\n";
+      return 1;
+    }
+  }
+
+  // halves/alternating/sum-all through a Feedback Loop (#110/#114):
+  // Alignment expectation is derived from Composition wiring, so a
+  // source that includes a Feedback Loop must resolve unaligned for
+  // every strategy, exactly as it already does for select/
+  // orthogonal-rows.
   for (const auto strategy :
        {rvrbotron::dsp::DownmixStrategy::halves,
-        rvrbotron::dsp::DownmixStrategy::alternating}) {
+        rvrbotron::dsp::DownmixStrategy::alternating,
+        rvrbotron::dsp::DownmixStrategy::sumAll}) {
     rvrbotron::config::SplitConfig split;
     split.channels = 4;
     split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
@@ -1692,8 +1811,8 @@ int main() {
     const auto& downmix = std::get<rvrbotron::dsp::ResolvedDownmix>(
         resolved.composition.stages[2]);
     if (downmix.alignment != rvrbotron::dsp::DownmixAlignment::unaligned) {
-      std::cerr << "halves/alternating Feedback Loop Downmix did not "
-                   "resolve unaligned\n";
+      std::cerr << "halves/alternating/sum-all Feedback Loop Downmix did "
+                   "not resolve unaligned\n";
       return 1;
     }
   }
