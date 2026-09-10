@@ -681,11 +681,15 @@ config::DownmixConfig parseRequestedDownmix(
 config::EarlyTapConfig parseRequestedEarlyTap(
     const Json& value, const std::string_view path) {
   requireObject(value, path);
-  rejectUnknownFields(value, path, {"stepIndex"});
+  rejectUnknownFields(value, path, {"stepIndex", "gainDb"});
   requireField(value, "stepIndex", path);
   config::EarlyTapConfig tap;
   tap.stepIndex = parseUnsigned32(
       value.at("stepIndex"), std::string(path) + "/stepIndex");
+  if (value.contains("gainDb")) {
+    tap.gainDb =
+        parseNumber(value.at("gainDb"), std::string(path) + "/gainDb");
+  }
   return tap;
 }
 
@@ -730,7 +734,9 @@ config::EarlyConfig parseRequestedEarly(
     const Json& value, const std::string_view path) {
   requireObject(value, path);
   rejectUnknownFields(
-      value, path, {"enabled", "levelDb", "taps", "downmix"});
+      value,
+      path,
+      {"enabled", "levelDb", "decayDbPerSec", "taps", "downmix"});
   config::EarlyConfig early;
   if (value.contains("enabled")) {
     early.enabled =
@@ -739,6 +745,10 @@ config::EarlyConfig parseRequestedEarly(
   if (value.contains("levelDb")) {
     early.levelDb =
         parseNumber(value.at("levelDb"), std::string(path) + "/levelDb");
+  }
+  if (value.contains("decayDbPerSec")) {
+    early.decayDbPerSec = parseNumber(
+        value.at("decayDbPerSec"), std::string(path) + "/decayDbPerSec");
   }
   if (value.contains("taps")) {
     const auto& taps = value.at("taps");
@@ -1395,19 +1405,68 @@ dsp::ResolvedDownmix parseResolvedDownmix(
 dsp::ResolvedEarlyTap parseResolvedEarlyTap(
     const Json& value, const std::string_view path) {
   requireObject(value, path);
-  rejectUnknownFields(value, path, {"stepIndex"});
-  requireField(value, "stepIndex", path);
-  return {
-      parseUnsigned32(value.at("stepIndex"), std::string(path) + "/stepIndex"),
+  const std::initializer_list<std::string_view> fields{
+      "stepIndex",
+      "gainDb",
+      "nominalSupportMinSamples",
+      "nominalSupportMaxSamples",
+      "nominalSupportMinMs",
+      "nominalSupportMaxMs",
+      "conservativeSupportMinSamples",
+      "conservativeSupportMaxSamples",
+      "conservativeSupportMinMs",
+      "conservativeSupportMaxMs",
+      "shapingGainDb",
+      "gain",
   };
+  rejectUnknownFields(value, path, fields);
+  for (const auto field : fields) {
+    requireField(value, field, path);
+  }
+  dsp::ResolvedEarlyTap tap;
+  tap.stepIndex = parseUnsigned32(
+      value.at("stepIndex"), std::string(path) + "/stepIndex");
+  tap.gainDb =
+      parseNumber(value.at("gainDb"), std::string(path) + "/gainDb");
+  tap.nominalSupportMinSamples = parseUnsigned64(
+      value.at("nominalSupportMinSamples"),
+      std::string(path) + "/nominalSupportMinSamples");
+  tap.nominalSupportMaxSamples = parseUnsigned64(
+      value.at("nominalSupportMaxSamples"),
+      std::string(path) + "/nominalSupportMaxSamples");
+  tap.nominalSupportMinMs = parseNumber(
+      value.at("nominalSupportMinMs"),
+      std::string(path) + "/nominalSupportMinMs");
+  tap.nominalSupportMaxMs = parseNumber(
+      value.at("nominalSupportMaxMs"),
+      std::string(path) + "/nominalSupportMaxMs");
+  tap.conservativeSupportMinSamples = parseUnsigned64(
+      value.at("conservativeSupportMinSamples"),
+      std::string(path) + "/conservativeSupportMinSamples");
+  tap.conservativeSupportMaxSamples = parseUnsigned64(
+      value.at("conservativeSupportMaxSamples"),
+      std::string(path) + "/conservativeSupportMaxSamples");
+  tap.conservativeSupportMinMs = parseNumber(
+      value.at("conservativeSupportMinMs"),
+      std::string(path) + "/conservativeSupportMinMs");
+  tap.conservativeSupportMaxMs = parseNumber(
+      value.at("conservativeSupportMaxMs"),
+      std::string(path) + "/conservativeSupportMaxMs");
+  tap.shapingGainDb = parseNumber(
+      value.at("shapingGainDb"), std::string(path) + "/shapingGainDb");
+  tap.gain = parseNumber(value.at("gain"), std::string(path) + "/gain");
+  return tap;
 }
 
 dsp::ResolvedEarlyReflections parseResolvedEarly(
     const Json& value, const std::string_view path) {
   requireObject(value, path);
   rejectUnknownFields(
-      value, path, {"enabled", "levelDb", "gain", "taps", "downmix"});
-  for (const auto field : {"enabled", "levelDb", "gain", "taps", "downmix"}) {
+      value,
+      path,
+      {"enabled", "levelDb", "gain", "decayDbPerSec", "taps", "downmix"});
+  for (const auto field :
+       {"enabled", "levelDb", "gain", "decayDbPerSec", "taps", "downmix"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedEarlyReflections early;
@@ -1416,6 +1475,8 @@ dsp::ResolvedEarlyReflections parseResolvedEarly(
   early.levelDb =
       parseNumber(value.at("levelDb"), std::string(path) + "/levelDb");
   early.gain = parseNumber(value.at("gain"), std::string(path) + "/gain");
+  early.decayDbPerSec = parseNumber(
+      value.at("decayDbPerSec"), std::string(path) + "/decayDbPerSec");
   const auto& taps = value.at("taps");
   const auto tapsPath = std::string(path) + "/taps";
   requireArray(taps, tapsPath);

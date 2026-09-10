@@ -15,9 +15,9 @@ Active implementation work is tracked in this repository's GitHub Issues.
 
 Install CMake 3.25 or newer, Ninja, Python 3, and a C++17 compiler. Git LFS is
 also required to download or add the curated listening samples. Rendering and
-`tools/analyze_render.py` need only the standard library; the diffusion and
-tail analyzers additionally need the packages in `tools/requirements.txt`
-(`pip3 install -r tools/requirements.txt`).
+`tools/analyze_render.py` need only the standard library; the diffusion,
+tail, and Early Tap support analyzers additionally need the packages in
+`tools/requirements.txt` (`pip3 install -r tools/requirements.txt`).
 
 ### Configure, build, and test
 
@@ -203,7 +203,7 @@ build/default/rvrbotron render \
 | `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`, `[split, feedback-loop, downmix]`, or `[split, diffuser, feedback-loop, downmix]`. |
 | `composition.mainEnabled` | boolean | `true` | The Main wet path's enablement. Not applicable, and rejected, when `composition.stages` is empty (issue #109). `false` skips Downmix/Width processing and contributes exact stereo zero. |
 | `composition.mainLevelDb` | finite number (dB) | `0` | The Main wet path's level, applied once after its Downmix (including Width). Not applicable, and rejected, when `composition.stages` is empty (issue #109). Resolved Configuration additionally records the derived linear `mainGain`. |
-| `composition.early` | object, or omitted | omitted (no branch) | The parallel Early Reflections branch, tapped from the Main wet path's own Diffuser (issue #111). Valid only when `composition.stages` includes exactly one Diffuser; not applicable, and rejected, when `composition.stages` is empty. See [`early` branch](#early-branch) below. |
+| `composition.early` | object, or omitted | omitted (no branch) | The parallel Early Reflections branch, tapped from the Main wet path's own Diffuser (issues #111/#112). Valid only when `composition.stages` includes exactly one Diffuser; not applicable, and rejected, when `composition.stages` is empty. See [`early` branch](#early-branch) below. |
 
 #### `split` stage
 
@@ -321,22 +321,34 @@ presets.
 | --- | --- | --- |
 | `enabled` | boolean | `true` |
 | `levelDb` | finite number (dB) | `0` |
-| `taps` | array of `{stepIndex}` | required |
-| `taps[].stepIndex` | zero-based Diffusion Step index within `[0, stepCount)` | *(required)* |
+| `decayDbPerSec` | finite number `>= 0` | `0` |
+| `taps` | array of `{stepIndex, gainDb?}` | required |
+| `taps[].stepIndex` | unique zero-based Diffusion Step index within `[0, stepCount)` | *(required)* |
+| `taps[].gainDb` | finite number (dB) | `0` |
 | `downmix` | object, or omitted | omitted (`select` Channels 0/1, or Channel 0 duplicated at N=1) |
 
-The parallel Early Reflections branch (issue #111, docs/design/reverb/stages/
-07-early-reflections.md): a tap on the Main wet path's own Diffuser, summed
-and Downmixed independently, then added into the same stereo output --
+The parallel Early Reflections branch (issues #111/#112, docs/design/reverb/
+stages/07-early-reflections.md): one or more taps on the Main wet path's own
+Diffuser, shaped and summed into one N-Channel frame, Downmixed
+independently of the Main Downmix, then added into the same stereo output --
 never fed into a Feedback Loop. Valid only when `composition.stages`
 contains exactly one Diffuser (a Diffuser-only or Diffuser-then-Feedback-Loop
 Main wet path); rejected when the Main wet path has no Diffuser.
 
 Omitting `composition.early`, an empty `early: {}`, and an explicit
-`early: {"taps": []}` all mean no branch, and `enabled`/`levelDb`/`downmix`
-are then rejected since they could not affect sound. A present, non-empty
-`taps` accepts exactly one entry this milestone -- multiple taps, per-tap
-gain offsets, and the branch decay slope are issue #112's own extension.
+`early: {"taps": []}` all mean no branch, and `enabled`/`levelDb`/
+`decayDbPerSec`/`downmix` are then rejected since they could not affect
+sound. A present, non-empty `taps` requires unique `stepIndex` values --
+duplicates are rejected -- and resolves them sorted ascending (canonical
+order), so a Requested tap-list permutation resolves and renders
+identically.
+
+Each tap's own resolved shaping gain is its `gainDb` minus `decayDbPerSec`
+times its own nominal support end in seconds (the "Early envelope"): a
+later tap, whose nominal support reaches further, is attenuated more at a
+positive `decayDbPerSec`. Every tap's shaped N-Channel contribution is
+summed into the branch's one shared accumulator before Downmix; `levelDb`
+is then applied once more, after Downmix, to the combined branch.
 
 `downmix` accepts the same fields as the Main Downmix's own `downmix` stage
 above, with one difference: `strategy: "select"` defaults `leftChannel`/
@@ -349,9 +361,18 @@ from the Main Downmix's own `MAINDNMX`; see
 [ADR-0002](docs/adr/0002-version-positional-random-resolution.md)).
 
 Resolved Configuration records `enabled`, `levelDb`, the derived linear
-`gain`, canonical `taps`, and the full resolved `downmix` object -- omitted
-entirely, like `mainEnabled`/`mainLevelDb`/`mainGain`, when no branch is
-configured.
+`gain`, `decayDbPerSec`, canonical `taps`, and the full resolved `downmix`
+object -- omitted entirely, like `mainEnabled`/`mainLevelDb`/`mainGain`,
+when no branch is configured. Each resolved tap additionally records its
+own `gainDb`; nominal Tap support bounds (`nominalSupportMin/MaxSamples`,
+`nominalSupportMin/MaxMs`) summed from the resolved Diffuser's own
+per-Channel delays through that tap's step; conservative bounds
+(`conservativeSupportMin/MaxSamples`, `conservativeSupportMin/MaxMs`) --
+the interval no tap energy occurs outside -- additionally widened by every
+contributing step's own active Modulation Excursion and the fixed
+Interpolation margin; and its resolved `shapingGainDb`/`gain`. Modulation on
+a tapped step never changes its nominal support or its shaping gain, only
+its conservative support.
 
 Keep this table in sync whenever a request field, its accepted values, or its
 default changes.
@@ -561,6 +582,23 @@ Render Results of the same Resolved Configuration -- typically rendered at
 different `--block-size` values -- for exact decoded equality of `output.wav`
 and every Stage capture, with first-mismatch detail on failure. This mode
 prints its own JSON report and does not publish an artifact.
+
+For a Composition with an Early Reflections branch (issue #112), render with
+`--capture-stages all` and add the Tap support artifact:
+
+```bash
+python3 tools/analyze_early_support.py build/early-result
+```
+
+`analysis/early-support-v1.json` reports, per resolved tap, the measured
+first/last non-zero sample, peak sample, and energy-weighted centroid from
+that tap's own captured Diffusion Step (-120 dB capture-relative activity
+floor, the same convention `analyze_diffusion.py`'s own Alignment evidence
+uses), alongside its resolved nominal and conservative Tap support bounds
+and whether the measured interval fell within conservative support.
+Cancellation can make measured support narrower than the structural bound;
+it never rejects a render for falling outside it. Publication is
+append-only and idempotent, like every other analyzer here.
 
 For a Composition containing a Feedback Loop, add the separate tail
 artifact instead -- the diffusion analyzer's all-pass, feedback-free

@@ -340,13 +340,43 @@ using ResolvedStage = std::variant<
     ResolvedFeedbackLoop,
     ResolvedDownmix>;
 
-// One canonical, zero-based Diffusion Step tap (issue #111): the character
-// control described in docs/design/reverb/stages/07-early-reflections.md.
-// Multi-tap shaping (gain offset, envelope slope, support bounds) is
-// issue #112's own extension; this milestone's Resolved Configuration
-// records only the tap's source step.
+// One canonical, zero-based Diffusion Step tap (issues #111/#112): the
+// character control described in docs/design/reverb/stages/
+// 07-early-reflections.md. `stepIndex` is unique and taps are stored
+// sorted ascending by it (canonical order), so a Requested tap-list
+// permutation resolves and renders identically.
 struct ResolvedEarlyTap {
   std::uint32_t stepIndex = 0;
+  // This tap's own gain offset in dB, before decayDbPerSec's automatic
+  // envelope slope (issue #112, "Early envelope").
+  double gainDb = 0.0;
+  // Nominal per-step delay bounds summed through this tap's own step
+  // (steps 0..stepIndex inclusive): the earliest and latest a signal
+  // could arrive here, ignoring Modulation. `nominalSupportMaxMs` is the
+  // "cumulative nominal endpoint" the Early envelope's shaping gain is
+  // derived from.
+  std::uint64_t nominalSupportMinSamples = 0;
+  std::uint64_t nominalSupportMaxSamples = 0;
+  double nominalSupportMinMs = 0.0;
+  double nominalSupportMaxMs = 0.0;
+  // Conservative bounds: the nominal bounds above, additionally widened
+  // by every contributing step's own active Modulation Excursion and the
+  // fixed Interpolation margin. No tap energy occurs outside this range.
+  std::uint64_t conservativeSupportMinSamples = 0;
+  std::uint64_t conservativeSupportMaxSamples = 0;
+  double conservativeSupportMinMs = 0.0;
+  double conservativeSupportMaxMs = 0.0;
+  // gainDb minus decayDbPerSec times nominalSupportMaxMs in seconds --
+  // this tap's resolved shaping gain, in dB, applied to its own
+  // N-Channel contribution before it is summed into the branch's shared
+  // accumulator (docs/design/reverb/stages/07-early-reflections.md's
+  // "Early envelope"). `early.levelDb` (see ResolvedEarlyReflections) is
+  // applied once more, after Downmix, to the combined branch.
+  double shapingGainDb = 0.0;
+  // shapingGainDb converted to a linear multiplier -- resolved once,
+  // before construction, so audio processing never computes `pow`
+  // (mirrors ResolvedComposition::mainGain, issue #109).
+  double gain = 1.0;
 };
 
 // The parallel Early Reflections branch (issue #111, docs/design/reverb/
@@ -361,8 +391,12 @@ struct ResolvedEarlyReflections {
   bool enabled = true;
   double levelDb = 0.0;
   double gain = 1.0;
-  // Exactly one entry for this milestone (issue #111); canonical sorting
-  // and multiple taps are issue #112's own extension.
+  // Finite, non-negative envelope slope (issue #112): zero leaves each
+  // tap's automatic shaping flat, so only explicit per-tap gainDb
+  // offsets shape the envelope.
+  double decayDbPerSec = 0.0;
+  // Unique stepIndex per entry, sorted ascending (canonical order,
+  // issue #112); at least one entry.
   std::vector<ResolvedEarlyTap> taps;
   // Early's own Downmix, resolved independently of the Main Downmix
   // (separate RandomOrthogonal usage domain, always an aligned Alignment

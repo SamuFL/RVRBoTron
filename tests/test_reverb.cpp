@@ -789,11 +789,12 @@ int main() {
     rvrbotron::dsp::Diffuser tapStep0Diffuser(orderedConfig);
     std::array<rvrbotron::dsp::Sample, 1> tapAccumulator{
         rvrbotron::dsp::Sample{0}};
-    const rvrbotron::dsp::DiffuserEarlyTap tapStep0{0, tapAccumulator.data()};
+    const rvrbotron::dsp::DiffuserEarlyTap tapStep0{
+        0, rvrbotron::dsp::Sample{1}, tapAccumulator.data()};
     std::array<rvrbotron::dsp::Sample, 1> tapOutput{};
     beginAllocationCount();
     tapStep0Diffuser.processFrame(
-        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0);
+        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0, 1);
     const auto tapAllocations = endAllocationCount();
     if (tapAllocations != 0) {
       std::cerr << "Diffuser allocated while accumulating an Early tap\n";
@@ -814,7 +815,7 @@ int main() {
     // resetting the accumulator sums both calls' contributions -- the
     // caller (EarlyReflections) owns clearing it once per frame.
     tapStep0Diffuser.processFrame(
-        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0);
+        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0, 1);
     if (!close(tapAccumulator[0], -0.5)) {
       std::cerr << "Diffuser's Early tap did not accumulate additively "
                    "across repeated calls\n";
@@ -827,13 +828,44 @@ int main() {
     std::array<rvrbotron::dsp::Sample, 1> tapStep1Accumulator{
         rvrbotron::dsp::Sample{0}};
     const rvrbotron::dsp::DiffuserEarlyTap tapStep1{
-        1, tapStep1Accumulator.data()};
+        1, rvrbotron::dsp::Sample{1}, tapStep1Accumulator.data()};
     std::array<rvrbotron::dsp::Sample, 1> tapStep1Output{};
     tapStep1Diffuser.processFrame(
-        orderedInput.data(), tapStep1Output.data(), nullptr, &tapStep1);
+        orderedInput.data(), tapStep1Output.data(), nullptr, &tapStep1, 1);
     if (!close(tapStep1Accumulator[0], 0.25)) {
       std::cerr << "Diffuser's Early tap did not accumulate the configured "
                    "step's own completed post-step frame\n";
+      return 1;
+    }
+
+    // Multiple taps share one accumulator (issue #112): each tap's own
+    // gain scales its own step's completed post-step frame before
+    // summing, and the two-pointer match against the per-step loop
+    // correctly skips an untapped step in between.
+    auto stepC = orderedConfig.steps[1];
+    stepC.index = 2;
+    rvrbotron::dsp::ResolvedDiffuser multiTapConfig;
+    multiTapConfig.steps = {
+        orderedConfig.steps[0], orderedConfig.steps[1], stepC};
+    rvrbotron::dsp::Diffuser multiTapDiffuser(multiTapConfig);
+    std::array<rvrbotron::dsp::Sample, 1> multiTapAccumulator{
+        rvrbotron::dsp::Sample{0}};
+    const std::array<rvrbotron::dsp::DiffuserEarlyTap, 2> multiTaps{
+        {{0, rvrbotron::dsp::Sample{2}, multiTapAccumulator.data()},
+         {2, rvrbotron::dsp::Sample{0.5}, multiTapAccumulator.data()}}};
+    std::array<rvrbotron::dsp::Sample, 1> multiTapOutput{};
+    multiTapDiffuser.processFrame(
+        orderedInput.data(),
+        multiTapOutput.data(),
+        nullptr,
+        multiTaps.data(),
+        multiTaps.size());
+    // Per-step completed frames are -0.25, 0.25, -0.25 (each step negates
+    // in turn). Tap@0 contributes -0.25*2 = -0.5; tap@2 contributes
+    // -0.25*0.5 = -0.125; step 1 is untapped.
+    if (!close(multiTapAccumulator[0], -0.625)) {
+      std::cerr << "Diffuser did not accumulate multiple gained taps into "
+                   "one shared accumulator\n";
       return 1;
     }
   }
@@ -2113,14 +2145,13 @@ int main() {
       }
     }
 
-    // Exactly one tap is accepted this milestone (#111); more than one
-    // is rejected until #112's canonical multi-tap resolution lands.
+    // Duplicate tap indices are rejected (issue #112).
     {
-      rvrbotron::config::EarlyConfig earlyTwoTaps;
-      earlyTwoTaps.taps =
+      rvrbotron::config::EarlyConfig earlyDuplicateTaps;
+      earlyDuplicateTaps.taps =
           std::vector<rvrbotron::config::EarlyTapConfig>{{0}, {0}};
       auto composition = diffuserOnlyComposition;
-      composition.early = earlyTwoTaps;
+      composition.early = earlyDuplicateTaps;
       rvrbotron::config::ReverbConfig requested;
       requested.formatVersion = 2;
       requested.seed = 3;
@@ -2133,7 +2164,7 @@ int main() {
         rejected = true;
       }
       if (!rejected) {
-        std::cerr << "resolveConfig accepted more than one Early tap\n";
+        std::cerr << "resolveConfig accepted duplicate Early tap indices\n";
         return 1;
       }
     }
@@ -2315,15 +2346,17 @@ int main() {
     // and only its own backing-vector allocations
     // (Downmix::ownedStorageBytes()) should be added on top. A `select`
     // Downmix's dense rows stay empty (issue #108's fast path), so its
-    // only owned storage here is the accumulator -- exactly sized to
-    // expose an extra, wrongly-added sizeof(Downmix) if the bug
-    // regresses.
+    // only owned storage here is the accumulator and the one-tap taps_
+    // array -- exactly sized to expose an extra, wrongly-added
+    // sizeof(Downmix) if the bug regresses.
     {
       const rvrbotron::dsp::EarlyReflections earlyDsp(
           *diffuserOnlyResolved.composition.early);
       const auto expectedOwnedBytes =
           sizeof(rvrbotron::dsp::EarlyReflections) +
-          2 * sizeof(rvrbotron::dsp::Sample);
+          2 * sizeof(rvrbotron::dsp::Sample) +
+          diffuserOnlyResolved.composition.early->taps.size() *
+              sizeof(rvrbotron::dsp::DiffuserEarlyTap);
       if (earlyDsp.ownedBytes() != expectedOwnedBytes) {
         std::cerr << "EarlyReflections::ownedBytes() double-counted its "
                      "embedded Downmix's own sizeof (expected "
@@ -2455,6 +2488,501 @@ int main() {
       std::cerr << "Early Reflections' own contribution changed when a "
                    "Feedback Loop followed the same Diffuser -- Early "
                    "Reflections must never enter the Feedback Loop\n";
+      return 1;
+    }
+
+    // Early Reflections do not extend the resolved Tail budget (issue
+    // #112, docs/design/reverb/stages/09-composition.md's "Early
+    // Reflections do not extend the existing drain"): every tap is
+    // already bounded by the Diffuser's own finite response.
+    rvrbotron::dsp::Reverb withoutEarlyReverb(withoutEarlyResolved);
+    rvrbotron::dsp::Reverb combinedReverb(diffuserOnlyResolved);
+    if (combinedReverb.tailBudgetFrames() !=
+        withoutEarlyReverb.tailBudgetFrames()) {
+      std::cerr << "configuring an Early Reflections branch changed the "
+                   "resolved Tail budget\n";
+      return 1;
+    }
+  }
+
+  // Multiple distinct taps (issue #112): unique, sorted canonically
+  // during resolution regardless of Requested order, each independently
+  // shaped by its own gainDb and the shared decayDbPerSec envelope
+  // slope, and a Requested tap-list permutation resolves and renders
+  // identically.
+  {
+    rvrbotron::config::SplitConfig multiTapSplit;
+    multiTapSplit.channels = 2;
+    multiTapSplit.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    multiTapSplit.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig multiStepDiffuser;
+    multiStepDiffuser.steps = 4;
+    multiStepDiffuser.totalMs = 4.0;
+    multiStepDiffuser.distribution =
+        rvrbotron::config::DiffusionDistribution::even;
+
+    rvrbotron::config::CompositionConfig multiStepComposition;
+    multiStepComposition.stagesSpecified = true;
+    multiStepComposition.stages.emplace_back(multiTapSplit);
+    multiStepComposition.stages.emplace_back(multiStepDiffuser);
+    multiStepComposition.stages.emplace_back(referenceSelectDownmixConfig(2));
+
+    rvrbotron::config::EarlyTapConfig tap0;
+    tap0.stepIndex = 0;
+    tap0.gainDb = -3.0;
+    rvrbotron::config::EarlyTapConfig tap2;
+    tap2.stepIndex = 2;
+    tap2.gainDb = 4.0;
+    rvrbotron::config::EarlyTapConfig tap3;
+    tap3.stepIndex = 3;
+
+    rvrbotron::config::EarlyConfig forwardOrderEarly;
+    forwardOrderEarly.taps =
+        std::vector<rvrbotron::config::EarlyTapConfig>{tap0, tap2, tap3};
+    forwardOrderEarly.decayDbPerSec = 50.0;
+
+    auto forwardComposition = multiStepComposition;
+    forwardComposition.early = forwardOrderEarly;
+    rvrbotron::config::ReverbConfig forwardRequested;
+    forwardRequested.formatVersion = 2;
+    forwardRequested.seed = 23;
+    forwardRequested.composition = forwardComposition;
+    const auto forwardResolved =
+        rvrbotron::config::resolveConfig(forwardRequested, 48000, 1);
+
+    const auto& resolvedTaps = forwardResolved.composition.early->taps;
+    if (resolvedTaps.size() != 3 || resolvedTaps[0].stepIndex != 0 ||
+        resolvedTaps[1].stepIndex != 2 || resolvedTaps[2].stepIndex != 3) {
+      std::cerr << "multiple Early taps did not resolve in canonical "
+                   "ascending order\n";
+      return 1;
+    }
+
+    // A later tap has a longer nominal support end than an earlier one,
+    // so at a positive decayDbPerSec it is shaped more negatively.
+    if (resolvedTaps[1].nominalSupportMaxMs <=
+            resolvedTaps[0].nominalSupportMaxMs ||
+        resolvedTaps[2].nominalSupportMaxMs <=
+            resolvedTaps[1].nominalSupportMaxMs) {
+      std::cerr << "later Early taps did not resolve a longer nominal "
+                   "support end than earlier ones\n";
+      return 1;
+    }
+    for (const auto& tap : resolvedTaps) {
+      const auto expectedShapingGainDb = tap.gainDb -
+          *forwardOrderEarly.decayDbPerSec * (tap.nominalSupportMaxMs / 1000.0);
+      if (std::abs(tap.shapingGainDb - expectedShapingGainDb) > 1e-9) {
+        std::cerr << "a tap's shapingGainDb did not match gainDb minus "
+                     "decayDbPerSec times its own nominal support end\n";
+        return 1;
+      }
+      const auto expectedGain = std::pow(10.0, expectedShapingGainDb / 20.0);
+      if (std::abs(tap.gain - expectedGain) > 1e-9) {
+        std::cerr << "a tap's resolved linear gain did not match its own "
+                     "shapingGainDb\n";
+        return 1;
+      }
+    }
+
+    // A Requested tap-list permutation resolves and renders identically.
+    rvrbotron::config::EarlyConfig reverseOrderEarly = forwardOrderEarly;
+    reverseOrderEarly.taps =
+        std::vector<rvrbotron::config::EarlyTapConfig>{tap3, tap2, tap0};
+    auto reverseComposition = multiStepComposition;
+    reverseComposition.early = reverseOrderEarly;
+    rvrbotron::config::ReverbConfig reverseRequested;
+    reverseRequested.formatVersion = 2;
+    reverseRequested.seed = 23;
+    reverseRequested.composition = reverseComposition;
+    const auto reverseResolved =
+        rvrbotron::config::resolveConfig(reverseRequested, 48000, 1);
+
+    const auto& reversedTaps = reverseResolved.composition.early->taps;
+    if (reversedTaps.size() != resolvedTaps.size()) {
+      std::cerr << "a permuted tap-list request resolved a different tap "
+                   "count\n";
+      return 1;
+    }
+    for (std::size_t index = 0; index < resolvedTaps.size(); ++index) {
+      const auto& forwardTap = resolvedTaps[index];
+      const auto& reverseTap = reversedTaps[index];
+      if (forwardTap.stepIndex != reverseTap.stepIndex ||
+          forwardTap.gainDb != reverseTap.gainDb ||
+          forwardTap.nominalSupportMinSamples !=
+              reverseTap.nominalSupportMinSamples ||
+          forwardTap.nominalSupportMaxSamples !=
+              reverseTap.nominalSupportMaxSamples ||
+          forwardTap.conservativeSupportMinSamples !=
+              reverseTap.conservativeSupportMinSamples ||
+          forwardTap.conservativeSupportMaxSamples !=
+              reverseTap.conservativeSupportMaxSamples ||
+          forwardTap.shapingGainDb != reverseTap.shapingGainDb ||
+          forwardTap.gain != reverseTap.gain) {
+        std::cerr << "a Requested tap-list permutation did not resolve "
+                     "identically\n";
+        return 1;
+      }
+    }
+
+    rvrbotron::dsp::Reverb forwardReverb(forwardResolved);
+    rvrbotron::dsp::Reverb reverseReverb(reverseResolved);
+    constexpr std::size_t permutationFrames = 64;
+    std::array<rvrbotron::dsp::Sample, permutationFrames> permutationInput{};
+    permutationInput.fill(rvrbotron::dsp::Sample{1});
+    std::array<rvrbotron::dsp::Sample, permutationFrames> forwardLeft{};
+    std::array<rvrbotron::dsp::Sample, permutationFrames> forwardRight{};
+    std::array<rvrbotron::dsp::Sample, permutationFrames> reverseLeft{};
+    std::array<rvrbotron::dsp::Sample, permutationFrames> reverseRight{};
+    const rvrbotron::dsp::Sample* permutationInputs[]{
+        permutationInput.data()};
+    rvrbotron::dsp::Sample* forwardOutputs[]{
+        forwardLeft.data(), forwardRight.data()};
+    rvrbotron::dsp::Sample* reverseOutputs[]{
+        reverseLeft.data(), reverseRight.data()};
+    forwardReverb.process(
+        permutationInputs, 1, forwardOutputs, 2, permutationFrames);
+    reverseReverb.process(
+        permutationInputs, 1, reverseOutputs, 2, permutationFrames);
+    if (forwardLeft != reverseLeft || forwardRight != reverseRight) {
+      std::cerr << "a Requested tap-list permutation did not render "
+                   "identically\n";
+      return 1;
+    }
+  }
+
+  // No tap energy occurs outside its exact nominal (and, absent
+  // Modulation, identically conservative) support (issue #112): a
+  // hand-built two-step Diffuser with known per-Channel delays gives an
+  // exact expected interval, computed independently by simple arithmetic
+  // on the same delaysSamples this test constructs -- not by calling
+  // production resolution code.
+  {
+    constexpr double scale = 0.70710678118654752440;
+    rvrbotron::dsp::ResolvedDiffusionStep supportStep0;
+    supportStep0.index = 0;
+    supportStep0.delaysSamples = {2, 5};
+    supportStep0.bufferSizes = {2, 5};
+    supportStep0.permutation = {0, 1};
+    supportStep0.polaritySigns = {1, 1};
+    supportStep0.matrix = {scale, scale, scale, -scale};
+    rvrbotron::dsp::ResolvedDiffusionStep supportStep1;
+    supportStep1.index = 1;
+    supportStep1.delaysSamples = {1, 3};
+    supportStep1.bufferSizes = {1, 3};
+    supportStep1.permutation = {0, 1};
+    supportStep1.polaritySigns = {1, 1};
+    supportStep1.matrix = {scale, scale, scale, -scale};
+
+    rvrbotron::dsp::ResolvedDiffuser supportDiffuser;
+    supportDiffuser.totalSamples = 8;
+    supportDiffuser.steps = {supportStep0, supportStep1};
+
+    rvrbotron::dsp::ResolvedConfig supportConfig;
+    supportConfig.formatVersion = 2;
+    supportConfig.sampleRate = 1000;
+    supportConfig.composition.stages.emplace_back(
+        rvrbotron::dsp::ResolvedSplit{
+            1,
+            2,
+            rvrbotron::dsp::SplitStrategyType::duplicate,
+            rvrbotron::dsp::EnergyNormalisation::energy,
+            1.0,
+            scale,
+        });
+    supportConfig.composition.stages.emplace_back(supportDiffuser);
+    const rvrbotron::dsp::ResolvedDownmix supportDownmix{
+        2,
+        2,
+        rvrbotron::dsp::DownmixStrategy::select,
+        0,
+        1,
+        rvrbotron::dsp::EnergyNormalisation::energy,
+        1.0,
+        {1.0, 0.0},
+        {0.0, 1.0},
+        {1.0, 0.0},
+        {0.0, 1.0},
+        rvrbotron::dsp::DownmixAlignment::aligned,
+        90.0,
+        {1.0, 0.0, 0.0, 1.0},
+    };
+    supportConfig.composition.stages.emplace_back(supportDownmix);
+    supportConfig.composition.mainEnabled = false;
+
+    rvrbotron::dsp::ResolvedEarlyReflections supportEarly;
+    supportEarly.enabled = true;
+    supportEarly.gain = 1.0;
+    rvrbotron::dsp::ResolvedEarlyTap supportTap;
+    supportTap.stepIndex = 1;
+    supportTap.nominalSupportMinSamples = 3;
+    supportTap.nominalSupportMaxSamples = 8;
+    supportTap.conservativeSupportMinSamples = 3;
+    supportTap.conservativeSupportMaxSamples = 8;
+    supportTap.gain = 1.0;
+    supportEarly.taps.push_back(supportTap);
+    supportEarly.downmix = supportDownmix;
+    supportConfig.composition.early = supportEarly;
+
+    rvrbotron::dsp::Reverb supportReverb(supportConfig);
+    constexpr std::size_t supportFrames = 16;
+    std::array<rvrbotron::dsp::Sample, supportFrames> supportInput{};
+    supportInput[0] = rvrbotron::dsp::Sample{1};
+    std::array<rvrbotron::dsp::Sample, supportFrames> supportLeft{};
+    std::array<rvrbotron::dsp::Sample, supportFrames> supportRight{};
+    const rvrbotron::dsp::Sample* supportInputs[]{supportInput.data()};
+    rvrbotron::dsp::Sample* supportOutputs[]{
+        supportLeft.data(), supportRight.data()};
+    supportReverb.process(
+        supportInputs, 1, supportOutputs, 2, supportFrames);
+
+    for (std::size_t frame = 0; frame < supportFrames; ++frame) {
+      const auto withinBounds =
+          frame >= supportTap.nominalSupportMinSamples &&
+          frame <= supportTap.nominalSupportMaxSamples;
+      if (!withinBounds &&
+          (supportLeft[frame] != rvrbotron::dsp::Sample{0} ||
+           supportRight[frame] != rvrbotron::dsp::Sample{0})) {
+        std::cerr << "tap energy occurred at frame " << frame
+                   << ", outside its exact nominal/conservative support ["
+                   << supportTap.nominalSupportMinSamples << ", "
+                   << supportTap.nominalSupportMaxSamples << "]\n";
+        return 1;
+      }
+    }
+  }
+
+  // Conservative Tap support widens beyond nominal support when the
+  // tapped step's own Modulation is active (issue #112), while nominal
+  // support itself never changes. Probes this seed's own resolved delays
+  // with Modulation omitted first (mirroring the Diffusion Step
+  // Modulation tests' own probe-then-build pattern below), so the depth
+  // chosen here stays safely within the Excursion rejection rule
+  // regardless of which values segmented-random draws.
+  {
+    constexpr std::uint32_t channels = 8;
+    constexpr double totalMs = 200.0;
+    constexpr std::uint32_t stepCount = 4;
+    constexpr std::uint32_t tappedStep = stepCount - 1;
+
+    // `modulatedStepIndex` names which step carries the Modulation
+    // override -- the tapped step itself for the widening test below, or
+    // an earlier contributing step for the summation test further down
+    // (PR review on #112: a test fixture that only ever modulates the
+    // tapped step cannot catch a regression that widens conservative
+    // support from that step alone rather than summing every
+    // contributing step's own reach).
+    const auto buildModulatedComposition =
+        [&](const std::uint32_t modulatedStepIndex,
+            const std::optional<rvrbotron::config::ModulationConfig>&
+                stepModulation) {
+          rvrbotron::config::SplitConfig probeSplit;
+          probeSplit.channels = channels;
+          probeSplit.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+          probeSplit.normalisation =
+              rvrbotron::dsp::EnergyNormalisation::energy;
+
+          rvrbotron::config::DiffusionStepConfig probeStep;
+          probeStep.delayStrategy =
+              rvrbotron::dsp::DelayStrategy::segmentedRandom;
+          probeStep.mix = rvrbotron::dsp::MixMatrixType::hadamard;
+          probeStep.shuffle = true;
+          probeStep.polarity = rvrbotron::dsp::PolarityStrategy::seededRandom;
+
+          rvrbotron::config::DiffuserConfig probeDiffuser;
+          probeDiffuser.steps = stepCount;
+          probeDiffuser.totalMs = totalMs;
+          probeDiffuser.distribution =
+              rvrbotron::config::DiffusionDistribution::even;
+          probeDiffuser.step = probeStep;
+          if (stepModulation.has_value()) {
+            rvrbotron::config::DiffusionStepOverride override;
+            override.index = modulatedStepIndex;
+            override.step.modulation = stepModulation;
+            probeDiffuser.stepOverrides =
+                std::vector<rvrbotron::config::DiffusionStepOverride>{
+                    override};
+          }
+
+          rvrbotron::config::CompositionConfig composition;
+          composition.stagesSpecified = true;
+          composition.stages.emplace_back(probeSplit);
+          composition.stages.emplace_back(probeDiffuser);
+          composition.stages.emplace_back(
+              referenceSelectDownmixConfig(channels));
+          rvrbotron::config::EarlyConfig early;
+          early.taps =
+              std::vector<rvrbotron::config::EarlyTapConfig>{{tappedStep}};
+          composition.early = early;
+
+          rvrbotron::config::ReverbConfig requested;
+          requested.formatVersion = 2;
+          requested.seed = 0x9e3779b97f4a7c15ULL;
+          requested.composition = std::move(composition);
+          return rvrbotron::config::resolveConfig(requested, 48000, 1);
+        };
+
+    const auto probeResolved =
+        buildModulatedComposition(tappedStep, std::nullopt);
+    const auto& probeDiffuserStage = std::get<rvrbotron::dsp::ResolvedDiffuser>(
+        probeResolved.composition.stages[1]);
+    auto minDelay = std::numeric_limits<std::uint64_t>::max();
+    for (const auto& step : probeDiffuserStage.steps) {
+      for (const auto delay : step.delaysSamples) {
+        minDelay = std::min(minDelay, delay);
+      }
+    }
+    if (minDelay == std::numeric_limits<std::uint64_t>::max() ||
+        minDelay < 10) {
+      std::cerr << "Tap support Modulation-widening probe resolved an "
+                   "unexpectedly short delay -- adjust the test fixture\n";
+      return 1;
+    }
+    const auto safeExcursionSamples =
+        static_cast<double>(
+            minDelay -
+            rvrbotron::config::kModulationInterpolationMarginSamples) /
+        3.0;
+    const auto safeDepthMs = safeExcursionSamples * 1000.0 / 48000.0;
+
+    rvrbotron::config::ModulationConfig tappedModulation;
+    tappedModulation.depthMs = safeDepthMs;
+    const auto modulatedResolved =
+        buildModulatedComposition(tappedStep, tappedModulation);
+    const auto& modulatedTap =
+        modulatedResolved.composition.early->taps.front();
+    const auto& probeTap = probeResolved.composition.early->taps.front();
+
+    // The Diffuser's own resolved totalSamples grows by the tapped step's
+    // own Modulation reach (PR review on #112): a general fix to the
+    // Diffuser's drain, independent of Early Reflections, since a
+    // modulated Channel's read can still reference live content past a
+    // step's own nominal length.
+    const auto& modulatedDiffuserStage =
+        std::get<rvrbotron::dsp::ResolvedDiffuser>(
+            modulatedResolved.composition.stages[1]);
+    const auto expectedReachSamples =
+        rvrbotron::config::resolveModulationHeadroomSamples(
+            modulatedDiffuserStage.steps[tappedStep]
+                .modulation->excursionSamples);
+    if (modulatedDiffuserStage.totalSamples !=
+        probeDiffuserStage.totalSamples + expectedReachSamples) {
+      std::cerr << "the Diffuser's own resolved totalSamples did not grow "
+                   "by the tapped step's own Modulation reach ("
+                << modulatedDiffuserStage.totalSamples << " != "
+                << probeDiffuserStage.totalSamples << " + "
+                << expectedReachSamples << ")\n";
+      return 1;
+    }
+
+    if (modulatedTap.nominalSupportMinSamples !=
+            probeTap.nominalSupportMinSamples ||
+        modulatedTap.nominalSupportMaxSamples !=
+            probeTap.nominalSupportMaxSamples) {
+      std::cerr << "activating Modulation on the tapped step changed its "
+                   "nominal Tap support, which Modulation must never "
+                   "affect\n";
+      return 1;
+    }
+    if (modulatedTap.conservativeSupportMinSamples >
+            modulatedTap.nominalSupportMinSamples ||
+        modulatedTap.conservativeSupportMaxSamples <
+            modulatedTap.nominalSupportMaxSamples) {
+      std::cerr << "conservative Tap support did not widen to at least "
+                   "cover nominal support\n";
+      return 1;
+    }
+    if (modulatedTap.conservativeSupportMaxSamples <=
+        probeTap.conservativeSupportMaxSamples) {
+      std::cerr << "activating Modulation on the tapped step did not "
+                   "widen its conservative Tap support\n";
+      return 1;
+    }
+
+    // Render the modulated tap in isolation (Main disabled) and confirm
+    // no energy falls outside its own resolved conservative support: the
+    // unmodulated hand-built test above cannot exercise the actual
+    // Excursion/interpolation widening formula, only the unmodulated
+    // (zero-reach) case.
+    auto earlyOnlyModulatedResolved = modulatedResolved;
+    earlyOnlyModulatedResolved.composition.mainEnabled = false;
+    rvrbotron::dsp::Reverb modulatedReverb(earlyOnlyModulatedResolved);
+
+    // The Diffuser's own resolved drain already covers this tap's own
+    // conservative support end (PR review on #112): before an actively
+    // modulated step's own reach was added to the Diffuser's resolved
+    // totalSamples, its reach could push a tap's conservative bound past
+    // the drain the renderer actually produces, silently truncating real
+    // energy from both the render and any Stage capture sharing the same
+    // output timeline (docs/design/reverb/stages/09-composition.md's
+    // "Early Reflections do not extend the existing drain" -- true only
+    // once the drain itself already accounts for Modulation).
+    if (modulatedReverb.tailBudgetFrames() <
+        modulatedTap.conservativeSupportMaxSamples) {
+      std::cerr << "the Diffuser's own resolved drain did not cover the "
+                   "modulated tap's own conservative support end ("
+                << modulatedReverb.tailBudgetFrames() << " < "
+                << modulatedTap.conservativeSupportMaxSamples << ")\n";
+      return 1;
+    }
+
+    const auto modulatedFrameCount = static_cast<std::size_t>(
+        modulatedTap.conservativeSupportMaxSamples + 16);
+    std::vector<rvrbotron::dsp::Sample> modulatedInput(
+        modulatedFrameCount, rvrbotron::dsp::Sample{0});
+    modulatedInput[0] = rvrbotron::dsp::Sample{1};
+    std::vector<rvrbotron::dsp::Sample> modulatedLeft(modulatedFrameCount);
+    std::vector<rvrbotron::dsp::Sample> modulatedRight(modulatedFrameCount);
+    const rvrbotron::dsp::Sample* modulatedInputs[]{modulatedInput.data()};
+    rvrbotron::dsp::Sample* modulatedOutputs[]{
+        modulatedLeft.data(), modulatedRight.data()};
+    modulatedReverb.process(
+        modulatedInputs, 1, modulatedOutputs, 2, modulatedFrameCount);
+
+    for (std::size_t frame = 0; frame < modulatedFrameCount; ++frame) {
+      const auto withinBounds =
+          frame >= modulatedTap.conservativeSupportMinSamples &&
+          frame <= modulatedTap.conservativeSupportMaxSamples;
+      if (!withinBounds &&
+          (modulatedLeft[frame] != rvrbotron::dsp::Sample{0} ||
+           modulatedRight[frame] != rvrbotron::dsp::Sample{0})) {
+        std::cerr << "modulated tap energy occurred at frame " << frame
+                   << ", outside its resolved conservative support ["
+                   << modulatedTap.conservativeSupportMinSamples << ", "
+                   << modulatedTap.conservativeSupportMaxSamples << "]\n";
+        return 1;
+      }
+    }
+
+    // Modulating an *earlier* contributing step (not the tapped step
+    // itself) still widens the later tap's own conservative support
+    // (PR review on #112): the widening test above alone cannot
+    // distinguish correctly summing every step's own reach through the
+    // tap from a regression that only ever looked at the tapped step.
+    // `safeDepthMs` was probed against the shortest delay across every
+    // step, so it stays safe here too.
+    constexpr std::uint32_t earlierStep = 0;
+    rvrbotron::config::ModulationConfig earlierStepModulation;
+    earlierStepModulation.depthMs = safeDepthMs;
+    const auto earlierModulatedResolved =
+        buildModulatedComposition(earlierStep, earlierStepModulation);
+    const auto& earlierModulatedTap =
+        earlierModulatedResolved.composition.early->taps.front();
+    if (earlierModulatedTap.nominalSupportMinSamples !=
+            probeTap.nominalSupportMinSamples ||
+        earlierModulatedTap.nominalSupportMaxSamples !=
+            probeTap.nominalSupportMaxSamples) {
+      std::cerr << "activating Modulation on an earlier contributing step "
+                   "changed the later tap's own nominal Tap support, "
+                   "which Modulation must never affect\n";
+      return 1;
+    }
+    if (earlierModulatedTap.conservativeSupportMaxSamples <=
+        probeTap.conservativeSupportMaxSamples) {
+      std::cerr << "activating Modulation on an earlier contributing step "
+                   "did not widen the later tap's own conservative Tap "
+                   "support -- support resolution must sum every "
+                   "contributing step's own reach, not only the tapped "
+                   "step's\n";
       return 1;
     }
   }

@@ -9,7 +9,6 @@ namespace rvrbotron::dsp {
 
 EarlyReflections::EarlyReflections(const ResolvedEarlyReflections& config)
     : enabled_(config.enabled),
-      tapStepIndex_(0),
       gain_(static_cast<Sample>(config.gain)),
       downmix_(config.downmix),
       accumulator_(config.downmix.inputChannels, Sample{0}) {
@@ -17,12 +16,31 @@ EarlyReflections::EarlyReflections(const ResolvedEarlyReflections& config)
     throw std::invalid_argument(
         "EarlyReflections requires at least one resolved tap");
   }
-  tapStepIndex_ = config.taps.front().stepIndex;
+  // Every tap shares this object's one accumulator (docs/design/reverb/
+  // stages/07-early-reflections.md's "Early envelope": taps are shaped
+  // and summed into a single N-Channel frame before Downmix), so
+  // accumulator_ must already be sized and stable before taps_ captures
+  // its data() pointer -- both true here, since accumulator_ is
+  // constructed above and never resized afterward.
+  taps_.reserve(config.taps.size());
+  for (const auto& tap : config.taps) {
+    taps_.push_back(
+        {tap.stepIndex,
+         static_cast<Sample>(tap.gain),
+         accumulator_.data()});
+  }
 }
 
-DiffuserEarlyTap EarlyReflections::beginFrame() noexcept {
+void EarlyReflections::beginFrame() noexcept {
   std::fill(accumulator_.begin(), accumulator_.end(), Sample{0});
-  return {tapStepIndex_, accumulator_.data()};
+}
+
+const DiffuserEarlyTap* EarlyReflections::taps() const noexcept {
+  return taps_.data();
+}
+
+std::size_t EarlyReflections::tapCount() const noexcept {
+  return taps_.size();
 }
 
 void EarlyReflections::processFrame(
@@ -45,7 +63,7 @@ std::size_t EarlyReflections::ownedBytes() const noexcept {
   // backing-vector allocations, not a second sizeof(Downmix) (issue #111,
   // see Downmix::ownedStorageBytes()'s own declaration).
   return sizeof(*this) + downmix_.ownedStorageBytes() +
-         ownedVectorBytes(accumulator_);
+         ownedVectorBytes(accumulator_) + ownedVectorBytes(taps_);
 }
 
 } // namespace rvrbotron::dsp

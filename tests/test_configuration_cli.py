@@ -2795,11 +2795,17 @@ def main():
     )["composition"]
     early_composition = early_resolved_composition["early"]
     expected_early_gain = 10.0 ** (-6.0 / 20.0)
+    early_tap = early_composition["taps"][0] if early_composition["taps"] else None
     if (
         early_composition["enabled"] is not True
         or early_composition["levelDb"] != -6.0
         or abs(early_composition["gain"] - expected_early_gain) > 1e-9
-        or early_composition["taps"] != [{"stepIndex": 0}]
+        or early_composition["decayDbPerSec"] != 0.0
+        or len(early_composition["taps"]) != 1
+        or early_tap["stepIndex"] != 0
+        or early_tap["gainDb"] != 0.0
+        or early_tap["shapingGainDb"] != 0.0
+        or early_tap["gain"] != 1.0
         or early_composition["downmix"]["strategy"] != "select"
         or early_composition["downmix"]["leftChannel"] != 0
         or early_composition["downmix"]["rightChannel"] != 1
@@ -2877,6 +2883,130 @@ def main():
         raise AssertionError(
             f"a present Early branch did not default to enabled/0 dB/"
             f"select Channels 0-1: {early_default_composition}"
+        )
+
+    # Multiple distinct taps, each with a per-tap gainDb offset and a
+    # shared decayDbPerSec envelope slope, are covered end-to-end too
+    # (issue #112): canonical (ascending) order in Resolved evidence
+    # regardless of Requested order, each tap's own shaping gain, stereo
+    # WAV output, and replay.
+    early_multi_tap_document = {
+        "formatVersion": 2,
+        "seed": 42,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 4,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {
+                    "type": "diffuser",
+                    "steps": 4,
+                    "totalMs": 4,
+                    "distribution": "even",
+                    "step": {
+                        "delayStrategy": "segmented-random",
+                        "mix": "hadamard",
+                        "shuffle": True,
+                        "polarity": "seeded-random",
+                    },
+                },
+                {
+                    "type": "downmix",
+                    "strategy": "select",
+                    "leftChannel": 0,
+                    "rightChannel": 1,
+                    "normalisation": "energy",
+                },
+            ],
+            "early": {
+                "decayDbPerSec": 12.0,
+                "taps": [
+                    {"stepIndex": 3, "gainDb": 2.0},
+                    {"stepIndex": 0, "gainDb": -1.0},
+                ],
+            },
+        },
+    }
+    early_multi_tap_request = workspace / "early-multi-tap-request.json"
+    early_multi_tap_request.write_text(json.dumps(early_multi_tap_document))
+    early_multi_tap_result = workspace / "early-multi-tap-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_multi_tap_request,
+            "--output",
+            early_multi_tap_result,
+        )
+    )
+    early_multi_tap_composition = json.loads(
+        (early_multi_tap_result / "resolved.json").read_text()
+    )["composition"]["early"]
+    multi_taps = early_multi_tap_composition["taps"]
+    if (
+        len(multi_taps) != 2
+        or multi_taps[0]["stepIndex"] != 0
+        or multi_taps[0]["gainDb"] != -1.0
+        or multi_taps[1]["stepIndex"] != 3
+        or multi_taps[1]["gainDb"] != 2.0
+    ):
+        raise AssertionError(
+            f"multiple Early taps did not resolve in canonical ascending "
+            f"order with their own requested gainDb: {multi_taps}"
+        )
+    for tap in multi_taps:
+        expected_shaping_gain_db = tap["gainDb"] - 12.0 * (
+            tap["nominalSupportMaxMs"] / 1000.0
+        )
+        if abs(tap["shapingGainDb"] - expected_shaping_gain_db) > 1e-9:
+            raise AssertionError(
+                f"a tap's shapingGainDb did not match gainDb minus "
+                f"decayDbPerSec times its own nominal support end: {tap}"
+            )
+        expected_gain = 10.0 ** (expected_shaping_gain_db / 20.0)
+        if abs(tap["gain"] - expected_gain) > 1e-9:
+            raise AssertionError(
+                f"a tap's resolved linear gain did not match its own "
+                f"shapingGainDb: {tap}"
+            )
+    multi_tap_output_channels, _ = read_float_wav(
+        early_multi_tap_result / "output.wav"
+    )
+    if multi_tap_output_channels != 2:
+        raise AssertionError(
+            "multi-tap Early Reflections render did not produce stereo "
+            "output"
+        )
+
+    early_multi_tap_rerender = workspace / "early-multi-tap-rerender"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            early_multi_tap_result / "resolved.json",
+            "--output",
+            early_multi_tap_rerender,
+        )
+    )
+    if (early_multi_tap_rerender / "resolved.json").read_bytes() != (
+        early_multi_tap_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "multi-tap Early Reflections resolved rerender changed "
+            "configuration"
+        )
+    if (early_multi_tap_rerender / "output.wav").read_bytes() != (
+        early_multi_tap_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "multi-tap Early Reflections resolved rerender changed output"
         )
 
     # Configuring the tap leaves the Diffuser's own Main output
@@ -3039,8 +3169,7 @@ def main():
             "render stereo output"
         )
 
-    # Exactly one tap is accepted this milestone (#111); a second is
-    # rejected until #112's canonical multi-tap resolution lands.
+    # Duplicate tap indices are rejected (issue #112).
     early_two_taps_document = json.loads(json.dumps(main_base_document))
     early_two_taps_document["composition"]["early"] = {
         "taps": [{"stepIndex": 0}, {"stepIndex": 0}]
@@ -3057,7 +3186,7 @@ def main():
             "--output",
             workspace / "early-two-taps-result",
         ),
-        "/composition/early/taps: expected exactly one tap",
+        "/composition/early/taps: expected unique Diffusion Step indices",
         workspace / "early-two-taps-result",
     )
 
@@ -3077,8 +3206,8 @@ def main():
             "--output",
             workspace / "early-no-taps-result",
         ),
-        "/composition/early: enabled/levelDb/downmix are not applicable "
-        "without at least one tap",
+        "/composition/early: enabled/levelDb/decayDbPerSec/downmix are "
+        "not applicable without at least one tap",
         workspace / "early-no-taps-result",
     )
 
@@ -3128,6 +3257,34 @@ def main():
         "/composition/early/taps/0/stepIndex: expected a Diffusion Step "
         "index within [0, stepCount)",
         workspace / "early-out-of-range-result",
+    )
+
+    # A negative decayDbPerSec is rejected (issue #112): the envelope
+    # slope must be finite and at least zero.
+    early_negative_decay_document = json.loads(json.dumps(main_base_document))
+    early_negative_decay_document["composition"]["early"] = {
+        "decayDbPerSec": -1.0,
+        "taps": [{"stepIndex": 0}],
+    }
+    early_negative_decay_request = workspace / (
+        "early-negative-decay-request.json"
+    )
+    early_negative_decay_request.write_text(
+        json.dumps(early_negative_decay_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_negative_decay_request,
+            "--output",
+            workspace / "early-negative-decay-result",
+        ),
+        "/composition/early/decayDbPerSec: expected a finite value at "
+        "least zero",
+        workspace / "early-negative-decay-result",
     )
 
     # Early's own `downmix` bypasses the composition.stages dispatcher

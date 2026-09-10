@@ -707,6 +707,32 @@ dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
   };
 }
 
+// The additional finite-response reach Diffusion Step Modulation adds to
+// the Diffuser's own resolved totalSamples (PR review on #112): beyond a
+// step's own nominal length, a modulated Channel's read can still
+// reference live content up to that step's own resolved Excursion
+// (rounded up) plus the fixed Interpolation margin further out --
+// resolveModulationHeadroomSamples, the same reach already used to size
+// that Channel's own delay-line buffer (issue #91's "Delay buffers need
+// headroom"), applied here to the Diffuser's own overall drain length
+// instead. Summed once per actively modulated step, regardless of
+// Channel count, so the Diffuser's own drain -- and therefore Early
+// Reflections' conservative Tap support, which is bounded only by that
+// same drain -- never truncates real energy. Shared by resolveDiffuser
+// and validateDiffuserStage so the two never drift on the formula.
+std::uint64_t resolveDiffuserModulationReachSamples(
+    const std::vector<dsp::ResolvedDiffusionStep>& steps) {
+  std::uint64_t reach = 0;
+  for (const auto& step : steps) {
+    if (step.modulation.has_value() &&
+        !step.modulation->channelModulated.empty()) {
+      reach +=
+          resolveModulationHeadroomSamples(step.modulation->excursionSamples);
+    }
+  }
+  return reach;
+}
+
 dsp::ResolvedDiffuser resolveDiffuser(
     const DiffuserConfig& requested,
     const std::uint32_t channels,
@@ -893,6 +919,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
 
     diffuser.steps.push_back(std::move(step));
   }
+  diffuser.totalSamples += resolveDiffuserModulationReachSamples(diffuser.steps);
   return diffuser;
 }
 
@@ -1533,6 +1560,129 @@ DownmixConfig withEarlyDownmixDefaults(
   return requested;
 }
 
+// The Main wet path's own resolved Diffuser, if any (issue #112): shared
+// by resolveConfig's own Early tap-support resolution below, which needs
+// it whether or not a Diffuser is actually present (an absent one is a
+// resolution-time no-op here -- validateResolvedConfig's own diffuserStage
+// check rejects a missing Diffuser authoritatively afterward). There is
+// at most one Diffuser per the shapes validateShape admits.
+const dsp::ResolvedDiffuser* findResolvedDiffuser(
+    const std::vector<dsp::ResolvedStage>& stages) {
+  for (const auto& stage : stages) {
+    if (const auto* diffuser = std::get_if<dsp::ResolvedDiffuser>(&stage)) {
+      return diffuser;
+    }
+  }
+  return nullptr;
+}
+
+struct TapSupportBounds {
+  std::uint64_t nominalSupportMinSamples = 0;
+  std::uint64_t nominalSupportMaxSamples = 0;
+  std::uint64_t conservativeSupportMinSamples = 0;
+  std::uint64_t conservativeSupportMaxSamples = 0;
+};
+
+// Nominal and conservative Tap support bounds through `stepIndex`
+// inclusive (issue #112, docs/design/reverb/stages/
+// 07-early-reflections.md's "Tap support"): nominal sums each
+// contributing step's own minimum/maximum resolved per-Channel delay;
+// conservative additionally widens every step whose own Modulation is
+// active by that step's resolved Excursion (rounded up) plus the fixed
+// Interpolation margin, applied symmetrically as a conservative (never
+// underestimating) reach on both sides -- the same reach
+// resolveModulationHeadroomSamples already uses to size delay-line
+// buffers, applied here to bound arrival time instead. Shared by
+// resolveConfig and validateResolvedConfig so the two never drift on the
+// formula. Defensive: an out-of-range stepIndex or an unresolved step
+// (empty delaysSamples, e.g. an invalid mix/Channel-count combination the
+// Diffuser's own validation rejects separately) contributes nothing
+// rather than indexing out of bounds -- resolution runs before
+// validateResolvedConfig can reject either.
+TapSupportBounds resolveTapSupport(
+    const dsp::ResolvedDiffuser& diffuser, const std::uint32_t stepIndex) {
+  TapSupportBounds bounds;
+  for (std::size_t index = 0;
+       index <= stepIndex && index < diffuser.steps.size();
+       ++index) {
+    const auto& step = diffuser.steps[index];
+    if (step.delaysSamples.empty()) {
+      continue;
+    }
+    const auto minMax = std::minmax_element(
+        step.delaysSamples.begin(), step.delaysSamples.end());
+    const auto stepMinSamples = *minMax.first;
+    const auto stepMaxSamples = *minMax.second;
+    bounds.nominalSupportMinSamples += stepMinSamples;
+    bounds.nominalSupportMaxSamples += stepMaxSamples;
+    std::uint64_t reachSamples = 0;
+    if (step.modulation.has_value() &&
+        !step.modulation->channelModulated.empty()) {
+      reachSamples =
+          resolveModulationHeadroomSamples(step.modulation->excursionSamples);
+    }
+    bounds.conservativeSupportMinSamples +=
+        stepMinSamples > reachSamples ? stepMinSamples - reachSamples : 0;
+    bounds.conservativeSupportMaxSamples += stepMaxSamples + reachSamples;
+  }
+  return bounds;
+}
+
+// Resolves one Early tap: its own gain offset, nominal/conservative
+// support bounds (in samples and milliseconds), and its shaping gain --
+// gainDb minus decayDbPerSec times the nominal support end in seconds
+// (docs/design/reverb/stages/07-early-reflections.md's "Early envelope"),
+// converted to a linear multiplier. Takes already-resolved-shaped values
+// (`stepIndex`, `gainDb`) rather than a Requested-layer EarlyTapConfig,
+// so validateResolvedConfig can recompute the same expected tap from
+// resolved fields alone -- mirroring how validateResolvedDownmixFields
+// and validateResolvedModulation each recompute their own expected
+// values from resolved data only, never by reassembling a config-layer
+// request struct. `decayDbPerSec` is used as given when finite and
+// non-negative; otherwise 0.0 keeps this defensively computable,
+// mirroring resolveModulation's own bypass on invalid requested values --
+// validateResolvedConfig rejects an actually invalid `decayDbPerSec` from
+// the caller's own recorded field, not from this function's internal
+// fallback.
+dsp::ResolvedEarlyTap resolveEarlyTap(
+    const std::uint32_t stepIndex,
+    const double gainDb,
+    const dsp::ResolvedDiffuser& diffuser,
+    const double decayDbPerSec,
+    const std::uint32_t sampleRate) {
+  dsp::ResolvedEarlyTap tap;
+  tap.stepIndex = stepIndex;
+  tap.gainDb = gainDb;
+
+  const auto bounds = resolveTapSupport(diffuser, tap.stepIndex);
+  tap.nominalSupportMinSamples = bounds.nominalSupportMinSamples;
+  tap.nominalSupportMaxSamples = bounds.nominalSupportMaxSamples;
+  tap.conservativeSupportMinSamples = bounds.conservativeSupportMinSamples;
+  tap.conservativeSupportMaxSamples = bounds.conservativeSupportMaxSamples;
+  if (sampleRate != 0) {
+    tap.nominalSupportMinMs = static_cast<double>(
+                                   bounds.nominalSupportMinSamples) *
+        1000.0 / sampleRate;
+    tap.nominalSupportMaxMs = static_cast<double>(
+                                   bounds.nominalSupportMaxSamples) *
+        1000.0 / sampleRate;
+    tap.conservativeSupportMinMs =
+        static_cast<double>(bounds.conservativeSupportMinSamples) * 1000.0 /
+        sampleRate;
+    tap.conservativeSupportMaxMs =
+        static_cast<double>(bounds.conservativeSupportMaxSamples) * 1000.0 /
+        sampleRate;
+  }
+
+  const auto effectiveDecayDbPerSec =
+      (std::isfinite(decayDbPerSec) && decayDbPerSec >= 0.0) ? decayDbPerSec
+                                                               : 0.0;
+  tap.shapingGainDb = tap.gainDb -
+      effectiveDecayDbPerSec * (tap.nominalSupportMaxMs / 1000.0);
+  tap.gain = resolveLinearGainFromDb(tap.shapingGainDb);
+  return tap;
+}
+
 void validateShape(const dsp::ResolvedComposition& composition) {
   if (composition.stages.empty()) {
     return;
@@ -1740,12 +1890,14 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           stage);
     }
 
-    // The parallel Early Reflections branch (issue #111): resolved once
-    // every Main wet path stage above is resolved, since its own tap and
-    // Downmix both need the Composition's own `channels` -- the same N
-    // the Main Downmix resolves against. Omitted `early`, an included but
-    // empty `early`, and `early: {"taps": []}` all mean no branch; a
-    // non-empty `taps` resolves one (see EarlyConfig's own declaration).
+    // The parallel Early Reflections branch (issues #111/#112): resolved
+    // once every Main wet path stage above is resolved, since its own
+    // taps and Downmix both need the Composition's own `channels` --
+    // the same N the Main Downmix resolves against -- and each tap's own
+    // support bounds need the Main wet path's own resolved Diffuser.
+    // Omitted `early`, an included but empty `early`, and
+    // `early: {"taps": []}` all mean no branch; a non-empty `taps`
+    // resolves one (see EarlyConfig's own declaration).
     if (requestedComposition->early.has_value()) {
       const auto& earlyRequested = *requestedComposition->early;
       const auto hasTaps =
@@ -1753,23 +1905,56 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
       if (!hasTaps) {
         if (earlyRequested.enabled.has_value() ||
             earlyRequested.levelDb.has_value() ||
+            earlyRequested.decayDbPerSec.has_value() ||
             earlyRequested.downmix.has_value()) {
           fail(
               "/composition/early",
-              "enabled/levelDb/downmix are not applicable without at "
-              "least one tap");
+              "enabled/levelDb/decayDbPerSec/downmix are not applicable "
+              "without at least one tap");
         }
       } else {
-        if (earlyRequested.taps->size() != 1) {
-          fail(
-              "/composition/early/taps",
-              "expected exactly one tap");
-        }
         dsp::ResolvedEarlyReflections early;
         early.enabled = earlyRequested.enabled.value_or(true);
         early.levelDb = earlyRequested.levelDb.value_or(0.0);
         early.gain = resolveLinearGainFromDb(early.levelDb);
-        early.taps.push_back({(*earlyRequested.taps)[0].stepIndex});
+        early.decayDbPerSec = earlyRequested.decayDbPerSec.value_or(0.0);
+
+        // Unique stepIndex per tap, sorted ascending (canonical order,
+        // issue #112): a Requested tap-list permutation must resolve and
+        // render identically, so order is normalized here rather than
+        // preserved, and a duplicate index is rejected outright.
+        auto sortedTaps = *earlyRequested.taps;
+        std::sort(
+            sortedTaps.begin(),
+            sortedTaps.end(),
+            [](const EarlyTapConfig& a, const EarlyTapConfig& b) {
+              return a.stepIndex < b.stepIndex;
+            });
+        for (std::size_t index = 1; index < sortedTaps.size(); ++index) {
+          if (sortedTaps[index].stepIndex ==
+              sortedTaps[index - 1].stepIndex) {
+            fail(
+                "/composition/early/taps",
+                "expected unique Diffusion Step indices");
+          }
+        }
+
+        const auto* const diffuserStage =
+            findResolvedDiffuser(resolved.composition.stages);
+        const dsp::ResolvedDiffuser noDiffuser;
+        const auto& diffuserForSupport =
+            diffuserStage != nullptr ? *diffuserStage : noDiffuser;
+        early.taps.reserve(sortedTaps.size());
+        for (const auto& tapRequested : sortedTaps) {
+          early.taps.push_back(
+              resolveEarlyTap(
+                  tapRequested.stepIndex,
+                  tapRequested.gainDb.value_or(0.0),
+                  diffuserForSupport,
+                  early.decayDbPerSec,
+                  sampleRate));
+        }
+
         const auto downmixRequested = withEarlyDownmixDefaults(
             earlyRequested.downmix.value_or(DownmixConfig{}), channels);
         early.downmix = resolveDownmix(
@@ -2326,10 +2511,14 @@ void validateDiffuserStage(
           stepPath + "/bufferSizes");
     }
   }
-  if (stepLengthSum != diffuser.totalSamples) {
+  const auto expectedTotalSamples = stepLengthSum +
+      resolveDiffuserModulationReachSamples(diffuser.steps);
+  if (expectedTotalSamples != diffuser.totalSamples) {
     fail(
         path + "/steps",
-        "expected step sample budgets to sum to the resolved total");
+        "expected step sample budgets, plus every actively modulated "
+        "step's own resolved Modulation reach, to sum to the resolved "
+        "total");
   }
 }
 
@@ -3247,12 +3436,15 @@ void validateResolvedConfig(
       expectedAlignment,
       stagePath(downmixIndex));
 
-  // The parallel Early Reflections branch (issue #111): valid only when
-  // the Main wet path contains a Diffuser (docs/design/reverb/stages/
-  // 09-composition.md), its own tap must reference an in-range resolved
-  // Diffusion Step, and its Downmix is validated by the same shared field
-  // contract as Main's -- always an aligned Alignment expectation and its
-  // own domain-separated RandomOrthogonal usage tag.
+  // The parallel Early Reflections branch (issues #111/#112): valid only
+  // when the Main wet path contains a Diffuser (docs/design/reverb/
+  // stages/09-composition.md), every tap's own stepIndex must be unique
+  // and sorted ascending (canonical order) and reference an in-range
+  // resolved Diffusion Step, each tap's own support bounds and shaping
+  // gain must match the shared resolution formula, and its Downmix is
+  // validated by the same shared field contract as Main's -- always an
+  // aligned Alignment expectation and its own domain-separated
+  // RandomOrthogonal usage tag.
   if (resolved.composition.early.has_value()) {
     const auto& early = *resolved.composition.early;
     if (diffuserStage == nullptr) {
@@ -3260,13 +3452,87 @@ void validateResolvedConfig(
           "/composition/early",
           "requires the Main wet path to contain a Diffuser");
     }
-    if (early.taps.size() != 1) {
-      fail("/composition/early/taps", "expected exactly one resolved tap");
+    if (early.taps.empty()) {
+      fail("/composition/early/taps", "expected at least one resolved tap");
     }
-    if (early.taps.front().stepIndex >= diffuserStage->steps.size()) {
+    if (!std::isfinite(early.decayDbPerSec) || early.decayDbPerSec < 0.0) {
       fail(
-          "/composition/early/taps/0/stepIndex",
-          "expected a Diffusion Step index within [0, stepCount)");
+          "/composition/early/decayDbPerSec",
+          "expected a finite value at least zero");
+    }
+    const dsp::ResolvedDiffuser noDiffuser;
+    const auto& diffuserForSupport =
+        diffuserStage != nullptr ? *diffuserStage : noDiffuser;
+    for (std::size_t index = 0; index < early.taps.size(); ++index) {
+      const auto& tap = early.taps[index];
+      const auto tapPath =
+          "/composition/early/taps/" + std::to_string(index);
+      if (index > 0 && tap.stepIndex <= early.taps[index - 1].stepIndex) {
+        fail(
+            tapPath + "/stepIndex",
+            "expected unique Diffusion Step indices sorted ascending");
+      }
+      if (diffuserStage != nullptr &&
+          tap.stepIndex >= diffuserStage->steps.size()) {
+        fail(
+            tapPath + "/stepIndex",
+            "expected a Diffusion Step index within [0, stepCount)");
+      }
+      if (!std::isfinite(tap.gainDb)) {
+        fail(tapPath + "/gainDb", "expected a finite value");
+      }
+      const auto expectedTap = resolveEarlyTap(
+          tap.stepIndex,
+          tap.gainDb,
+          diffuserForSupport,
+          early.decayDbPerSec,
+          resolved.sampleRate);
+      if (tap.nominalSupportMinSamples !=
+              expectedTap.nominalSupportMinSamples ||
+          tap.nominalSupportMaxSamples !=
+              expectedTap.nominalSupportMaxSamples ||
+          tap.conservativeSupportMinSamples !=
+              expectedTap.conservativeSupportMinSamples ||
+          tap.conservativeSupportMaxSamples !=
+              expectedTap.conservativeSupportMaxSamples) {
+        fail(
+            tapPath,
+            "expected support bounds in samples derived from the "
+            "resolved Diffuser");
+      }
+      if (!std::isfinite(tap.nominalSupportMinMs) ||
+          !std::isfinite(tap.nominalSupportMaxMs) ||
+          !std::isfinite(tap.conservativeSupportMinMs) ||
+          !std::isfinite(tap.conservativeSupportMaxMs) ||
+          tap.nominalSupportMinMs != expectedTap.nominalSupportMinMs ||
+          tap.nominalSupportMaxMs != expectedTap.nominalSupportMaxMs ||
+          tap.conservativeSupportMinMs !=
+              expectedTap.conservativeSupportMinMs ||
+          tap.conservativeSupportMaxMs !=
+              expectedTap.conservativeSupportMaxMs) {
+        fail(
+            tapPath,
+            "expected support bounds in milliseconds derived from the "
+            "resolved Diffuser");
+      }
+      if (tap.shapingGainDb != expectedTap.shapingGainDb) {
+        fail(
+            tapPath + "/shapingGainDb",
+            "expected gainDb minus decayDbPerSec times the nominal "
+            "support end");
+      }
+      const auto tapGainAtFloatPrecision = static_cast<float>(tap.gain);
+      if (!(tap.gain > 0.0) || !std::isfinite(tap.gain) ||
+          !std::isfinite(tapGainAtFloatPrecision) ||
+          !(tapGainAtFloatPrecision > 0.0f)) {
+        fail(
+            tapPath + "/gain",
+            "expected finite positive gain representable at float "
+            "precision");
+      }
+      if (tap.gain != expectedTap.gain) {
+        fail(tapPath + "/gain", "expected gain derived from shapingGainDb");
+      }
     }
     if (!std::isfinite(early.levelDb)) {
       fail("/composition/early/levelDb", "expected a finite value");
