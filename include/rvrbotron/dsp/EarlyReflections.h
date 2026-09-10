@@ -23,6 +23,22 @@ class EarlyReflections {
 public:
   explicit EarlyReflections(const ResolvedEarlyReflections& config);
 
+  // taps_ holds raw pointers into this object's own accumulator_ (see
+  // its declaration below), so a copy would leave the copy's own
+  // descriptors pointing at the source's accumulator -- writing into
+  // the wrong object, or into dangling storage once the source is gone
+  // -- and a naive move would need every descriptor rebound to the
+  // destination's own (potentially reallocated) storage. Neither copy
+  // nor move has a legitimate use here: this object is always
+  // constructed in place and owned through a single unique_ptr
+  // (see Reverb::Implementation::early), so both are deleted outright
+  // rather than implemented to work correctly for a need that does not
+  // exist (PR review on #112).
+  EarlyReflections(const EarlyReflections&) = delete;
+  EarlyReflections& operator=(const EarlyReflections&) = delete;
+  EarlyReflections(EarlyReflections&&) = delete;
+  EarlyReflections& operator=(EarlyReflections&&) = delete;
+
   // Zeroes this frame's N-Channel accumulator.
   void beginFrame() noexcept;
 

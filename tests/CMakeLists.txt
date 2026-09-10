@@ -170,6 +170,17 @@ add_test(
 )
 
 add_test(
+  NAME early_support_analyzer_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_early_support_analyzer_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/analyze_early_support.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/early-support-analyzer-contract
+)
+
+add_test(
   NAME tail_analyzer_contract
   COMMAND
     ${Python3_EXECUTABLE}

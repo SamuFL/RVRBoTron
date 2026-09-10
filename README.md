@@ -15,9 +15,9 @@ Active implementation work is tracked in this repository's GitHub Issues.
 
 Install CMake 3.25 or newer, Ninja, Python 3, and a C++17 compiler. Git LFS is
 also required to download or add the curated listening samples. Rendering and
-`tools/analyze_render.py` need only the standard library; the diffusion and
-tail analyzers additionally need the packages in `tools/requirements.txt`
-(`pip3 install -r tools/requirements.txt`).
+`tools/analyze_render.py` need only the standard library; the diffusion,
+tail, and Early Tap support analyzers additionally need the packages in
+`tools/requirements.txt` (`pip3 install -r tools/requirements.txt`).
 
 ### Configure, build, and test
 
@@ -582,6 +582,23 @@ Render Results of the same Resolved Configuration -- typically rendered at
 different `--block-size` values -- for exact decoded equality of `output.wav`
 and every Stage capture, with first-mismatch detail on failure. This mode
 prints its own JSON report and does not publish an artifact.
+
+For a Composition with an Early Reflections branch (issue #112), render with
+`--capture-stages all` and add the Tap support artifact:
+
+```bash
+python3 tools/analyze_early_support.py build/early-result
+```
+
+`analysis/early-support-v1.json` reports, per resolved tap, the measured
+first/last non-zero sample, peak sample, and energy-weighted centroid from
+that tap's own captured Diffusion Step (-120 dB capture-relative activity
+floor, the same convention `analyze_diffusion.py`'s own Alignment evidence
+uses), alongside its resolved nominal and conservative Tap support bounds
+and whether the measured interval fell within conservative support.
+Cancellation can make measured support narrower than the structural bound;
+it never rejects a render for falling outside it. Publication is
+append-only and idempotent, like every other analyzer here.
 
 For a Composition containing a Feedback Loop, add the separate tail
 artifact instead -- the diffusion analyzer's all-pass, feedback-free

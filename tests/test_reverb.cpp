@@ -2866,6 +2866,42 @@ int main() {
                    "widen its conservative Tap support\n";
       return 1;
     }
+
+    // Render the modulated tap in isolation (Main disabled) and confirm
+    // no energy falls outside its own resolved conservative support: the
+    // unmodulated hand-built test above cannot exercise the actual
+    // Excursion/interpolation widening formula, only the unmodulated
+    // (zero-reach) case.
+    auto earlyOnlyModulatedResolved = modulatedResolved;
+    earlyOnlyModulatedResolved.composition.mainEnabled = false;
+    rvrbotron::dsp::Reverb modulatedReverb(earlyOnlyModulatedResolved);
+    const auto modulatedFrameCount = static_cast<std::size_t>(
+        modulatedTap.conservativeSupportMaxSamples + 16);
+    std::vector<rvrbotron::dsp::Sample> modulatedInput(
+        modulatedFrameCount, rvrbotron::dsp::Sample{0});
+    modulatedInput[0] = rvrbotron::dsp::Sample{1};
+    std::vector<rvrbotron::dsp::Sample> modulatedLeft(modulatedFrameCount);
+    std::vector<rvrbotron::dsp::Sample> modulatedRight(modulatedFrameCount);
+    const rvrbotron::dsp::Sample* modulatedInputs[]{modulatedInput.data()};
+    rvrbotron::dsp::Sample* modulatedOutputs[]{
+        modulatedLeft.data(), modulatedRight.data()};
+    modulatedReverb.process(
+        modulatedInputs, 1, modulatedOutputs, 2, modulatedFrameCount);
+
+    for (std::size_t frame = 0; frame < modulatedFrameCount; ++frame) {
+      const auto withinBounds =
+          frame >= modulatedTap.conservativeSupportMinSamples &&
+          frame <= modulatedTap.conservativeSupportMaxSamples;
+      if (!withinBounds &&
+          (modulatedLeft[frame] != rvrbotron::dsp::Sample{0} ||
+           modulatedRight[frame] != rvrbotron::dsp::Sample{0})) {
+        std::cerr << "modulated tap energy occurred at frame " << frame
+                   << ", outside its resolved conservative support ["
+                   << modulatedTap.conservativeSupportMinSamples << ", "
+                   << modulatedTap.conservativeSupportMaxSamples << "]\n";
+        return 1;
+      }
+    }
   }
 
   for (const auto channels : {1U, 2U, 4U, 8U, 16U}) {
