@@ -153,7 +153,7 @@ def main():
     # for all five strategies (issue #115's own AC). Aligned evidence
     # requires a Diffusion Step immediately before the Downmix to be
     # available (Alignment score, spectral deviation against source,
-    # width-energy change); unaligned evidence must instead report those
+    # branch energy ratio); unaligned evidence must instead report those
     # three as unavailable, never silently computed against the wrong
     # signal.
     strategies = ["select", "orthogonal-rows", "halves", "alternating", "sum-all"]
@@ -197,10 +197,10 @@ def main():
                 f"{strategy}: aligned fixture reported spectral deviation "
                 f"unavailable: {main_evidence}"
             )
-        if not main_evidence["widthEnergyChange"]["available"]:
+        if not main_evidence["branchEnergyRatio"]["available"]:
             raise AssertionError(
-                f"{strategy}: aligned fixture reported width-energy "
-                f"change unavailable: {main_evidence}"
+                f"{strategy}: aligned fixture reported branch energy ratio "
+                f"unavailable: {main_evidence}"
             )
         if main_evidence["branchEnergy"] <= 0.0:
             raise AssertionError(
@@ -245,10 +245,10 @@ def main():
                 f"{strategy}: unaligned fixture reported spectral "
                 f"deviation available: {unaligned_main}"
             )
-        if unaligned_main["widthEnergyChange"]["available"]:
+        if unaligned_main["branchEnergyRatio"]["available"]:
             raise AssertionError(
-                f"{strategy}: unaligned fixture reported width-energy "
-                f"change available: {unaligned_main}"
+                f"{strategy}: unaligned fixture reported branch energy ratio "
+                f"available: {unaligned_main}"
             )
 
     # select/sum-all support N=1 (issues #107/#114); the other three
@@ -323,7 +323,7 @@ def main():
         )
     # Early's own tap(s) always draw from a Diffusion Step by
     # construction, so its own Alignment score/spectral deviation/
-    # width-energy change must be available exactly like Main's are on
+    # branch energy ratio must be available exactly like Main's are on
     # an aligned Diffuser-only fixture -- reconstructed from the
     # gain-weighted sum of its own taps' captures, not omitted.
     early_evidence = with_early_analysis["early"]
@@ -342,9 +342,9 @@ def main():
             f"Early Reflections reported spectral deviation unavailable: "
             f"{early_evidence}"
         )
-    if not early_evidence["widthEnergyChange"]["available"]:
+    if not early_evidence["branchEnergyRatio"]["available"]:
         raise AssertionError(
-            f"Early Reflections reported width-energy change "
+            f"Early Reflections reported branch energy ratio "
             f"unavailable: {early_evidence}"
         )
     reconciliation = with_early_analysis["branchEnergyReconciliation"]
@@ -364,6 +364,84 @@ def main():
     )
     if republished_analysis != with_early_analysis:
         raise AssertionError("republishing changed the analysis artifact")
+
+    # A disabled Main branch skips its own Downmix/Width/level processing
+    # entirely (issue #109), so its own branch energy ratio and spectral
+    # deviation must be unavailable -- comparing its exact-zero capture
+    # against a nonzero source would otherwise report measurements for
+    # processing that never ran. Alignment score stays available
+    # regardless: it characterizes the source, not Main's own (skipped)
+    # processing.
+    main_disabled_document = aligned_document("select", 4)
+    main_disabled_document["composition"]["mainEnabled"] = False
+    _, main_disabled_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-main-disabled",
+        main_disabled_document,
+    )
+    check_finite_tree(main_disabled_analysis)
+    check_branch_reconciliation(main_disabled_analysis)
+    main_disabled_evidence = main_disabled_analysis["main"]
+    if main_disabled_evidence["branchEnergy"] != 0.0:
+        raise AssertionError(
+            f"a disabled Main branch's own energy was not exact zero: "
+            f"{main_disabled_evidence}"
+        )
+    if main_disabled_evidence["alignmentScore"] is None:
+        raise AssertionError(
+            f"a disabled Main branch reported no Alignment score, even "
+            f"though its own source is still measurable: "
+            f"{main_disabled_evidence}"
+        )
+    if main_disabled_evidence["branchEnergyRatio"]["available"]:
+        raise AssertionError(
+            f"a disabled Main branch reported a branch energy ratio: "
+            f"{main_disabled_evidence}"
+        )
+    if main_disabled_evidence["spectralDeviation"]["available"]:
+        raise AssertionError(
+            f"a disabled Main branch reported spectral deviation "
+            f"available: {main_disabled_evidence}"
+        )
+
+    # branchEnergyRatio is the branch's *combined* Downmix+Width+level
+    # energy ratio, not an isolated Width effect -- there is no capture
+    # between Downmix and Width to separate them (adding one would need
+    # its own versioned capture boundary per ADR-0005). Demonstrate that
+    # both a non-90-degree Width and a nonzero mainLevelDb move the
+    # ratio, so it is never mistaken for a pure Width metric.
+    width_reference_document = aligned_document("select", 4)
+    _, width_reference_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-width-reference",
+        width_reference_document,
+    )
+    reference_ratio = width_reference_analysis["main"]["branchEnergyRatio"]["ratio"]
+
+    width_level_document = aligned_document("select", 4)
+    width_level_document["composition"]["stages"][2]["widthDeg"] = 45.0
+    width_level_document["composition"]["mainLevelDb"] = -6.0
+    _, width_level_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-width-level",
+        width_level_document,
+    )
+    width_level_ratio = width_level_analysis["main"]["branchEnergyRatio"]["ratio"]
+    if width_level_ratio == reference_ratio:
+        raise AssertionError(
+            f"a non-90-degree Width plus a nonzero mainLevelDb was "
+            f"expected to move the branch energy ratio: reference="
+            f"{reference_ratio}, width/level={width_level_ratio}"
+        )
 
     # --capture-stages all is required: the analyzer needs Main-stereo
     # (and, when configured, Early-stereo and Diffusion Step) captures.

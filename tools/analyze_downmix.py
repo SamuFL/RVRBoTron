@@ -22,6 +22,23 @@ ARTIFACT_NAME = f"{ANALYZER_NAME}-v{ANALYZER_VERSION}.json"
 _TINY_POWER = np.finfo(np.float64).tiny
 
 
+def sample_precision_dtype(precision):
+    """The numpy dtype the renderer's own `Sample` type actually was for
+    this render (`render.json`'s `samplePrecision`). analyze_diffusion.
+    numpy_frames always promotes a decoded capture to float64 regardless
+    of the WAV's own encoding, which is exact (a lossless upcast) for
+    reading a single capture in isolation, but combining multiple
+    captures with plain float64 arithmetic does *not* reproduce a float32
+    render's own single-precision rounding at each step -- reconstructing
+    a signal the renderer computed (rather than merely reading one it
+    already wrote) must first replay that arithmetic at this dtype."""
+    if precision == "float64":
+        return np.float64
+    if precision == "float32":
+        return np.float32
+    raise ValueError(f"unknown render sample precision: {precision}")
+
+
 def _band_energy(spectrum, frequencies, fft_length, length, low_hz, high_hz):
     """Total energy (summed across time and Channels) that one octave
     band's raised-cosine gain (analyze_tail.octave_band_gain, public and
@@ -148,29 +165,41 @@ def mono_fold_down_evidence(stereo_frames, sample_rate):
     }
 
 
-def diffuser_sourced_evidence(
-    source_frames, branch_frames, branch_energy, sample_rate, source_descriptor
-):
-    """Alignment score, actual width-energy change, and spectral deviation
-    against source -- the three evidence items only meaningful when
-    `source_frames` genuinely is the Downmix's own immediate N-Channel
-    input (see analyze()'s own gating for Main, and its Early
-    reconstruction, below). Shared by both branches so they never drift on
-    what "immediate input" evidence looks like once it is available.
+def alignment_score_evidence(source_frames, source_descriptor):
+    """Measured Alignment score of a Downmix's own immediate N-Channel
+    source -- a fact about the *source* (echo arrival times a level or two
+    upstream of any per-branch processing), so unlike branch_energy_ratio_
+    evidence below, this remains meaningful even when the branch consuming
+    that source was itself disabled and never processed it.
     `source_descriptor` identifies which Diffusion Step(s) `source_frames`
     came from -- a single stepIndex for Main, one or more for Early, whose
     taps may draw from several Diffusion Steps at once."""
     peak, floor = analyze_diffusion.activity_floor(source_frames)
     active = np.abs(source_frames) > floor
-    source_energy = float(np.sum(source_frames * source_frames))
-    alignment_score = {
+    return {
         **source_descriptor,
         "activityFloorDb": analyze_diffusion.ACTIVITY_FLOOR_DB,
         "peakAbsoluteSample": peak,
         "activityFloor": floor,
         **analyze_diffusion.alignment_evidence(active),
     }
-    width_energy_change = {
+
+
+def branch_energy_ratio_evidence(source_frames, branch_frames, branch_energy, sample_rate):
+    """The branch's own captured energy relative to its immediate
+    N-Channel source's energy, and spectral deviation between them --
+    reported as a *combined* ratio across the Downmix's row/compensation
+    projection, Width, and branch level together, deliberately not named
+    or claimed as an isolated Width effect: `branch_frames` is captured
+    after all three (issue #113's mainStereo/earlyStereo boundary placement
+    "after each branch's own shaping, Downmix, Width, and level"), and no
+    capture exists between Downmix and Width to separate them (adding one
+    would need its own versioned capture boundary per ADR-0005). Only
+    meaningful when `source_frames` genuinely is that Downmix's own
+    immediate input and the branch was actually enabled -- see analyze()'s
+    own gating for both conditions."""
+    source_energy = float(np.sum(source_frames * source_frames))
+    branch_energy_ratio = {
         "available": True,
         "sourceEnergy": source_energy,
         "branchEnergy": branch_energy,
@@ -180,12 +209,11 @@ def diffuser_sourced_evidence(
         branch_frames, source_frames, sample_rate
     )
     spectral_deviation = {"available": True, **spectral}
-    return alignment_score, width_energy_change, spectral_deviation
+    return branch_energy_ratio, spectral_deviation
 
 
-def unavailable_diffuser_sourced_evidence(reason):
+def unavailable_branch_energy_ratio_evidence(reason):
     return (
-        None,
         {"available": False, "reason": reason},
         {"available": False, "reason": reason},
     )
@@ -268,7 +296,18 @@ def analyze(render_result, source_path):
         else np.zeros_like(main_frames)
     )
     output_frames = analyze_diffusion.numpy_frames(output_wav)
-    if not np.array_equal(output_frames, main_frames + early_frames):
+    sample_dtype = sample_precision_dtype(metadata["samplePrecision"])
+    # Reverb.cpp computes `outputs[frame] = mainLeft + earlyLeft` in
+    # `Sample` precision -- a single correctly-rounded addition, not the
+    # exact float64 sum plain arithmetic on numpy_frames' own
+    # already-promoted arrays would give. Replaying that addition at
+    # `sample_dtype` before promoting back to float64 reproduces the
+    # renderer's own rounding (float32's round-to-nearest, then an exact
+    # upcast) rather than a second, different rounding of the exact sum.
+    reconstructed_output = (
+        main_frames.astype(sample_dtype) + early_frames.astype(sample_dtype)
+    ).astype(np.float64)
+    if not np.array_equal(output_frames, reconstructed_output):
         raise ValueError(
             "output.wav did not equal the sample-wise sum of the captured "
             "Main-stereo and Early-stereo branches"
@@ -289,19 +328,28 @@ def analyze(render_result, source_path):
     # input only when a Diffuser is what actually feeds it -- unaligned
     # (Feedback Loop) Composition shapes have no equivalent capture
     # (ADR-0005 deliberately omits a Feedback Loop boundary), so measured
-    # Alignment score, spectral evidence against source, and actual
-    # width-energy change are all structurally unavailable there rather
-    # than computed against the wrong signal. This also means a damped
-    # tail (Feedback Loop plus Damping) never gets an "absolute flatness"
-    # spectral claim from this analyzer -- only an aligned source ever
-    # reaches the available branch below, and damped Feedback Loop
-    # renders are excluded by construction. Main's own immediate input is
-    # a single Diffusion Step (whichever stage directly precedes its
-    # Downmix); Early's is the gain-weighted sum of every one of its own
-    # taps' Diffusion Step captures -- exactly reconstructing
-    # Diffuser.cpp's own per-tap accumulation (`accumulator[channel] +=
-    # outputs[channel] * tap.gain`) from captures alone, since Early's
-    # accumulator itself has no capture boundary of its own.
+    # spectral evidence against source and the branch energy ratio are
+    # both structurally unavailable there rather than computed against
+    # the wrong signal. This also means a damped tail (Feedback Loop plus
+    # Damping) never gets an "absolute flatness" spectral claim from this
+    # analyzer -- only an aligned source ever reaches the available
+    # branch below, and damped Feedback Loop renders are excluded by
+    # construction. A disabled branch (its own capture manifested
+    # `disabled: true`, exact zero throughout, issue #113) skips its own
+    # Downmix/Width/level processing entirely (Reverb.cpp), so its own
+    # branch energy ratio and spectral deviation are unavailable too --
+    # comparing a zero capture against a nonzero source would otherwise
+    # report measurements for processing that never ran. Alignment score
+    # alone stays available regardless of the branch's own enablement: it
+    # characterizes the source feeding the Downmix, not that Downmix's
+    # own processing. Main's own immediate input is a single Diffusion
+    # Step (whichever stage directly precedes its Downmix); Early's is
+    # the gain-weighted sum of every one of its own taps' Diffusion Step
+    # captures -- exactly reconstructing Diffuser.cpp's own per-tap
+    # accumulation (`accumulator[channel] += outputs[channel] *
+    # tap.gain`) from captures alone, replayed at the render's own Sample
+    # precision (see sample_precision_dtype), since Early's accumulator
+    # itself has no capture boundary of its own.
     diffuser_immediately_precedes_main = (
         len(stages) >= 2 and stages[-2]["type"] == "diffuser"
     )
@@ -310,23 +358,30 @@ def analyze(render_result, source_path):
         source_frames = analyze_diffusion.numpy_frames(
             diffusion_captures[source_index]
         )
-        (
-            main["alignmentScore"],
-            main["widthEnergyChange"],
-            main["spectralDeviation"],
-        ) = diffuser_sourced_evidence(
-            source_frames,
-            main_frames,
-            main_energy,
-            sample_rate,
-            {"stepIndex": source_index},
+        main["alignmentScore"] = alignment_score_evidence(
+            source_frames, {"stepIndex": source_index}
         )
+        if main_capture[0].get("disabled", False):
+            (
+                main["branchEnergyRatio"],
+                main["spectralDeviation"],
+            ) = unavailable_branch_energy_ratio_evidence(
+                "Main is disabled: its own Downmix/Width/level processing "
+                "never ran"
+            )
+        else:
+            (
+                main["branchEnergyRatio"],
+                main["spectralDeviation"],
+            ) = branch_energy_ratio_evidence(
+                source_frames, main_frames, main_energy, sample_rate
+            )
     else:
+        main["alignmentScore"] = None
         (
-            main["alignmentScore"],
-            main["widthEnergyChange"],
+            main["branchEnergyRatio"],
             main["spectralDeviation"],
-        ) = unavailable_diffuser_sourced_evidence(
+        ) = unavailable_branch_energy_ratio_evidence(
             "no Diffusion Step capture is the Downmix's own immediate "
             "input (the source is unaligned, or no Diffuser precedes it)"
         )
@@ -342,34 +397,43 @@ def analyze(render_result, source_path):
         ):
             early_source_frames = None
             for tap in early_taps:
-                weighted = (
-                    analyze_diffusion.numpy_frames(
-                        diffusion_captures[tap["stepIndex"]]
-                    )
-                    * tap["gain"]
-                )
+                step_frames = analyze_diffusion.numpy_frames(
+                    diffusion_captures[tap["stepIndex"]]
+                ).astype(sample_dtype)
+                weighted = step_frames * sample_dtype(tap["gain"])
                 early_source_frames = (
                     weighted
                     if early_source_frames is None
                     else early_source_frames + weighted
                 )
-            (
-                early["alignmentScore"],
-                early["widthEnergyChange"],
-                early["spectralDeviation"],
-            ) = diffuser_sourced_evidence(
+            early_source_frames = early_source_frames.astype(np.float64)
+            early["alignmentScore"] = alignment_score_evidence(
                 early_source_frames,
-                early_frames,
-                early_energy,
-                sample_rate,
                 {"stepIndices": [tap["stepIndex"] for tap in early_taps]},
             )
+            if early_capture is not None and early_capture[0].get(
+                "disabled", False
+            ):
+                (
+                    early["branchEnergyRatio"],
+                    early["spectralDeviation"],
+                ) = unavailable_branch_energy_ratio_evidence(
+                    "Early is disabled: its own Downmix/Width/level "
+                    "processing never ran"
+                )
+            else:
+                (
+                    early["branchEnergyRatio"],
+                    early["spectralDeviation"],
+                ) = branch_energy_ratio_evidence(
+                    early_source_frames, early_frames, early_energy, sample_rate
+                )
         else:
+            early["alignmentScore"] = None
             (
-                early["alignmentScore"],
-                early["widthEnergyChange"],
+                early["branchEnergyRatio"],
                 early["spectralDeviation"],
-            ) = unavailable_diffuser_sourced_evidence(
+            ) = unavailable_branch_energy_ratio_evidence(
                 "one or more of Early's own taps has no captured "
                 "Diffusion Step to reconstruct its own weighted "
                 "N-Channel input from"
