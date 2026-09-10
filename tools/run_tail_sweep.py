@@ -52,6 +52,7 @@ from experiment_runner import (
     print_human_table,
     render_case,
     render_from_resolved,
+    REPORT_STYLE,
     run_command,
     run_resumable_steps,
     sample_unavailable_reason,
@@ -245,19 +246,6 @@ def _benchmark_summary_html(summary):
 </table>"""
 
 
-_REPORT_STYLE = """
-body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 960px; }
-h1 { font-size: 1.4rem; }
-h2 { font-size: 1.1rem; margin-top: 2.5rem; border-bottom: 1px solid #ccc; padding-bottom: .25rem; }
-table { border-collapse: collapse; margin: .5rem 0 1rem; }
-th, td { border: 1px solid #ccc; padding: .25rem .5rem; text-align: right; font-variant-numeric: tabular-nums; }
-th { text-align: center; background: #f2f2f2; }
-td:first-child, th:first-child { text-align: left; }
-audio { width: 100%; margin: .25rem 0 .75rem; }
-.status-failed { color: #b00020; font-weight: bold; }
-.status-completed, .status-resumed { color: #1a7a1a; }
-.meta { color: #555; font-size: .9rem; margin-bottom: 0; }
-"""
 
 
 def generate_report(sample_root, sample_name, points, summary):
@@ -276,7 +264,7 @@ def generate_report(sample_root, sample_name, points, summary):
 <head>
 <meta charset="utf-8">
 <title>Tail sweep: {html.escape(sample_name)}</title>
-<style>{_REPORT_STYLE}</style>
+<style>{REPORT_STYLE}</style>
 </head>
 <body>
 <h1>Tail sweep: {html.escape(sample_name)}</h1>

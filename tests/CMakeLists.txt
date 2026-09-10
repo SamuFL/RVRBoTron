@@ -354,6 +354,19 @@ add_test(
 )
 
 add_test(
+  NAME spatial_sweep_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_spatial_sweep_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/run_spatial_sweep.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_SOURCE_DIR}/tools/analyze_downmix.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/spatial-sweep-contract
+)
+
+add_test(
   NAME allpass_evaluation_contract
   COMMAND
     ${Python3_EXECUTABLE}

@@ -1010,6 +1010,80 @@ gentle one-pole shelf's real, expected transition-band behavior -- the
 report flags it visibly (`significantDeviation` in `tail-v2.json`) rather
 than treating it as a failed point.
 
+### Sweep the Spatial-Output Reference Configuration
+
+`tools/spatial_sweep_v1.json` is a versioned axis catalog for the
+Early/Main Downmix research space (issue #116): one explicit Reference
+composition -- N=8, the established four-step 300 ms doubling Diffuser and
+100-200 ms/RT60 2.4 s/Householder/per-Channel Feedback Loop, taps at
+Diffusion Steps 0 and 1 with zero offsets and envelope slope, -6 dB Early
+level, Early `select` Channels 0/1 at 90 degrees, and 0 dB `orthogonal-rows`
+Main output at 90 degrees -- plus 9 named axes (tap index, Early level,
+Early-envelope slope, aligned `select` versus `sum-all`, Main strategy,
+selected Channel pair, Early width, Main width, and N), each swept as 1-3
+named values that override only that axis from the Reference, never
+combinatorially. Same shape and CLI as the tail/damping sweeps above -- the
+sample to sweep is a runtime argument, not catalog-embedded:
+
+```bash
+python3 tools/run_spatial_sweep.py \
+  --catalog tools/spatial_sweep_v1.json \
+  --renderer build/release/rvrbotron \
+  --analyzer tools/analyze_downmix.py \
+  --sample samples/listening/PianoDry.wav \
+  --mono-impulse tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --stereo-impulse tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
+  --output manual_UATs/spatial-sweep
+```
+
+Every sweep point renders both the selected sample and its matching
+deterministic impulse under an identical Resolved Configuration -- the same
+`--resolved`-reuse pattern the tail/damping sweeps use, with
+`--capture-stages all` added to the impulse render since `analyze_downmix.py`
+needs Stage captures. Materialisation, per-step resumability,
+one-axis-at-a-time catalog loading, and Git-LFS-aware sample matching are
+shared with `run_tail_sweep.py`/`run_damping_sweep.py` via
+`experiment_runner`; only the analyzer, the listening-report layout, and two
+properties unique to this sweep differ:
+
+- **Isolation.** Each axis declares a `scope` (a JSON-Pointer prefix) in the
+  catalog. Every point's materialized Requested Configuration is diffed
+  against the Reference, and every changed field must fall under that
+  axis's own scope -- a catalog-authoring mistake that changes more than
+  its one named axis fails loudly, naming the offending path, rather than
+  silently confounding the sweep.
+- **Determinism.** Each point's impulse render is repeated into a scratch
+  directory and byte-compared (`resolved.json`, `output.wav`, every Stage
+  capture) against the original; a mismatch fails the point.
+
+Unlike `run_diffusion_catalog.py` and the tail/damping sweeps, points are
+not benchmarked -- issue #116's own acceptance criteria cover spatial
+measurements and listening-report evidence, not processing cost.
+
+The Reference's Main wet path reads the Feedback Loop, so it is unaligned;
+the Coherent Downmix ablation (issue #114) is instead demonstrated on Early
+Reflections, which is always aligned by construction. The `coherent-downmix`
+axis's `sum-all` point is automatically compared against the Reference's own
+`select` Early Downmix (the matched control) once both have been analyzed,
+using each point's own published `analysis/downmix-v1.json` -- peak-factor
+and spectral-deviation deltas, plus a non-fatal warning, published to
+`<output>/<sample>/coherent-downmix-comparison.json` and embedded in
+`sweep-report.json`. Neither render is ever rejected by this comparison.
+
+This full run is a local research artifact; CI instead runs a
+millisecond-scale tracer sweep (`tests/test_spatial_sweep_cli.py`) that
+proves axis materialization, isolation and determinism validation, the
+Coherent Downmix comparator, and resumability without executing the full
+sweep.
+
+Every run also (re)generates `<output>/<sample>/listening-report.html`,
+presenting each point's playable sample and impulse renders, both branches'
+resolved strategy/Alignment expectation/Coherent Downmix ablation tag,
+measured Alignment score and branch/source energy ratio where available,
+peak factor, Output correlation, and mono fold-down energy loss, plus the
+Coherent Downmix comparison -- self-contained, playable in a browser with no
+external resource requests or JavaScript.
+
 ### Validate a Listening Sample Locally
 
 Listening material is intentionally excluded from automated tests. After
