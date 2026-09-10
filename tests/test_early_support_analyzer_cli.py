@@ -2,9 +2,24 @@
 
 import json
 import shutil
+import struct
 import subprocess
 import sys
+import wave
 from pathlib import Path
+
+
+def write_pcm16_mono_wav(path, sample_rate, samples):
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(
+            b"".join(
+                struct.pack("<h", int(max(-1.0, min(1.0, sample)) * 32767))
+                for sample in samples
+            )
+        )
 
 
 def run_renderer(renderer, fixture, request, output):
@@ -170,6 +185,26 @@ def main():
         raise AssertionError(
             "analyzer accepted a Render Result with no Early Reflections "
             "branch"
+        )
+
+    # Resolved Tap support bounds are offsets from a frame-0 impulse
+    # entering the Diffuser; the analyzer must reject a source whose own
+    # non-zero content is not exactly one frame-0 sample rather than
+    # silently comparing a shifted/widened measured window against those
+    # bounds (PR review on #112).
+    shifted_impulse_fixture = workspace / "shifted-impulse.wav"
+    write_pcm16_mono_wav(shifted_impulse_fixture, 48000, [0.0, 1.0, 0.0])
+    shifted_result = workspace / "shifted-impulse-render-result"
+    shifted_rendered = run_renderer(
+        renderer, shifted_impulse_fixture, request, shifted_result
+    )
+    if shifted_rendered.returncode != 0:
+        raise AssertionError(shifted_rendered.stderr)
+    shifted_analyzed = run_analyzer(analyzer, shifted_result)
+    if shifted_analyzed.returncode == 0:
+        raise AssertionError(
+            "analyzer accepted a source whose non-zero content was not a "
+            "single frame-0 impulse"
         )
 
 

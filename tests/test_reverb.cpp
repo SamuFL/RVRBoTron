@@ -2764,9 +2764,17 @@ int main() {
     constexpr std::uint32_t stepCount = 4;
     constexpr std::uint32_t tappedStep = stepCount - 1;
 
-    const auto buildModulatedTapComposition =
-        [&](const std::optional<rvrbotron::config::ModulationConfig>&
-                tappedStepModulation) {
+    // `modulatedStepIndex` names which step carries the Modulation
+    // override -- the tapped step itself for the widening test below, or
+    // an earlier contributing step for the summation test further down
+    // (PR review on #112: a test fixture that only ever modulates the
+    // tapped step cannot catch a regression that widens conservative
+    // support from that step alone rather than summing every
+    // contributing step's own reach).
+    const auto buildModulatedComposition =
+        [&](const std::uint32_t modulatedStepIndex,
+            const std::optional<rvrbotron::config::ModulationConfig>&
+                stepModulation) {
           rvrbotron::config::SplitConfig probeSplit;
           probeSplit.channels = channels;
           probeSplit.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
@@ -2786,10 +2794,10 @@ int main() {
           probeDiffuser.distribution =
               rvrbotron::config::DiffusionDistribution::even;
           probeDiffuser.step = probeStep;
-          if (tappedStepModulation.has_value()) {
+          if (stepModulation.has_value()) {
             rvrbotron::config::DiffusionStepOverride override;
-            override.index = tappedStep;
-            override.step.modulation = tappedStepModulation;
+            override.index = modulatedStepIndex;
+            override.step.modulation = stepModulation;
             probeDiffuser.stepOverrides =
                 std::vector<rvrbotron::config::DiffusionStepOverride>{
                     override};
@@ -2813,7 +2821,8 @@ int main() {
           return rvrbotron::config::resolveConfig(requested, 48000, 1);
         };
 
-    const auto probeResolved = buildModulatedTapComposition(std::nullopt);
+    const auto probeResolved =
+        buildModulatedComposition(tappedStep, std::nullopt);
     const auto& probeDiffuserStage = std::get<rvrbotron::dsp::ResolvedDiffuser>(
         probeResolved.composition.stages[1]);
     auto minDelay = std::numeric_limits<std::uint64_t>::max();
@@ -2838,10 +2847,32 @@ int main() {
     rvrbotron::config::ModulationConfig tappedModulation;
     tappedModulation.depthMs = safeDepthMs;
     const auto modulatedResolved =
-        buildModulatedTapComposition(tappedModulation);
+        buildModulatedComposition(tappedStep, tappedModulation);
     const auto& modulatedTap =
         modulatedResolved.composition.early->taps.front();
     const auto& probeTap = probeResolved.composition.early->taps.front();
+
+    // The Diffuser's own resolved totalSamples grows by the tapped step's
+    // own Modulation reach (PR review on #112): a general fix to the
+    // Diffuser's drain, independent of Early Reflections, since a
+    // modulated Channel's read can still reference live content past a
+    // step's own nominal length.
+    const auto& modulatedDiffuserStage =
+        std::get<rvrbotron::dsp::ResolvedDiffuser>(
+            modulatedResolved.composition.stages[1]);
+    const auto expectedReachSamples =
+        rvrbotron::config::resolveModulationHeadroomSamples(
+            modulatedDiffuserStage.steps[tappedStep]
+                .modulation->excursionSamples);
+    if (modulatedDiffuserStage.totalSamples !=
+        probeDiffuserStage.totalSamples + expectedReachSamples) {
+      std::cerr << "the Diffuser's own resolved totalSamples did not grow "
+                   "by the tapped step's own Modulation reach ("
+                << modulatedDiffuserStage.totalSamples << " != "
+                << probeDiffuserStage.totalSamples << " + "
+                << expectedReachSamples << ")\n";
+      return 1;
+    }
 
     if (modulatedTap.nominalSupportMinSamples !=
             probeTap.nominalSupportMinSamples ||
@@ -2875,6 +2906,25 @@ int main() {
     auto earlyOnlyModulatedResolved = modulatedResolved;
     earlyOnlyModulatedResolved.composition.mainEnabled = false;
     rvrbotron::dsp::Reverb modulatedReverb(earlyOnlyModulatedResolved);
+
+    // The Diffuser's own resolved drain already covers this tap's own
+    // conservative support end (PR review on #112): before an actively
+    // modulated step's own reach was added to the Diffuser's resolved
+    // totalSamples, its reach could push a tap's conservative bound past
+    // the drain the renderer actually produces, silently truncating real
+    // energy from both the render and any Stage capture sharing the same
+    // output timeline (docs/design/reverb/stages/09-composition.md's
+    // "Early Reflections do not extend the existing drain" -- true only
+    // once the drain itself already accounts for Modulation).
+    if (modulatedReverb.tailBudgetFrames() <
+        modulatedTap.conservativeSupportMaxSamples) {
+      std::cerr << "the Diffuser's own resolved drain did not cover the "
+                   "modulated tap's own conservative support end ("
+                << modulatedReverb.tailBudgetFrames() << " < "
+                << modulatedTap.conservativeSupportMaxSamples << ")\n";
+      return 1;
+    }
+
     const auto modulatedFrameCount = static_cast<std::size_t>(
         modulatedTap.conservativeSupportMaxSamples + 16);
     std::vector<rvrbotron::dsp::Sample> modulatedInput(
@@ -2901,6 +2951,39 @@ int main() {
                    << modulatedTap.conservativeSupportMaxSamples << "]\n";
         return 1;
       }
+    }
+
+    // Modulating an *earlier* contributing step (not the tapped step
+    // itself) still widens the later tap's own conservative support
+    // (PR review on #112): the widening test above alone cannot
+    // distinguish correctly summing every step's own reach through the
+    // tap from a regression that only ever looked at the tapped step.
+    // `safeDepthMs` was probed against the shortest delay across every
+    // step, so it stays safe here too.
+    constexpr std::uint32_t earlierStep = 0;
+    rvrbotron::config::ModulationConfig earlierStepModulation;
+    earlierStepModulation.depthMs = safeDepthMs;
+    const auto earlierModulatedResolved =
+        buildModulatedComposition(earlierStep, earlierStepModulation);
+    const auto& earlierModulatedTap =
+        earlierModulatedResolved.composition.early->taps.front();
+    if (earlierModulatedTap.nominalSupportMinSamples !=
+            probeTap.nominalSupportMinSamples ||
+        earlierModulatedTap.nominalSupportMaxSamples !=
+            probeTap.nominalSupportMaxSamples) {
+      std::cerr << "activating Modulation on an earlier contributing step "
+                   "changed the later tap's own nominal Tap support, "
+                   "which Modulation must never affect\n";
+      return 1;
+    }
+    if (earlierModulatedTap.conservativeSupportMaxSamples <=
+        probeTap.conservativeSupportMaxSamples) {
+      std::cerr << "activating Modulation on an earlier contributing step "
+                   "did not widen the later tap's own conservative Tap "
+                   "support -- support resolution must sum every "
+                   "contributing step's own reach, not only the tapped "
+                   "step's\n";
+      return 1;
     }
   }
 

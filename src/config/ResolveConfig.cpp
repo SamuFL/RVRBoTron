@@ -707,6 +707,32 @@ dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
   };
 }
 
+// The additional finite-response reach Diffusion Step Modulation adds to
+// the Diffuser's own resolved totalSamples (PR review on #112): beyond a
+// step's own nominal length, a modulated Channel's read can still
+// reference live content up to that step's own resolved Excursion
+// (rounded up) plus the fixed Interpolation margin further out --
+// resolveModulationHeadroomSamples, the same reach already used to size
+// that Channel's own delay-line buffer (issue #91's "Delay buffers need
+// headroom"), applied here to the Diffuser's own overall drain length
+// instead. Summed once per actively modulated step, regardless of
+// Channel count, so the Diffuser's own drain -- and therefore Early
+// Reflections' conservative Tap support, which is bounded only by that
+// same drain -- never truncates real energy. Shared by resolveDiffuser
+// and validateDiffuserStage so the two never drift on the formula.
+std::uint64_t resolveDiffuserModulationReachSamples(
+    const std::vector<dsp::ResolvedDiffusionStep>& steps) {
+  std::uint64_t reach = 0;
+  for (const auto& step : steps) {
+    if (step.modulation.has_value() &&
+        !step.modulation->channelModulated.empty()) {
+      reach +=
+          resolveModulationHeadroomSamples(step.modulation->excursionSamples);
+    }
+  }
+  return reach;
+}
+
 dsp::ResolvedDiffuser resolveDiffuser(
     const DiffuserConfig& requested,
     const std::uint32_t channels,
@@ -893,6 +919,7 @@ dsp::ResolvedDiffuser resolveDiffuser(
 
     diffuser.steps.push_back(std::move(step));
   }
+  diffuser.totalSamples += resolveDiffuserModulationReachSamples(diffuser.steps);
   return diffuser;
 }
 
@@ -2484,10 +2511,14 @@ void validateDiffuserStage(
           stepPath + "/bufferSizes");
     }
   }
-  if (stepLengthSum != diffuser.totalSamples) {
+  const auto expectedTotalSamples = stepLengthSum +
+      resolveDiffuserModulationReachSamples(diffuser.steps);
+  if (expectedTotalSamples != diffuser.totalSamples) {
     fail(
         path + "/steps",
-        "expected step sample budgets to sum to the resolved total");
+        "expected step sample budgets, plus every actively modulated "
+        "step's own resolved Modulation reach, to sum to the resolved "
+        "total");
   }
 }
 

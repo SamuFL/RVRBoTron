@@ -65,6 +65,40 @@ def verified_capture(render_result, capture, metadata):
     return wav
 
 
+def verify_frame_zero_impulse(render_result, metadata):
+    """Resolved Tap support bounds are offsets from the instant the
+    source signal enters the Diffuser -- currently frame 0 of Split's own
+    capture, since no pre-delay exists ahead of Split yet. That equates a
+    tap's own measured non-zero window with its Diffusion Step's own
+    impulse response only when the source itself is a single-sample,
+    frame-0 impulse; for ordinary (or differently-timed) source audio the
+    measured window is shifted and widened by the source's own extent,
+    and naively comparing it against the resolved bounds would report a
+    correct render as falling outside its own conservative support (PR
+    review on #112). Mirrors tools/analyze_tail.py's own requirement that
+    Schroeder backward integration be run against a deterministic impulse
+    render rather than a musical sample."""
+    split_captures = [
+        capture
+        for capture in metadata.get("stageCaptures") or []
+        if capture["boundary"] == "split"
+    ]
+    if len(split_captures) != 1:
+        raise ValueError(
+            "render with --capture-stages all to verify a frame-0 impulse "
+            "source"
+        )
+    frames = numpy_frames(verified_capture(render_result, split_captures[0], metadata))
+    nonzero_indices = np.flatnonzero(np.any(frames != 0.0, axis=1))
+    if list(nonzero_indices) != [0]:
+        raise ValueError(
+            "this analyzer requires a source with exactly one non-zero "
+            "frame, at frame 0 (a deterministic single-sample impulse "
+            "render) -- resolved Tap support bounds are offsets from that "
+            "instant"
+        )
+
+
 def measured_support(frames):
     """First/last frame index where any Channel exceeds the shared
     activity floor, plus that peak's own frame index and an energy-
@@ -72,13 +106,24 @@ def measured_support(frames):
     07-early-reflections.md's "Tap support": "Analysis records measured
     first and last non-zero samples, plus peak and centroid when useful.
     Cancellation may make measured support narrower than its structural
-    bound."). All four measured fields are None when every sample is at
-    or below the floor (a fully cancelled tap)."""
+    bound.").
+
+    measuredFirstNonZeroSample/measuredLastNonZeroSample use exact
+    non-zero detection (`> 0.0`), not the -120 dB activity floor
+    tools/analyze_diffusion.py's own Alignment evidence uses for a
+    different purpose (classifying "active" content against measurement
+    noise across many Channels): the spec's own word is "non-zero", and a
+    floor would silently narrow that claim and could hide real energy
+    that falls outside the resolved conservative bound (PR review on
+    #112). activityFloor/peakAbsoluteSample are still reported alongside,
+    as separate floor-based evidence for anyone who wants it.
+
+    All fields are None when every sample is exactly zero."""
     absolute = np.abs(frames)
     peak = float(np.max(absolute)) if absolute.size else 0.0
     floor = peak * (10.0 ** (ACTIVITY_FLOOR_DB / 20.0))
-    active_indices = np.flatnonzero(np.any(absolute > floor, axis=1))
-    if active_indices.size == 0:
+    nonzero_indices = np.flatnonzero(np.any(absolute > 0.0, axis=1))
+    if nonzero_indices.size == 0:
         return {
             "peakAbsoluteSample": peak,
             "activityFloor": floor,
@@ -99,8 +144,8 @@ def measured_support(frames):
     return {
         "peakAbsoluteSample": peak,
         "activityFloor": floor,
-        "measuredFirstNonZeroSample": int(active_indices[0]),
-        "measuredLastNonZeroSample": int(active_indices[-1]),
+        "measuredFirstNonZeroSample": int(nonzero_indices[0]),
+        "measuredLastNonZeroSample": int(nonzero_indices[-1]),
         "measuredPeakSample": int(np.argmax(np.max(absolute, axis=1))),
         "measuredCentroidSample": centroid,
     }
@@ -149,6 +194,7 @@ def analyze(render_result):
     early = resolved["composition"].get("early")
     if not early:
         raise ValueError("Resolved Configuration has no Early Reflections branch")
+    verify_frame_zero_impulse(render_result, metadata)
 
     captures_by_step = {
         capture["index"]: capture
