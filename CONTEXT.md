@@ -152,9 +152,29 @@ _Avoid_: Requested configuration
 The documented experimental baseline resolved when requested stage settings are omitted, used to change one research axis at a time.
 _Avoid_: Product default, preset
 
+**Request template**:
+A pre-authored Requested configuration used as an editable starting point, without implying a preferred product setting or experimental baseline.
+_Avoid_: Preset, Reference configuration
+
 **Composition**:
 The configured set, order, and wiring of reverb stages together with controls that apply to the complete wet path.
 _Avoid_: Pipeline, graph
+
+**Pre-delay**:
+The initial interval during which silence enters the wet path before the source reaches Split, while the dry signal remains sample-aligned.
+_Avoid_: Input delay, Early Reflections delay
+
+**Wet sum**:
+The complete stereo wet signal formed by the sample-wise sum of the Main wet path and Early Reflections contributions, before global wet level and dry mixing.
+_Avoid_: Final output, Main wet path
+
+**Research bench**:
+A researcher-facing environment for configuring, rendering, and auditioning a Composition, distinct from the eventual product or plugin GUI.
+_Avoid_: Plugin GUI, product UI
+
+**Audition source**:
+An audio recording selected as the input to an exploratory render in the Research bench.
+_Avoid_: Sample, upload
 
 **Render Result**:
 The immutable audio and configuration evidence produced by one render, together with append-only analyses derived from it.
