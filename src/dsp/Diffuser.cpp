@@ -45,20 +45,29 @@ void Diffuser::processFrame(
     const Sample* const inputs,
     Sample* const outputs,
     DiffuserCaptureSink* const captureSink,
-    const DiffuserEarlyTap* const earlyTap) noexcept {
+    const DiffuserEarlyTap* const earlyTaps,
+    const std::size_t earlyTapCount) noexcept {
   if (inputs != outputs) {
     std::copy_n(inputs, channels_, outputs);
   }
+  // `earlyTaps` is sorted ascending by stepIndex with unique indices (see
+  // the header), so a single forward-advancing index -- rather than
+  // rescanning the whole array per step -- matches each step against at
+  // most one tap.
+  std::size_t nextTap = 0;
   for (std::size_t index = 0; index < steps_.size(); ++index) {
     steps_[index]->processFrame(outputs, outputs);
     if (captureSink != nullptr) {
       captureSink->captureDiffusionStepFrame(
           stepIndices_[index], outputs, channels_);
     }
-    if (earlyTap != nullptr && stepIndices_[index] == earlyTap->stepIndex) {
+    if (nextTap < earlyTapCount &&
+        earlyTaps[nextTap].stepIndex == stepIndices_[index]) {
+      const auto& tap = earlyTaps[nextTap];
       for (std::size_t channel = 0; channel < channels_; ++channel) {
-        earlyTap->accumulator[channel] += outputs[channel];
+        tap.accumulator[channel] += outputs[channel] * tap.gain;
       }
+      ++nextTap;
     }
   }
 }

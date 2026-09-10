@@ -327,12 +327,29 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
 Json earlyJson(const dsp::ResolvedEarlyReflections& early) {
   Json taps = Json::array();
   for (const auto& tap : early.taps) {
-    taps.push_back({{"stepIndex", tap.stepIndex}});
+    taps.push_back(
+        {
+            {"stepIndex", tap.stepIndex},
+            {"gainDb", tap.gainDb},
+            {"nominalSupportMinSamples", tap.nominalSupportMinSamples},
+            {"nominalSupportMaxSamples", tap.nominalSupportMaxSamples},
+            {"nominalSupportMinMs", tap.nominalSupportMinMs},
+            {"nominalSupportMaxMs", tap.nominalSupportMaxMs},
+            {"conservativeSupportMinSamples",
+             tap.conservativeSupportMinSamples},
+            {"conservativeSupportMaxSamples",
+             tap.conservativeSupportMaxSamples},
+            {"conservativeSupportMinMs", tap.conservativeSupportMinMs},
+            {"conservativeSupportMaxMs", tap.conservativeSupportMaxMs},
+            {"shapingGainDb", tap.shapingGainDb},
+            {"gain", tap.gain},
+        });
   }
   return {
       {"enabled", early.enabled},
       {"levelDb", early.levelDb},
       {"gain", early.gain},
+      {"decayDbPerSec", early.decayDbPerSec},
       {"taps", std::move(taps)},
       {"downmix", downmixJson(early.downmix)},
   };

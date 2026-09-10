@@ -189,22 +189,29 @@ struct FeedbackLoopConfig {
 using StageConfig = std::
     variant<SplitConfig, DiffuserConfig, FeedbackLoopConfig, DownmixConfig>;
 
-// One requested tap (issue #111): a zero-based Diffusion Step index. Per-tap
-// gain offsets and the branch decay slope are issue #112's own extension.
+// One requested tap (issues #111/#112): a zero-based Diffusion Step index
+// and this tap's own gain offset. Tap indices must be unique; duplicates
+// are rejected, and the resolved set is sorted ascending by stepIndex
+// (canonical order) so a Requested tap-list permutation resolves and
+// renders identically.
 struct EarlyTapConfig {
   std::uint32_t stepIndex = 0;
+  std::optional<double> gainDb;
 };
 
 // The parallel Early Reflections branch (issue #111, docs/design/reverb/
 // stages/07-early-reflections.md and docs/design/reverb/stages/
 // 09-composition.md): valid only when the Main wet path contains one
 // Diffuser. Omitted `taps`, an empty `taps` array, and an omitted `early`
-// object all mean no branch -- and `enabled`/`levelDb`/`downmix` are then
-// rejected, since they could not affect sound. This milestone accepts
-// exactly one tap; multiple taps are issue #112's own extension.
+// object all mean no branch -- and `enabled`/`levelDb`/`decayDbPerSec`/
+// `downmix` are then rejected, since they could not affect sound.
 struct EarlyConfig {
   std::optional<bool> enabled;
   std::optional<double> levelDb;
+  // Non-negative envelope slope applied to every tap's own resolved
+  // nominal support end (issue #112, "Early envelope"). Zero (the
+  // default) leaves each tap's shaping at its own gainDb alone.
+  std::optional<double> decayDbPerSec;
   std::optional<std::vector<EarlyTapConfig>> taps;
   // Defaults to a `select` Downmix of Channels 0/1 (Channel 0 duplicated
   // at N=1) -- unlike the Main Downmix's own `select`, which has no

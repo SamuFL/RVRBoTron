@@ -164,15 +164,17 @@ void Reverb::process(const Sample* const* inputs,
           state.channels);
     }
 
-    // The Early Reflections tap (issue #111): a caller-owned accumulator
-    // handed to the Diffuser below, populated as a side effect of its
-    // normal per-step processing -- never perturbing the Diffuser's own
-    // Main output, and never entering the Feedback Loop.
-    DiffuserEarlyTap earlyTap{};
-    const DiffuserEarlyTap* earlyTapPointer = nullptr;
+    // The Early Reflections taps (issues #111/#112): a caller-owned,
+    // caller-sorted array handed to the Diffuser below, populated as a
+    // side effect of its normal per-step processing -- never perturbing
+    // the Diffuser's own Main output, and never entering the Feedback
+    // Loop.
+    const DiffuserEarlyTap* earlyTaps = nullptr;
+    std::size_t earlyTapCount = 0;
     if (state.early != nullptr) {
-      earlyTap = state.early->beginFrame();
-      earlyTapPointer = &earlyTap;
+      state.early->beginFrame();
+      earlyTaps = state.early->taps();
+      earlyTapCount = state.early->tapCount();
     }
 
     if (state.diffuser != nullptr && state.feedbackLoop != nullptr) {
@@ -180,7 +182,8 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(),
           state.diffuserOutputValues.data(),
           state.captureSink != nullptr ? &state : nullptr,
-          earlyTapPointer);
+          earlyTaps,
+          earlyTapCount);
       state.feedbackLoop->processFrame(
           state.diffuserOutputValues.data(), state.midStageValues.data());
     } else if (state.diffuser != nullptr) {
@@ -188,7 +191,8 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(),
           state.midStageValues.data(),
           state.captureSink != nullptr ? &state : nullptr,
-          earlyTapPointer);
+          earlyTaps,
+          earlyTapCount);
     } else {
       state.feedbackLoop->processFrame(
           state.splitValues.data(), state.midStageValues.data());
