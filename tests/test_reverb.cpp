@@ -2630,6 +2630,14 @@ int main() {
     BranchCapture bothDisabledCapture;
     const auto bothDisabledWithCapture =
         renderWithCapture(bothDisabledResolved, &bothDisabledCapture);
+    if (!bothDisabledCapture.valid ||
+        bothDisabledCapture.mainLeft.size() != kEarlyTestFrames ||
+        bothDisabledCapture.mainRight.size() != kEarlyTestFrames ||
+        bothDisabledCapture.earlyLeft.size() != kEarlyTestFrames ||
+        bothDisabledCapture.earlyRight.size() != kEarlyTestFrames) {
+      std::cerr << "disabled branch captures did not share the render timeline\n";
+      return 1;
+    }
     for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
       if (bothDisabledWithCapture.first[frame] != rvrbotron::dsp::Sample{0} ||
           bothDisabledWithCapture.second[frame] !=
