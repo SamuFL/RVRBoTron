@@ -20,6 +20,14 @@ public:
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
+  // The backing-vector allocations only, mirroring DelayLine::
+  // ownedStorageBytes()/Modulation::ownedBytes(): a containing object
+  // that embeds a Downmix by value (rather than through a heap pointer,
+  // like Reverb's own unique_ptr<Downmix>) already counts this object's
+  // in-place storage through its own sizeof(*this), so adding
+  // ownedBytes()'s sizeof(*this) there too would double-count it -- see
+  // EarlyReflections::ownedBytes() (issue #111).
+  [[nodiscard]] std::size_t ownedStorageBytes() const noexcept;
 
 private:
   DownmixStrategy strategy_;

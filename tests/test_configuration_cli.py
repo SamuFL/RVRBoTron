@@ -3130,6 +3130,65 @@ def main():
         workspace / "early-out-of-range-result",
     )
 
+    # Early's own `downmix` bypasses the composition.stages dispatcher
+    # that normally requires and checks `type` before ever parsing a
+    # Downmix (PR review on #111): a requested `downmix` whose `type`
+    # names a different stage is rejected rather than silently accepted
+    # as a Downmix.
+    early_wrong_type_document = json.loads(json.dumps(main_base_document))
+    early_wrong_type_document["composition"]["early"] = {
+        "taps": [{"stepIndex": 0}],
+        "downmix": {
+            "type": "feedback-loop",
+            "strategy": "select",
+            "leftChannel": 0,
+            "rightChannel": 1,
+        },
+    }
+    early_wrong_type_request = workspace / "early-wrong-type-request.json"
+    early_wrong_type_request.write_text(json.dumps(early_wrong_type_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_wrong_type_request,
+            "--output",
+            workspace / "early-wrong-type-result",
+        ),
+        "/composition/early/downmix/type: expected downmix",
+        workspace / "early-wrong-type-result",
+    )
+
+    # On replay, resolved.json always serializes `type: "downmix"` for
+    # every Downmix (unlike a request, where Early's own `downmix` never
+    # carries `type` in the documented examples), so a resolved Early
+    # `downmix` missing `type` entirely is rejected too.
+    early_resolved_missing_type = json.loads(
+        (early_result / "resolved.json").read_text()
+    )
+    del early_resolved_missing_type["composition"]["early"]["downmix"]["type"]
+    early_resolved_missing_type_path = workspace / (
+        "early-resolved-missing-type.json"
+    )
+    early_resolved_missing_type_path.write_text(
+        json.dumps(early_resolved_missing_type)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            early_resolved_missing_type_path,
+            "--output",
+            workspace / "early-resolved-missing-type-result",
+        ),
+        "/composition/early/downmix/type: required field is missing",
+        workspace / "early-resolved-missing-type-result",
+    )
+
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))
     invalid_source_gain["composition"]["stages"][0]["sourceGain"] = 0.5

@@ -40,7 +40,11 @@ bool EarlyReflections::enabled() const noexcept {
 }
 
 std::size_t EarlyReflections::ownedBytes() const noexcept {
-  return sizeof(*this) + downmix_.ownedBytes() +
+  // downmix_ is embedded by value, so its own in-place storage is already
+  // part of sizeof(*this); downmix_.ownedStorageBytes() adds only its
+  // backing-vector allocations, not a second sizeof(Downmix) (issue #111,
+  // see Downmix::ownedStorageBytes()'s own declaration).
+  return sizeof(*this) + downmix_.ownedStorageBytes() +
          ownedVectorBytes(accumulator_);
 }
 

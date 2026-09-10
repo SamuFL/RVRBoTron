@@ -5,6 +5,7 @@
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/EarlyReflections.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/MixMatrix.h"
@@ -2027,6 +2028,31 @@ int main() {
       }
     }
 
+    // The same rejection holds for validateResolvedConfig called
+    // directly on a hand-built ResolvedConfig, not only through
+    // resolveConfig: it is a public, non-JSON entry point too (PR review
+    // on #111), and its own empty-stages early return must not let a
+    // populated `early` slip past unrejected.
+    {
+      rvrbotron::dsp::ResolvedConfig handBuiltEmptyWithEarly;
+      handBuiltEmptyWithEarly.formatVersion = 2;
+      handBuiltEmptyWithEarly.sampleRate = 48000;
+      rvrbotron::dsp::ResolvedEarlyReflections handBuiltEarly;
+      handBuiltEarly.taps.push_back({0});
+      handBuiltEmptyWithEarly.composition.early = handBuiltEarly;
+      bool rejected = false;
+      try {
+        rvrbotron::config::validateResolvedConfig(handBuiltEmptyWithEarly);
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "validateResolvedConfig accepted composition.early on "
+                     "a hand-built empty identity Composition\n";
+        return 1;
+      }
+    }
+
     // Early Reflections without a Diffuser are rejected: a Feedback-
     // Loop-only Main wet path has no source for a tap.
     {
@@ -2279,6 +2305,30 @@ int main() {
           orthogonalMain.rightRow == orthogonalEarlyResolved.rightRow) {
         std::cerr << "Early's orthogonal-rows Downmix did not resolve "
                      "independently of the Main Downmix's own rows\n";
+        return 1;
+      }
+    }
+
+    // EarlyReflections::ownedBytes() must not double-count its embedded
+    // Downmix's own sizeof (PR review on #111): Downmix is held by
+    // value, so its in-place storage is already part of sizeof(*this),
+    // and only its own backing-vector allocations
+    // (Downmix::ownedStorageBytes()) should be added on top. A `select`
+    // Downmix's dense rows stay empty (issue #108's fast path), so its
+    // only owned storage here is the accumulator -- exactly sized to
+    // expose an extra, wrongly-added sizeof(Downmix) if the bug
+    // regresses.
+    {
+      const rvrbotron::dsp::EarlyReflections earlyDsp(
+          *diffuserOnlyResolved.composition.early);
+      const auto expectedOwnedBytes =
+          sizeof(rvrbotron::dsp::EarlyReflections) +
+          2 * sizeof(rvrbotron::dsp::Sample);
+      if (earlyDsp.ownedBytes() != expectedOwnedBytes) {
+        std::cerr << "EarlyReflections::ownedBytes() double-counted its "
+                     "embedded Downmix's own sizeof (expected "
+                  << expectedOwnedBytes << ", got " << earlyDsp.ownedBytes()
+                  << ")\n";
         return 1;
       }
     }

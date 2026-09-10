@@ -3075,6 +3075,19 @@ void validateResolvedConfig(
   }
   validateShape(resolved.composition);
   if (resolved.composition.stages.empty()) {
+    // Branch controls are invalid on the empty identity Composition
+    // (docs/design/reverb/stages/09-composition.md). mainEnabled/
+    // mainLevelDb are inert booleans/doubles Reverb never reads once
+    // stages are empty, but this public validator is also a direct,
+    // non-JSON entry point (see ResolveConfig.h) -- a populated `early`
+    // here would contradict the same invariant already enforced at the
+    // Requested/JSON boundaries, so it is rejected here too rather than
+    // silently accepted (issue #111).
+    if (resolved.composition.early.has_value()) {
+      fail(
+          "/composition/early",
+          "not applicable to the empty identity Composition");
+    }
     return;
   }
 

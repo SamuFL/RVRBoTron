@@ -695,6 +695,37 @@ config::EarlyTapConfig parseRequestedEarlyTap(
 // `early` object with an omitted `taps` key would otherwise be
 // indistinguishable from one whose taps are simply empty, so this
 // requires the key explicitly rather than defaulting it.
+// Early's own `downmix` (issue #111) is parsed by the same
+// parseRequestedDownmix/parseResolvedDownmix used for the `downmix` stage
+// in composition.stages, but -- unlike that stage array -- it never
+// passes through the dispatcher in parseRequestedComposition/
+// parseResolvedComposition that requires and checks a stage's own `type`
+// before ever calling into either parser. Skipping this check would let
+// an Early `downmix` whose `type` names a different stage entirely (or,
+// on replay, omits `type` where a Main Downmix's own serialized form
+// never would) be silently accepted as a Downmix regardless of what it
+// claims to be. `requireType` mirrors the stage dispatcher's own
+// `requireField(stage, "type", path)` for replay, where resolved.json
+// always serializes `type` (see ResolvedConfigJson.cpp's downmixJson);
+// the requested JSON schema has no such guarantee -- Early's own
+// `downmix` object in a request never carries `type` at all in the
+// documented examples -- so a requested `downmix` only has its `type`
+// checked when present, not required.
+void checkNestedDownmixType(
+    const Json& value, const std::string_view path, const bool requireType) {
+  requireObject(value, path);
+  if (requireType) {
+    requireField(value, "type", path);
+  }
+  if (!value.contains("type")) {
+    return;
+  }
+  const auto type = parseString(value.at("type"), std::string(path) + "/type");
+  if (type != "downmix") {
+    fail(std::string(path) + "/type", "expected downmix");
+  }
+}
+
 config::EarlyConfig parseRequestedEarly(
     const Json& value, const std::string_view path) {
   requireObject(value, path);
@@ -723,10 +754,11 @@ config::EarlyConfig parseRequestedEarly(
     early.taps = std::move(parsedTaps);
   }
   if (value.contains("downmix")) {
+    const auto downmixPath = std::string(path) + "/downmix";
+    checkNestedDownmixType(
+        value.at("downmix"), downmixPath, /*requireType=*/false);
     early.downmix = parseRequestedDownmix(
-        value.at("downmix"),
-        std::string(path) + "/downmix",
-        /*requireExplicitSelectChannel=*/false);
+        value.at("downmix"), downmixPath, /*requireExplicitSelectChannel=*/false);
   }
   return early;
 }
@@ -1393,8 +1425,10 @@ dsp::ResolvedEarlyReflections parseResolvedEarly(
         parseResolvedEarlyTap(
             taps.at(index), tapsPath + "/" + std::to_string(index)));
   }
-  early.downmix = parseResolvedDownmix(
-      value.at("downmix"), std::string(path) + "/downmix");
+  const auto downmixPath = std::string(path) + "/downmix";
+  checkNestedDownmixType(
+      value.at("downmix"), downmixPath, /*requireType=*/true);
+  early.downmix = parseResolvedDownmix(value.at("downmix"), downmixPath);
   return early;
 }
 
