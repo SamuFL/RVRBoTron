@@ -249,13 +249,22 @@ void writeFile(const std::filesystem::path& path,
 class WavStageCaptureSink final
     : public rvrbotron::dsp::StageCaptureSink {
 public:
+  // `earlyEnabled` is nullopt when no Early Reflections branch is
+  // configured at all (no early-stereo capture is ever written then);
+  // present (true/false) when a branch exists, whether enabled or not
+  // (issue #113: a disabled branch's own capture is still written, as
+  // correctly sized zero audio, and manifested as disabled).
   WavStageCaptureSink(const std::filesystem::path& resultPath,
                       const std::uint32_t channels,
                       const std::uint32_t sampleRate,
-                      const std::uint32_t diffusionStepCount)
+                      const std::uint32_t diffusionStepCount,
+                      const bool mainEnabled,
+                      const std::optional<bool> earlyEnabled)
       : resultPath_(resultPath),
         channels_(channels),
-        sampleRate_(sampleRate) {
+        sampleRate_(sampleRate),
+        mainEnabled_(mainEnabled),
+        earlyEnabled_(earlyEnabled) {
     const auto captureDirectory = resultPath_ / "captures";
     std::error_code error;
     std::filesystem::create_directories(captureDirectory, error);
@@ -275,6 +284,16 @@ public:
               channels_,
               sampleRate_));
     }
+    // Main structurally always exists once composition.stages is
+    // non-empty (the only reason a capture sink is constructed at all),
+    // so its own stereo capture is unconditional; Early's is optional,
+    // only opened when a branch is actually configured.
+    mainStereo_ = std::make_unique<rvrbotron::io::WavWriter>(
+        captureDirectory / "02-main-stereo.wav", 2, sampleRate_);
+    if (earlyEnabled_.has_value()) {
+      earlyStereo_ = std::make_unique<rvrbotron::io::WavWriter>(
+          captureDirectory / "03-early-stereo.wav", 2, sampleRate_);
+    }
   }
 
   void captureFrame(
@@ -282,25 +301,43 @@ public:
       const std::uint32_t index,
       const rvrbotron::dsp::Sample* channels,
       const std::size_t channelCount) noexcept override {
-    if (failed_ || channelCount != channels_) {
-      failed_ = true;
+    if (failed_) {
       return;
     }
     try {
-      if (boundary == rvrbotron::dsp::StageCaptureBoundary::split) {
-        if (index != 0) {
+      switch (boundary) {
+      case rvrbotron::dsp::StageCaptureBoundary::split:
+        if (channelCount != channels_ || index != 0) {
           failed_ = true;
           return;
         }
         split_->writeFrames(channels, 1);
         ++splitFrames_;
-      } else {
-        if (index >= diffusionSteps_.size()) {
+        break;
+      case rvrbotron::dsp::StageCaptureBoundary::diffusionStep:
+        if (channelCount != channels_ || index >= diffusionSteps_.size()) {
           failed_ = true;
           return;
         }
         diffusionSteps_[index]->writeFrames(channels, 1);
         ++diffusionStepFrames_[index];
+        break;
+      case rvrbotron::dsp::StageCaptureBoundary::mainStereo:
+        if (channelCount != 2 || index != 0) {
+          failed_ = true;
+          return;
+        }
+        mainStereo_->writeFrames(channels, 1);
+        ++mainStereoFrames_;
+        break;
+      case rvrbotron::dsp::StageCaptureBoundary::earlyStereo:
+        if (channelCount != 2 || index != 0 || earlyStereo_ == nullptr) {
+          failed_ = true;
+          return;
+        }
+        earlyStereo_->writeFrames(channels, 1);
+        ++earlyStereoFrames_;
+        break;
       }
     } catch (...) {
       failed_ = true;
@@ -325,9 +362,11 @@ public:
             sampleRate_,
             channels_,
             splitFrames_,
+            false,
         },
     };
-    metadata.reserve(1 + diffusionSteps_.size());
+    metadata.reserve(
+        1 + diffusionSteps_.size() + (earlyEnabled_.has_value() ? 2 : 1));
     for (std::size_t step = 0; step < diffusionSteps_.size(); ++step) {
       diffusionSteps_[step]->close();
       const auto diffusionPath = std::filesystem::path("captures") /
@@ -341,6 +380,37 @@ public:
               sampleRate_,
               channels_,
               diffusionStepFrames_[step],
+              false,
+          });
+    }
+    mainStereo_->close();
+    const auto mainStereoPath =
+        std::filesystem::path("captures") / "02-main-stereo.wav";
+    metadata.push_back(
+        {
+            mainStereoPath.generic_string(),
+            "main-stereo",
+            0,
+            rvrbotron::cli::fileSha256(resultPath_ / mainStereoPath),
+            sampleRate_,
+            2,
+            mainStereoFrames_,
+            !mainEnabled_,
+        });
+    if (earlyStereo_ != nullptr) {
+      earlyStereo_->close();
+      const auto earlyStereoPath =
+          std::filesystem::path("captures") / "03-early-stereo.wav";
+      metadata.push_back(
+          {
+              earlyStereoPath.generic_string(),
+              "early-stereo",
+              0,
+              rvrbotron::cli::fileSha256(resultPath_ / earlyStereoPath),
+              sampleRate_,
+              2,
+              earlyStereoFrames_,
+              !*earlyEnabled_,
           });
     }
     return metadata;
@@ -354,10 +424,16 @@ private:
   std::filesystem::path resultPath_;
   std::uint32_t channels_;
   std::uint32_t sampleRate_;
+  bool mainEnabled_;
+  std::optional<bool> earlyEnabled_;
   std::unique_ptr<rvrbotron::io::WavWriter> split_;
   std::vector<std::unique_ptr<rvrbotron::io::WavWriter>> diffusionSteps_;
+  std::unique_ptr<rvrbotron::io::WavWriter> mainStereo_;
+  std::unique_ptr<rvrbotron::io::WavWriter> earlyStereo_;
   std::uint64_t splitFrames_{0};
   std::vector<std::uint64_t> diffusionStepFrames_;
+  std::uint64_t mainStereoFrames_{0};
+  std::uint64_t earlyStereoFrames_{0};
   bool failed_{false};
 };
 
@@ -451,14 +527,19 @@ void render(const RenderArguments& arguments) {
     const auto& split =
         std::get<rvrbotron::dsp::ResolvedSplit>(
             config.composition.stages.front());
-    const auto& diffuser =
-        std::get<rvrbotron::dsp::ResolvedDiffuser>(
-            config.composition.stages[1]);
+    const auto* const diffuser =
+        rvrbotron::dsp::findResolvedDiffuser(config.composition);
     captureSink = std::make_unique<WavStageCaptureSink>(
         resultPath,
         split.channels,
         info.sampleRate,
-        static_cast<std::uint32_t>(diffuser.steps.size()));
+        diffuser != nullptr
+            ? static_cast<std::uint32_t>(diffuser->steps.size())
+            : 0U,
+        config.composition.mainEnabled,
+        config.composition.early.has_value()
+            ? std::optional<bool>(config.composition.early->enabled)
+            : std::nullopt);
   }
   rvrbotron::dsp::Reverb reverb(config, captureSink.get());
 

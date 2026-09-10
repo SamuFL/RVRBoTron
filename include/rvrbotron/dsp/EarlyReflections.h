@@ -51,11 +51,13 @@ public:
   [[nodiscard]] std::size_t tapCount() const noexcept;
 
   // Downmixes the accumulated frame (populated by the Diffuser call this
-  // frame's beginFrame() cleared it for), applies branch level, and adds
-  // (+=) the resulting stereo pair into outputs[0][frame]/
-  // outputs[1][frame] -- superposition with whatever the Main wet path
-  // already wrote there.
-  void processFrame(Sample* const* outputs, std::size_t frame) const noexcept;
+  // frame's beginFrame() cleared it for), applies branch level, and
+  // writes the resulting stereo pair into *left/*right -- this branch's
+  // own contribution only, not summed into any output buffer. The
+  // caller (Reverb) decides whether to capture it (issue #113's
+  // early-stereo boundary) and/or sum it with the Main wet path's own
+  // pair into the final stereo output.
+  void processFrame(Sample* left, Sample* right) const noexcept;
 
   [[nodiscard]] bool enabled() const noexcept;
   [[nodiscard]] std::size_t ownedBytes() const noexcept;

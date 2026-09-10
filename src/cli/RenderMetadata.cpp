@@ -60,6 +60,7 @@ void writeRenderMetadata(const std::filesystem::path& path,
               {"sampleRate", capture.sampleRate},
               {"channels", capture.channels},
               {"frames", capture.frames},
+              {"disabled", capture.disabled},
           });
     }
   }

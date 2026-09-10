@@ -506,6 +506,7 @@ def main():
     if sorted(entry["path"] for entry in comparison["comparisons"]) != [
         "captures/00-split.wav",
         "captures/01-diffusion-step-0.wav",
+        "captures/02-main-stereo.wav",
         "output.wav",
     ]:
         raise AssertionError(f"unexpected pairwise comparison paths: {comparison}")

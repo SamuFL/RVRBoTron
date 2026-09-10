@@ -1560,22 +1560,6 @@ DownmixConfig withEarlyDownmixDefaults(
   return requested;
 }
 
-// The Main wet path's own resolved Diffuser, if any (issue #112): shared
-// by resolveConfig's own Early tap-support resolution below, which needs
-// it whether or not a Diffuser is actually present (an absent one is a
-// resolution-time no-op here -- validateResolvedConfig's own diffuserStage
-// check rejects a missing Diffuser authoritatively afterward). There is
-// at most one Diffuser per the shapes validateShape admits.
-const dsp::ResolvedDiffuser* findResolvedDiffuser(
-    const std::vector<dsp::ResolvedStage>& stages) {
-  for (const auto& stage : stages) {
-    if (const auto* diffuser = std::get_if<dsp::ResolvedDiffuser>(&stage)) {
-      return diffuser;
-    }
-  }
-  return nullptr;
-}
-
 struct TapSupportBounds {
   std::uint64_t nominalSupportMinSamples = 0;
   std::uint64_t nominalSupportMaxSamples = 0;
@@ -1940,7 +1924,7 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         }
 
         const auto* const diffuserStage =
-            findResolvedDiffuser(resolved.composition.stages);
+            dsp::findResolvedDiffuser(resolved.composition);
         const dsp::ResolvedDiffuser noDiffuser;
         const auto& diffuserForSupport =
             diffuserStage != nullptr ? *diffuserStage : noDiffuser;
