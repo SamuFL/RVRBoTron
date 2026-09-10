@@ -44,13 +44,11 @@ std::size_t EarlyReflections::tapCount() const noexcept {
 }
 
 void EarlyReflections::processFrame(
-    Sample* const* const outputs, const std::size_t frame) const noexcept {
-  Sample left{0};
-  Sample right{0};
-  Sample* const scratch[]{&left, &right};
+    Sample* const left, Sample* const right) const noexcept {
+  Sample* const scratch[]{left, right};
   downmix_.processFrame(accumulator_.data(), scratch, 0);
-  outputs[0][frame] += left * gain_;
-  outputs[1][frame] += right * gain_;
+  *left *= gain_;
+  *right *= gain_;
 }
 
 bool EarlyReflections::enabled() const noexcept {

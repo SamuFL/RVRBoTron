@@ -422,6 +422,25 @@ struct ResolvedComposition {
   std::optional<ResolvedEarlyReflections> early;
 };
 
+// The Main wet path's own resolved Diffuser stage, if any -- absent for a
+// Feedback-Loop-only Composition, which has no Diffusion Steps. There is
+// at most one Diffuser per the shapes validateShape (see
+// src/config/ResolveConfig.cpp) admits. Shared by resolveConfig's own
+// Early tap-support resolution (issue #112) and the CLI's own
+// Stage-capture wiring (issue #113), so the two never drift on how a
+// Diffuser is located within a resolved Composition -- an `inline` free
+// function here rather than a private helper duplicated in each of those
+// two translation units.
+inline const ResolvedDiffuser* findResolvedDiffuser(
+    const ResolvedComposition& composition) noexcept {
+  for (const auto& stage : composition.stages) {
+    if (const auto* const diffuser = std::get_if<ResolvedDiffuser>(&stage)) {
+      return diffuser;
+    }
+  }
+  return nullptr;
+}
+
 struct ResolvedConfig {
   std::uint32_t formatVersion = 2;
   std::uint64_t seed = 0;

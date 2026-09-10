@@ -168,10 +168,12 @@ void Reverb::process(const Sample* const* inputs,
     // caller-sorted array handed to the Diffuser below, populated as a
     // side effect of its normal per-step processing -- never perturbing
     // the Diffuser's own Main output, and never entering the Feedback
-    // Loop.
+    // Loop. A disabled Early branch skips this setup entirely (issue
+    // #113): otherwise the Diffuser would still run its per-tap
+    // accumulation loop for taps whose result is never read.
     const DiffuserEarlyTap* earlyTaps = nullptr;
     std::size_t earlyTapCount = 0;
-    if (state.early != nullptr) {
+    if (state.early != nullptr && state.early->enabled()) {
       state.early->beginFrame();
       earlyTaps = state.early->taps();
       earlyTapCount = state.early->tapCount();
@@ -198,28 +200,52 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(), state.midStageValues.data());
     }
 
-    // A disabled Main wet path skips its own Downmix (and Width, and
-    // level) processing entirely and contributes exact stereo zero
-    // (issue #109), rather than a zero-multiplied value. Split/Diffuser/
-    // Feedback Loop above run unconditionally regardless of mainEnabled:
-    // they are shared interior signal, not Main-branch-specific -- the
-    // Early Reflections branch (#111) taps the same Diffuser's per-step
-    // output even when Main is disabled.
+    // Each branch computes its own stereo pair locally -- not directly
+    // into `outputs` -- so it can be captured at the summation boundary
+    // (issue #113's early-stereo/main-stereo captures) before the two
+    // are superposed. A disabled Main wet path skips its own Downmix
+    // (and Width, and level) processing entirely and contributes exact
+    // stereo zero (issue #109), rather than a zero-multiplied value.
+    // Split/Diffuser/Feedback Loop above run unconditionally regardless
+    // of mainEnabled: they are shared interior signal, not
+    // Main-branch-specific -- the Early Reflections branch (#111) taps
+    // the same Diffuser's per-step output even when Main is disabled.
+    Sample mainLeft{0};
+    Sample mainRight{0};
     if (state.mainEnabled) {
-      state.downmix->processFrame(
-          state.midStageValues.data(), outputs, frame);
-      outputs[0][frame] *= state.mainGain;
-      outputs[1][frame] *= state.mainGain;
-    } else {
-      outputs[0][frame] = Sample{0};
-      outputs[1][frame] = Sample{0};
+      Sample* const mainScratch[]{&mainLeft, &mainRight};
+      state.downmix->processFrame(state.midStageValues.data(), mainScratch, 0);
+      mainLeft *= state.mainGain;
+      mainRight *= state.mainGain;
+    }
+    if (state.captureSink != nullptr) {
+      const Sample mainStereoFrame[]{mainLeft, mainRight};
+      state.captureSink->captureFrame(
+          StageCaptureBoundary::mainStereo, 0, mainStereoFrame, 2);
     }
 
-    // Early's own stereo contribution is added (superposed) onto
-    // whatever the Main wet path just wrote, including exact zero when
-    // Main is disabled (issue #111's branch-superposition invariant).
-    if (state.early != nullptr && state.early->enabled()) {
-      state.early->processFrame(outputs, frame);
+    // Early's own stereo pair, captured the same way -- disabled
+    // contributes exact zero, matching Main's own convention above.
+    // Only computed/captured at all when an Early branch is configured;
+    // there is nothing to capture otherwise.
+    if (state.early != nullptr) {
+      Sample earlyLeft{0};
+      Sample earlyRight{0};
+      if (state.early->enabled()) {
+        state.early->processFrame(&earlyLeft, &earlyRight);
+      }
+      if (state.captureSink != nullptr) {
+        const Sample earlyStereoFrame[]{earlyLeft, earlyRight};
+        state.captureSink->captureFrame(
+            StageCaptureBoundary::earlyStereo, 0, earlyStereoFrame, 2);
+      }
+      // Superposition (issue #111): combined output equals the two
+      // branches' own captured signals sample-for-sample.
+      outputs[0][frame] = mainLeft + earlyLeft;
+      outputs[1][frame] = mainRight + earlyRight;
+    } else {
+      outputs[0][frame] = mainLeft;
+      outputs[1][frame] = mainRight;
     }
   }
 }

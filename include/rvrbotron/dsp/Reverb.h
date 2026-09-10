@@ -12,6 +12,14 @@ namespace rvrbotron::dsp {
 enum class StageCaptureBoundary {
   split,
   diffusionStep,
+  // The Main and Early stereo pairs (issue #113, docs/design/reverb/
+  // stages/09-composition.md's "Optional early-stereo and main-stereo
+  // capture boundaries"): captured after each branch's own shaping,
+  // Downmix, Width, and level, immediately before the two are summed
+  // into the final stereo output. `index` is always 0 -- one pair per
+  // branch, not per Channel.
+  mainStereo,
+  earlyStereo,
 };
 
 class StageCaptureSink {

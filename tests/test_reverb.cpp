@@ -68,6 +68,14 @@ public:
       const std::uint32_t index,
       const rvrbotron::dsp::Sample* channels,
       const std::size_t channelCount) noexcept override {
+    // Only Split/Diffusion-Step capture is this test double's own
+    // concern; the Main/Early stereo captures Reverb also emits
+    // (issue #113) are out of scope here and must not be misrouted into
+    // the "diffusion" bucket below.
+    if (boundary != rvrbotron::dsp::StageCaptureBoundary::split &&
+        boundary != rvrbotron::dsp::StageCaptureBoundary::diffusionStep) {
+      return;
+    }
     if (index != 0 || channelCount != 2) {
       valid = false;
       return;
@@ -106,6 +114,12 @@ public:
       const std::uint32_t index,
       const rvrbotron::dsp::Sample* channels,
       const std::size_t channelCount) noexcept override {
+    // Only Split/Diffusion-Step capture is this test double's own
+    // concern; see FixedCapture's own identical guard above.
+    if (boundary != rvrbotron::dsp::StageCaptureBoundary::split &&
+        boundary != rvrbotron::dsp::StageCaptureBoundary::diffusionStep) {
+      return;
+    }
     if (index != 0 || channelCount != channels_) {
       valid = false;
       return;
@@ -133,6 +147,41 @@ public:
 
 private:
   std::size_t channels_;
+};
+
+// Records every Main-stereo/Early-stereo capture (issue #113), one frame
+// at a time, ignoring Split/Diffusion-Step boundaries entirely -- the
+// opposite scoping of FixedCapture/EnergyCapture above.
+class BranchCapture final : public rvrbotron::dsp::StageCaptureSink {
+public:
+  void captureFrame(
+      const rvrbotron::dsp::StageCaptureBoundary boundary,
+      const std::uint32_t index,
+      const rvrbotron::dsp::Sample* channels,
+      const std::size_t channelCount) noexcept override {
+    if (boundary != rvrbotron::dsp::StageCaptureBoundary::mainStereo &&
+        boundary != rvrbotron::dsp::StageCaptureBoundary::earlyStereo) {
+      return;
+    }
+    if (index != 0 || channelCount != 2) {
+      valid = false;
+      return;
+    }
+    auto& left = boundary == rvrbotron::dsp::StageCaptureBoundary::mainStereo
+        ? mainLeft
+        : earlyLeft;
+    auto& right = boundary == rvrbotron::dsp::StageCaptureBoundary::mainStereo
+        ? mainRight
+        : earlyRight;
+    left.push_back(channels[0]);
+    right.push_back(channels[1]);
+  }
+
+  bool valid{true};
+  std::vector<rvrbotron::dsp::Sample> mainLeft;
+  std::vector<rvrbotron::dsp::Sample> mainRight;
+  std::vector<rvrbotron::dsp::Sample> earlyLeft;
+  std::vector<rvrbotron::dsp::Sample> earlyRight;
 };
 
 class OrderedDiffuserCapture final
@@ -2501,6 +2550,121 @@ int main() {
         withoutEarlyReverb.tailBudgetFrames()) {
       std::cerr << "configuring an Early Reflections branch changed the "
                    "resolved Tail budget\n";
+      return 1;
+    }
+
+    // Optional early-stereo/main-stereo captures occur immediately
+    // before summation (issue #113): each branch's own captured stereo
+    // pair sums to the final output sample-for-sample, combined energy
+    // reconciles with branch energies plus their cross term, a disabled
+    // branch's own capture is correctly sized exact zero (and both
+    // branches disabled together produce exact silence throughout), and
+    // no early-stereo capture occurs at all when no Early branch is
+    // configured.
+    const auto renderWithCapture =
+        [](const rvrbotron::dsp::ResolvedConfig& config,
+           rvrbotron::dsp::StageCaptureSink* const sink) {
+          rvrbotron::dsp::Reverb reverb(config, sink);
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> input{};
+          input.fill(rvrbotron::dsp::Sample{1});
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> left{};
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> right{};
+          const rvrbotron::dsp::Sample* inputs[]{input.data()};
+          rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+          reverb.process(inputs, 1, outputs, 2, kEarlyTestFrames);
+          return std::make_pair(left, right);
+        };
+
+    BranchCapture combinedCapture;
+    const auto combinedWithCapture =
+        renderWithCapture(diffuserOnlyResolved, &combinedCapture);
+    if (!combinedCapture.valid ||
+        combinedCapture.mainLeft.size() != kEarlyTestFrames ||
+        combinedCapture.earlyLeft.size() != kEarlyTestFrames) {
+      std::cerr << "did not capture one Main-stereo and one Early-stereo "
+                   "frame per rendered frame\n";
+      return 1;
+    }
+    double mainEnergy = 0.0;
+    double earlyEnergy = 0.0;
+    double crossTerm = 0.0;
+    double combinedEnergy = 0.0;
+    for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
+      const auto mL = static_cast<double>(combinedCapture.mainLeft[frame]);
+      const auto mR = static_cast<double>(combinedCapture.mainRight[frame]);
+      const auto eL = static_cast<double>(combinedCapture.earlyLeft[frame]);
+      const auto eR = static_cast<double>(combinedCapture.earlyRight[frame]);
+      if (!close(combinedWithCapture.first[frame], mL + eL) ||
+          !close(combinedWithCapture.second[frame], mR + eR)) {
+        std::cerr << "combined output did not equal the sample-wise sum "
+                     "of its captured Main-stereo and Early-stereo "
+                     "branches at frame "
+                  << frame << "\n";
+        return 1;
+      }
+      mainEnergy += mL * mL + mR * mR;
+      earlyEnergy += eL * eL + eR * eR;
+      crossTerm += mL * eL + mR * eR;
+      const auto cL = static_cast<double>(combinedWithCapture.first[frame]);
+      const auto cR = static_cast<double>(combinedWithCapture.second[frame]);
+      combinedEnergy += cL * cL + cR * cR;
+    }
+    const auto expectedCombinedEnergy =
+        mainEnergy + earlyEnergy + 2.0 * crossTerm;
+    if (std::abs(combinedEnergy - expectedCombinedEnergy) >
+        1e-6 * std::max(1.0, combinedEnergy)) {
+      std::cerr << "combined energy did not reconcile with branch "
+                   "energies plus their cross term\n";
+      return 1;
+    }
+
+    auto bothDisabledComposition = diffuserOnlyWithEarly;
+    bothDisabledComposition.mainEnabled = false;
+    bothDisabledComposition.early->enabled = false;
+    rvrbotron::config::ReverbConfig bothDisabledRequested;
+    bothDisabledRequested.formatVersion = 2;
+    bothDisabledRequested.seed = 11;
+    bothDisabledRequested.composition = bothDisabledComposition;
+    const auto bothDisabledResolved =
+        rvrbotron::config::resolveConfig(bothDisabledRequested, 48000, 1);
+    BranchCapture bothDisabledCapture;
+    const auto bothDisabledWithCapture =
+        renderWithCapture(bothDisabledResolved, &bothDisabledCapture);
+    if (!bothDisabledCapture.valid ||
+        bothDisabledCapture.mainLeft.size() != kEarlyTestFrames ||
+        bothDisabledCapture.mainRight.size() != kEarlyTestFrames ||
+        bothDisabledCapture.earlyLeft.size() != kEarlyTestFrames ||
+        bothDisabledCapture.earlyRight.size() != kEarlyTestFrames) {
+      std::cerr << "disabled branch captures did not share the render timeline\n";
+      return 1;
+    }
+    for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
+      if (bothDisabledWithCapture.first[frame] != rvrbotron::dsp::Sample{0} ||
+          bothDisabledWithCapture.second[frame] !=
+              rvrbotron::dsp::Sample{0} ||
+          bothDisabledCapture.mainLeft[frame] != rvrbotron::dsp::Sample{0} ||
+          bothDisabledCapture.mainRight[frame] != rvrbotron::dsp::Sample{0} ||
+          bothDisabledCapture.earlyLeft[frame] != rvrbotron::dsp::Sample{0} ||
+          bothDisabledCapture.earlyRight[frame] !=
+              rvrbotron::dsp::Sample{0}) {
+        std::cerr << "both branches disabled did not produce exact "
+                     "silence in the output and both captures at frame "
+                  << frame << "\n";
+        return 1;
+      }
+    }
+
+    BranchCapture noEarlyCapture;
+    renderWithCapture(withoutEarlyResolved, &noEarlyCapture);
+    if (!noEarlyCapture.earlyLeft.empty() ||
+        !noEarlyCapture.earlyRight.empty()) {
+      std::cerr << "an early-stereo capture occurred with no Early "
+                   "Reflections branch configured\n";
+      return 1;
+    }
+    if (noEarlyCapture.mainLeft.size() != kEarlyTestFrames) {
+      std::cerr << "Main-stereo was not captured once per rendered "
+                   "frame\n";
       return 1;
     }
   }

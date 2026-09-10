@@ -88,7 +88,7 @@ The immutable Render Result contains:
 | `request.json` | Exact bytes of the user-authored request; present for requested renders |
 | `resolved.json` | Complete Resolved Configuration used by the DSP |
 | `render.json` | Input provenance, renderer facts, selected precision, block size, and audio facts |
-| `captures/` | Optional manifested N-Channel Stage captures from `--capture-stages all` |
+| `captures/` | Optional manifested Stage captures from `--capture-stages all`: N-Channel Split/Diffusion-Step captures, plus the stereo Main-stereo (and, when configured, Early-stereo) branch captures (issue #113) |
 | `analysis/` | Append-only, versioned analysis artifacts added after rendering |
 
 `render.json` records the input filename and SHA-256, renderer version,
@@ -175,7 +175,7 @@ build/default/rvrbotron render \
   --output build/diffusion-result
 ```
 
-The versioned `all-v1` capture profile writes canonical WAVs under
+The versioned `all-v2` capture profile writes canonical WAVs under
 `captures/`. `render.json` manifests each boundary with its stable path,
 SHA-256, sample rate, Channel count, and complete output-timeline frame count.
 
@@ -376,6 +376,34 @@ its conservative support.
 
 Keep this table in sync whenever a request field, its accepted values, or its
 default changes.
+
+#### Capturing and ablating the Main and Early branches
+
+`--capture-stages all` (issue #113) additionally publishes each branch's own
+stereo contribution, captured after its own shaping, Downmix, Width, and
+level -- immediately before the two are summed into `output.wav`:
+
+| Path | Boundary | Present when |
+| --- | --- | --- |
+| `captures/02-main-stereo.wav` | `main-stereo` | Always, whenever `composition.stages` is non-empty |
+| `captures/03-early-stereo.wav` | `early-stereo` | Only when `composition.early` is configured (with at least one tap) |
+
+Each entry in `render.json`'s `stageCaptures` records a `disabled` flag: `true`
+only for a branch that is configured but disabled (`mainEnabled: false`, or
+`early.enabled: false`) -- its capture is still written, correctly sized to
+the render's own output timeline, but exact zero throughout, since a
+disabled branch contributes exact zero rather than a zero-multiplied value.
+`disabled` is always `false` for `split`/`diffusion-step` captures, which
+have no enablement of their own. A Feedback-Loop-only Main wet path (no
+Diffuser) still captures `main-stereo`; it has no Diffusion Steps to capture
+and cannot carry an Early Reflections branch, since Early requires a
+Diffuser.
+
+`output.wav` equals the sample-wise sum of `main-stereo` and (when present)
+`early-stereo`, and each branch's own measured energy plus their cross term
+reconciles with the combined signal's own measured energy -- overlapping
+signals are not simply additive in energy, since `sum(a+b)^2 != sum(a^2) +
+sum(b^2)` unless the two are uncorrelated.
 
 ### Sustain a Response with a Feedback Loop
 

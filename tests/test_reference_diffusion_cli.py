@@ -154,15 +154,19 @@ def main():
         raise AssertionError("Stage capture changed output.wav")
 
     captured_metadata = json.loads((captured / "render.json").read_text())
-    if captured_metadata["stageCaptureProfile"] != "all-v1":
+    if captured_metadata["stageCaptureProfile"] != "all-v2":
         raise AssertionError("render metadata did not record capture profile")
-    expected_boundaries = ["split", "diffusion-step"]
+    # No Early Reflections branch is configured, so only the N-Channel
+    # Split/Diffusion-Step captures and the always-present Main-stereo
+    # capture (issue #113) are published -- no early-stereo entry.
+    expected_boundaries = ["split", "diffusion-step", "main-stereo"]
     captures = captured_metadata["stageCaptures"]
     if [capture["boundary"] for capture in captures] != expected_boundaries:
         raise AssertionError(f"unexpected capture manifest: {captures}")
     if [capture["path"] for capture in captures] != [
         "captures/00-split.wav",
         "captures/01-diffusion-step-0.wav",
+        "captures/02-main-stereo.wav",
     ]:
         raise AssertionError(f"unstable capture paths: {captures}")
 
@@ -173,16 +177,19 @@ def main():
         capture_channels, rate, capture_bits, captured_samples = read_float_wav(
             path
         )
+        expected_channels = 2 if capture["boundary"] == "main-stereo" else 8
         if (capture_channels, rate, capture_bits) != (
-            8,
+            expected_channels,
             48000,
             sample_bits,
         ):
             raise AssertionError("Stage capture is not canonical N-Channel WAV")
-        if len(captured_samples) != 80 * 8:
+        if len(captured_samples) != 80 * expected_channels:
             raise AssertionError("Stage capture does not share output timeline")
-        if capture["channels"] != 8 or capture["frames"] != 80:
+        if capture["channels"] != expected_channels or capture["frames"] != 80:
             raise AssertionError("capture manifest audio facts are wrong")
+        if capture["disabled"]:
+            raise AssertionError("an enabled branch's capture was manifested disabled")
 
     split_samples = read_float_wav(
         captured / "captures" / "00-split.wav"

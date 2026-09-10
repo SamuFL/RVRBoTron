@@ -25,6 +25,12 @@ struct StageCaptureMetadata {
   std::uint32_t sampleRate;
   std::uint32_t channels;
   std::uint64_t frames;
+  // True only for a "main-stereo"/"early-stereo" capture whose own
+  // branch was disabled (issue #113): the capture still exists, sized
+  // to the full render timeline, but is exact zero throughout rather
+  // than a genuinely rendered signal. Always false for "split"/
+  // "diffusion-step", which have no enablement of their own.
+  bool disabled = false;
 };
 
 struct RenderMetadata {
