@@ -249,6 +249,7 @@ rvrbotron::dsp::ResolvedConfig twoChannelDiffusionConfig() {
           rvrbotron::dsp::DownmixAlignment::aligned,
           90.0,
           {1.0, 0.0, 0.0, 1.0},
+          false,
       });
   return config;
 }

@@ -213,18 +213,60 @@ def peak_factor(samples):
     return peak / rms if rms > 0.0 else 0.0
 
 
-def spectral_deviation_evidence(left, right, aggregate_source_power):
+OCTAVE_BAND_START_HZ = 20.0
+
+
+def octave_band_powers(power, sample_rate, fft_length):
+    # Groups a raw per-bin power spectrum (dft_power_spectrum's own
+    # output: bin k at k * sample_rate / fft_length Hz) into full-octave
+    # bands centered at 20 Hz * 2**band, so a comparison between two
+    # spectra is a stable, perceptually-grouped quantity rather than one
+    # that depends on the raw per-bin FFT resolution (issue #114's PR
+    # review: "the resulting max/RMS values therefore depend on FFT
+    # length"). One octave wide rather than tools/analyze_diffusion.py's
+    # twelfth-octave Coloration curve -- an independent Python
+    # re-derivation of that same idea, for this stdlib-only test file,
+    # at the coarser band width docs/design/reverb/stages/08-downmix.md
+    # itself names ("octave-band spectral deviation").
+    nyquist = sample_rate / 2.0
+    bands = []
+    band = 0
+    while True:
+        center = OCTAVE_BAND_START_HZ * (2.0**band)
+        if center > nyquist:
+            break
+        low = OCTAVE_BAND_START_HZ * (2.0 ** (band - 0.5))
+        high = OCTAVE_BAND_START_HZ * (2.0 ** (band + 0.5))
+        bands.append(
+            math.fsum(
+                value
+                for index, value in enumerate(power)
+                if low <= (index * sample_rate / fft_length) < high
+            )
+        )
+        band += 1
+    return bands
+
+
+def spectral_deviation_evidence(left, right, aggregate_source_power, sample_rate):
     # Octave-band spectral deviation of the downmixed L/R power spectra
     # against the same N-Channel source's aggregate power spectrum
     # (docs/design/reverb/stages/08-downmix.md's "Mono compatibility"
     # section and issue #114's own evidence requirement) -- the same
     # comparison the orthogonal-rows fixture above makes, factored out
     # for reuse by the sum-all/select matched comparison below.
+    fft_length = len(left)
     left_power = dft_power_spectrum(left)
     right_power = dft_power_spectrum(right)
+    combined_bands = octave_band_powers(
+        [l + r for l, r in zip(left_power, right_power)], sample_rate, fft_length
+    )
+    aggregate_bands = octave_band_powers(
+        aggregate_source_power, sample_rate, fft_length
+    )
     deviations = [
-        abs(l + r - aggregate)
-        for l, r, aggregate in zip(left_power, right_power, aggregate_source_power)
+        abs(combined - aggregate)
+        for combined, aggregate in zip(combined_bands, aggregate_bands)
     ]
     max_deviation = max(deviations)
     rms_deviation = math.sqrt(
@@ -527,6 +569,7 @@ def main():
         "alignment": "aligned",
         "widthDeg": 90.0,
         "widthMatrix": [1.0, 0.0, 0.0, 1.0],
+        "coherentDownmixAblation": False,
     }:
         raise AssertionError(f"unexpected resolved Downmix: {stages[2]}")
 
@@ -1941,7 +1984,7 @@ def main():
                 for total, value in zip(aggregate_source_power, channel_power)
             ]
         max_deviation, rms_deviation = spectral_deviation_evidence(
-            left, right, aggregate_source_power
+            left, right, aggregate_source_power, 48000
         )
         if not (math.isfinite(max_deviation) and math.isfinite(rms_deviation)):
             raise AssertionError(
@@ -2567,18 +2610,21 @@ def main():
                     f"{sum_all_downmix}"
                 )
 
-        # A Coherent Downmix ablation tag is derived from strategy *and*
-        # resolved Alignment together, never the strategy name alone
-        # (issue #114) -- confirmed True here (Diffuser-only, aligned);
-        # the matching Feedback-Loop fixture below confirms False.
-        aligned_tag = (
-            sum_all_downmix["strategy"] == "sum-all"
-            and sum_all_downmix["alignment"] == "aligned"
-        )
-        if not aligned_tag:
+        # A Coherent Downmix ablation tag (issue #114): resolved.json's
+        # own `coherentDownmixAblation` field (production code --
+        # ResolveConfig.cpp's resolveCoherentDownmixAblation, derived from
+        # strategy *and* resolved Alignment together, never the strategy
+        # name alone) is asserted directly here, not re-derived from
+        # strategy/alignment inside the test, so this genuinely exercises
+        # the emitted artifact rather than a tautology. Given the
+        # strategy/alignment checks above already confirmed "sum-all"/
+        # "aligned", the field must be True; the matching Feedback-Loop
+        # fixture below confirms the *same* emitted field is False once
+        # the source is unaligned.
+        if sum_all_downmix["coherentDownmixAblation"] is not True:
             raise AssertionError(
-                f"aligned sum-all was not tagged as a Coherent Downmix "
-                f"ablation at N={sum_all_channels}: {sum_all_downmix}"
+                f"aligned sum-all's own coherentDownmixAblation field was "
+                f"not True at N={sum_all_channels}: {sum_all_downmix}"
             )
 
         require_success(
@@ -2655,7 +2701,9 @@ def main():
                 for total, value in zip(aggregate_source_power, channel_power)
             ]
         sum_all_max_deviation, sum_all_rms_deviation = (
-            spectral_deviation_evidence(left, right, aggregate_source_power)
+            spectral_deviation_evidence(
+                left, right, aggregate_source_power, 48000
+            )
         )
         if not (
             math.isfinite(sum_all_max_deviation)
@@ -2671,7 +2719,7 @@ def main():
             "channels": sum_all_channels,
             "alignmentExpectation": sum_all_downmix["alignment"],
             "alignmentScore": score,
-            "coherentDownmixAblation": aligned_tag,
+            "coherentDownmixAblation": sum_all_downmix["coherentDownmixAblation"],
             "monoFoldDown": fold_down,
             "peakFactor": sum_all_peak_factor,
             "spectralMaxDeviation": sum_all_max_deviation,
@@ -2729,7 +2777,7 @@ def main():
             )
             control_max_deviation, control_rms_deviation = (
                 spectral_deviation_evidence(
-                    control_left, control_right, aggregate_source_power
+                    control_left, control_right, aggregate_source_power, 48000
                 )
             )
             if not (
@@ -2888,14 +2936,16 @@ def main():
             f"sum-all Feedback Loop Downmix did not resolve unaligned: "
             f"{sum_all_unaligned_downmix}"
         )
-    unaligned_tag = (
-        sum_all_unaligned_downmix["strategy"] == "sum-all"
-        and sum_all_unaligned_downmix["alignment"] == "aligned"
-    )
-    if unaligned_tag:
+    # The same emitted `coherentDownmixAblation` field asserted directly
+    # above (not re-derived here either) must be False for this fixture:
+    # the strategy name is still "sum-all", but Alignment now resolves
+    # "unaligned", proving production code never tags solely from the
+    # strategy name.
+    unaligned_tag = sum_all_unaligned_downmix["coherentDownmixAblation"]
+    if unaligned_tag is not False:
         raise AssertionError(
-            "unaligned sum-all was tagged as a Coherent Downmix ablation "
-            "solely from its strategy name"
+            f"unaligned sum-all's own coherentDownmixAblation field was "
+            f"not False: {sum_all_unaligned_downmix}"
         )
     _, sum_all_unaligned_samples = read_float_wav(
         sum_all_unaligned_result / "output.wav"

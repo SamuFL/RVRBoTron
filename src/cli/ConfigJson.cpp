@@ -1342,7 +1342,8 @@ dsp::ResolvedDownmix parseResolvedDownmix(
        "effectiveRightRow",
        "alignment",
        "widthDeg",
-       "widthMatrix"});
+       "widthMatrix",
+       "coherentDownmixAblation"});
   for (const auto field :
        {"inputChannels",
         "outputChannels",
@@ -1355,7 +1356,8 @@ dsp::ResolvedDownmix parseResolvedDownmix(
         "effectiveRightRow",
         "alignment",
         "widthDeg",
-        "widthMatrix"}) {
+        "widthMatrix",
+        "coherentDownmixAblation"}) {
     requireField(value, field, path);
   }
   dsp::ResolvedDownmix downmix;
@@ -1406,6 +1408,9 @@ dsp::ResolvedDownmix parseResolvedDownmix(
       value.at("widthDeg"), std::string(path) + "/widthDeg");
   downmix.widthMatrix = parseNumberArray(
       value.at("widthMatrix"), std::string(path) + "/widthMatrix");
+  downmix.coherentDownmixAblation = parseBoolean(
+      value.at("coherentDownmixAblation"),
+      std::string(path) + "/coherentDownmixAblation");
   return downmix;
 }
 

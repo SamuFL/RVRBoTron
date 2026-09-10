@@ -1356,6 +1356,19 @@ std::vector<double> sumAllRow(const std::uint32_t channels) {
   return row;
 }
 
+// True only for `sum-all` on an aligned source (issue #114's Coherent
+// Downmix ablation tag) -- derived from strategy *and* resolved
+// Alignment together, never the strategy name alone. Shared by
+// resolveDownmix and validateResolvedDownmixFields so the two never
+// drift on the derivation, mirroring downmixStrategyLabel/sumAllRow's
+// own sharing above.
+bool resolveCoherentDownmixAblation(
+    const dsp::DownmixStrategy strategy,
+    const dsp::DownmixAlignment alignment) noexcept {
+  return strategy == dsp::DownmixStrategy::sumAll &&
+      alignment == dsp::DownmixAlignment::aligned;
+}
+
 std::vector<double> scaledRow(
     const std::vector<double>& row, const double compensation) {
   std::vector<double> scaled(row.size());
@@ -1550,6 +1563,7 @@ dsp::ResolvedDownmix resolveDownmix(
       alignment,
       widthDeg,
       std::move(widthMatrix),
+      resolveCoherentDownmixAblation(strategy, alignment),
   };
 }
 
@@ -3264,6 +3278,13 @@ void validateResolvedDownmixFields(
   }
   if (downmix.widthMatrix != resolveWidthMatrix(downmix.widthDeg)) {
     fail(path + "/widthMatrix", "expected the matrix derived from widthDeg");
+  }
+  if (downmix.coherentDownmixAblation !=
+      resolveCoherentDownmixAblation(downmix.strategy, downmix.alignment)) {
+    fail(
+        path + "/coherentDownmixAblation",
+        "expected the Coherent Downmix ablation tag derived from "
+        "strategy and Alignment together");
   }
 }
 

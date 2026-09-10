@@ -318,6 +318,11 @@ applied). Resolved Configuration records every strategy's rows as
 each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
 from Composition wiring rather than settable by request: aligned for a
 Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
+It also records a `coherentDownmixAblation` boolean (issue #114), true
+only for `sum-all` on an aligned source -- derived from `strategy` and
+`alignment` together, never from the strategy name alone, so the same
+`sum-all` request resolves `coherentDownmixAblation: false` once its
+source includes a Feedback Loop.
 
 `delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for
