@@ -642,6 +642,48 @@ Cancellation can make measured support narrower than the structural bound;
 it never rejects a render for falling outside it. Publication is
 append-only and idempotent, like every other analyzer here.
 
+For any Composition's Main and (if configured) Early Downmix, render with
+`--capture-stages all` and add the spatial-output Downmix artifact (issue
+#115) -- it works across every Downmix strategy and either Alignment
+expectation, with or without a Feedback Loop:
+
+```bash
+python3 tools/analyze_downmix.py build/downmix-result --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+```
+
+`analysis/downmix-v1.json` reports the Main branch's (and, when
+configured, the Early branch's) resolved strategy, Alignment expectation,
+and Coherent Downmix ablation tag (`coherentDownmixAblation`, issue #114)
+read directly from `resolved.json` rather than re-derived; a measured
+Alignment score of that Downmix's own immediate N-Channel source, only
+when a Diffusion Step actually is that immediate input -- an unaligned
+source (a Feedback Loop between the Diffuser and Downmix, or no Diffuser
+at all) has no equivalent capture (ADR-0005), so this is reported
+unavailable there rather than measured against the wrong signal. When
+that source is available *and* the branch itself was enabled (issue
+#113's `disabled` capture flag), it also reports a `branchEnergyRatio` --
+the branch's own captured energy relative to that source's, and
+`analyze_tail.py`'s own established raised-cosine octave-band filter's
+spectral deviation between them -- deliberately reported as the
+*combined* effect of the Downmix's row/compensation projection, Width,
+and branch level together, not an isolated Width metric, since no
+capture exists between Downmix and Width to separate them. A damped tail
+never receives an "absolute flatness" spectral claim from this analyzer
+as a result of the same Alignment-score gating. It also reports Output
+correlation and inter-channel level difference on the combined stereo
+output, branch energies and their cross term reconciled against combined
+energy (captured immediately before summation, issue #113; reconstructed
+at the render's own sample precision, not a higher-precision
+approximation, since the renderer's own summation and Early's own
+per-tap accumulation happen in that same precision), a peak factor, and
+equal-power mono fold-down (energy loss and octave-band spectral
+deviation between the folded signal and the stereo pair it was folded
+from) -- reusing that same octave-band filter for every spectral
+comparison here, rather than a fresh per-bin binning
+scheme, so deviation is a stable quantity independent of FFT length.
+None of this evidence imposes an acoustic rejection threshold. Publication
+is append-only and idempotent.
+
 For a Composition containing a Feedback Loop, add the separate tail
 artifact instead -- the diffusion analyzer's all-pass, feedback-free
 assumptions do not hold once the tail is present, so it is deliberately not

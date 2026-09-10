@@ -61,11 +61,14 @@ def octave_band_edges(center_hz):
     return center_hz / math.sqrt(2.0), center_hz * math.sqrt(2.0)
 
 
-def _octave_band_gain(frequencies, low_hz, high_hz):
+def octave_band_gain(frequencies, low_hz, high_hz):
     """A single raised-cosine hump spanning the octave in log-frequency: 0 at
     both edges, 1 at the center. A brick-wall bin mask corresponds to a sinc
     kernel in time (1/n sidelobe decay) that leaks across an entire render;
-    this shape's much faster sidelobe rolloff keeps the filter localized."""
+    this shape's much faster sidelobe rolloff keeps the filter localized.
+    Public (unlike this module's other band-filtering internals) because
+    analyze_downmix.py's own octave-band deviation evidence reuses this
+    exact gain shape rather than a second, drifting re-derivation."""
     gain = np.zeros_like(frequencies)
     within = (frequencies > low_hz) & (frequencies < high_hz)
     log_edges = math.log2(low_hz), math.log2(high_hz)
@@ -83,7 +86,7 @@ def _band_energy(spectrum, frequencies, fft_length, length, low_hz, high_hz):
     Channels. The forward FFT is computed once per render by the caller and
     reused across every band -- it dominates the cost of this filter, and
     every band only differs in which bins its gain shape keeps."""
-    gain = _octave_band_gain(frequencies, low_hz, high_hz)
+    gain = octave_band_gain(frequencies, low_hz, high_hz)
     filtered = np.fft.irfft(spectrum * gain[:, None], n=fft_length, axis=0)[
         :length
     ]
