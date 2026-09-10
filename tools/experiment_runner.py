@@ -22,6 +22,28 @@ from pathlib import Path
 # the sample being absent entirely, which `Path.exists()` alone catches.
 _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 
+# Self-contained listening-report CSS shared by every axis-catalog sweep's
+# own generate_report (run_tail_sweep.py, run_damping_sweep.py,
+# run_spatial_sweep.py): identical report chrome across all three, only a
+# per-tool status-specific rule (e.g. damping's own significant-deviation
+# flag, spatial's own Coherent Downmix warning) ever differs -- extracted
+# here once a third copy made the duplication a Rule-of-Three case. A
+# caller with its own extra rule appends to this string rather than
+# reproducing the whole block.
+REPORT_STYLE = """
+body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 960px; }
+h1 { font-size: 1.4rem; }
+h2 { font-size: 1.1rem; margin-top: 2.5rem; border-bottom: 1px solid #ccc; padding-bottom: .25rem; }
+table { border-collapse: collapse; margin: .5rem 0 1rem; }
+th, td { border: 1px solid #ccc; padding: .25rem .5rem; text-align: right; font-variant-numeric: tabular-nums; }
+th { text-align: center; background: #f2f2f2; }
+td:first-child, th:first-child { text-align: left; }
+audio { width: 100%; margin: .25rem 0 .75rem; }
+.status-failed { color: #b00020; font-weight: bold; }
+.status-completed, .status-resumed { color: #1a7a1a; }
+.meta { color: #555; font-size: .9rem; margin-bottom: 0; }
+"""
+
 
 class CatalogError(ValueError):
     pass
@@ -342,7 +364,9 @@ def render_case(
     )
 
 
-def render_from_resolved(renderer, source, resolved_path, output_dir, block_size=None):
+def render_from_resolved(
+    renderer, source, resolved_path, output_dir, block_size=None, capture_stages=False
+):
     """Renders a different source against an already-resolved Configuration
     rather than a Requested Configuration, guaranteeing byte-identical DSP
     parameters (delays, gains, matrices) regardless of the two sources'
@@ -350,8 +374,13 @@ def render_from_resolved(renderer, source, resolved_path, output_dir, block_size
     impulse with the sample it accompanies. The new source's Channel count
     must still match the resolved Split's inputChannels exactly; the caller
     is responsible for picking a source with the right Channel count (see
-    matching_impulse below)."""
+    matching_impulse below). `capture_stages` defaults to False, matching
+    every existing caller (tail-v1/tail-v2/modulation analysis all read
+    only output.wav); pass True for an analyzer that needs Stage captures
+    (e.g. analyze_downmix.py)."""
     extra_flags = [] if block_size is None else ["--block-size", block_size]
+    if capture_stages:
+        extra_flags += ["--capture-stages", "all"]
     return _render(
         renderer, source, output_dir, "--resolved", resolved_path, extra_flags
     )
