@@ -617,9 +617,16 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
   return loop;
 }
 
+// `select`'s own leftChannel has no implicit default for the Main Downmix
+// (issue #107), so omitting it there is rejected right at this JSON
+// boundary. The Early Downmix instead defaults `select` to Channels 0/1
+// (issue #111, docs/design/reverb/stages/09-composition.md), so its own
+// caller passes `requireExplicitSelectChannel` false here and leaves
+// resolveConfig's own withEarlyDownmixDefaults to fill the omission.
 config::DownmixConfig parseRequestedDownmix(
     const Json& value,
-    const std::string_view path) {
+    const std::string_view path,
+    const bool requireExplicitSelectChannel = true) {
   rejectUnknownFields(
       value,
       path,
@@ -636,9 +643,13 @@ config::DownmixConfig parseRequestedDownmix(
   }
   if (downmix.strategy.value_or(dsp::DownmixStrategy::select) ==
       dsp::DownmixStrategy::select) {
-    requireField(value, "leftChannel", path);
-    downmix.leftChannel = parseUnsigned32(
-        value.at("leftChannel"), std::string(path) + "/leftChannel");
+    if (requireExplicitSelectChannel) {
+      requireField(value, "leftChannel", path);
+    }
+    if (value.contains("leftChannel")) {
+      downmix.leftChannel = parseUnsigned32(
+          value.at("leftChannel"), std::string(path) + "/leftChannel");
+    }
     if (value.contains("rightChannel")) {
       downmix.rightChannel = parseUnsigned32(
           value.at("rightChannel"), std::string(path) + "/rightChannel");
@@ -667,10 +678,97 @@ config::DownmixConfig parseRequestedDownmix(
   return downmix;
 }
 
+config::EarlyTapConfig parseRequestedEarlyTap(
+    const Json& value, const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(value, path, {"stepIndex"});
+  requireField(value, "stepIndex", path);
+  config::EarlyTapConfig tap;
+  tap.stepIndex = parseUnsigned32(
+      value.at("stepIndex"), std::string(path) + "/stepIndex");
+  return tap;
+}
+
+// The parallel Early Reflections branch (issue #111): `taps` is required
+// -- an entirely empty `early: {}` request, with no taps key at all,
+// still means no branch (see parseRequestedComposition), but a present
+// `early` object with an omitted `taps` key would otherwise be
+// indistinguishable from one whose taps are simply empty, so this
+// requires the key explicitly rather than defaulting it.
+// Early's own `downmix` (issue #111) is parsed by the same
+// parseRequestedDownmix/parseResolvedDownmix used for the `downmix` stage
+// in composition.stages, but -- unlike that stage array -- it never
+// passes through the dispatcher in parseRequestedComposition/
+// parseResolvedComposition that requires and checks a stage's own `type`
+// before ever calling into either parser. Skipping this check would let
+// an Early `downmix` whose `type` names a different stage entirely (or,
+// on replay, omits `type` where a Main Downmix's own serialized form
+// never would) be silently accepted as a Downmix regardless of what it
+// claims to be. `requireType` mirrors the stage dispatcher's own
+// `requireField(stage, "type", path)` for replay, where resolved.json
+// always serializes `type` (see ResolvedConfigJson.cpp's downmixJson);
+// the requested JSON schema has no such guarantee -- Early's own
+// `downmix` object in a request never carries `type` at all in the
+// documented examples -- so a requested `downmix` only has its `type`
+// checked when present, not required.
+void checkNestedDownmixType(
+    const Json& value, const std::string_view path, const bool requireType) {
+  requireObject(value, path);
+  if (requireType) {
+    requireField(value, "type", path);
+  }
+  if (!value.contains("type")) {
+    return;
+  }
+  const auto type = parseString(value.at("type"), std::string(path) + "/type");
+  if (type != "downmix") {
+    fail(std::string(path) + "/type", "expected downmix");
+  }
+}
+
+config::EarlyConfig parseRequestedEarly(
+    const Json& value, const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value, path, {"enabled", "levelDb", "taps", "downmix"});
+  config::EarlyConfig early;
+  if (value.contains("enabled")) {
+    early.enabled =
+        parseBoolean(value.at("enabled"), std::string(path) + "/enabled");
+  }
+  if (value.contains("levelDb")) {
+    early.levelDb =
+        parseNumber(value.at("levelDb"), std::string(path) + "/levelDb");
+  }
+  if (value.contains("taps")) {
+    const auto& taps = value.at("taps");
+    const auto tapsPath = std::string(path) + "/taps";
+    requireArray(taps, tapsPath);
+    std::vector<config::EarlyTapConfig> parsedTaps;
+    parsedTaps.reserve(taps.size());
+    for (std::size_t index = 0; index < taps.size(); ++index) {
+      parsedTaps.push_back(
+          parseRequestedEarlyTap(
+              taps.at(index), tapsPath + "/" + std::to_string(index)));
+    }
+    early.taps = std::move(parsedTaps);
+  }
+  if (value.contains("downmix")) {
+    const auto downmixPath = std::string(path) + "/downmix";
+    checkNestedDownmixType(
+        value.at("downmix"), downmixPath, /*requireType=*/false);
+    early.downmix = parseRequestedDownmix(
+        value.at("downmix"), downmixPath, /*requireExplicitSelectChannel=*/false);
+  }
+  return early;
+}
+
 config::CompositionConfig parseRequestedComposition(const Json& value) {
   requireObject(value, "/composition");
   rejectUnknownFields(
-      value, "/composition", {"stages", "mainEnabled", "mainLevelDb"});
+      value,
+      "/composition",
+      {"stages", "mainEnabled", "mainLevelDb", "early"});
 
   config::CompositionConfig composition;
   if (value.contains("stages")) {
@@ -718,6 +816,11 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
           "/composition/mainLevelDb",
           "not applicable to the empty identity Composition");
     }
+    if (value.contains("early")) {
+      fail(
+          "/composition/early",
+          "not applicable to the empty identity Composition");
+    }
     return composition;
   }
 
@@ -728,6 +831,10 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
   if (value.contains("mainLevelDb")) {
     composition.mainLevelDb = parseNumber(
         value.at("mainLevelDb"), "/composition/mainLevelDb");
+  }
+  if (value.contains("early")) {
+    composition.early =
+        parseRequestedEarly(value.at("early"), "/composition/early");
   }
   return composition;
 }
@@ -1285,12 +1392,52 @@ dsp::ResolvedDownmix parseResolvedDownmix(
   return downmix;
 }
 
+dsp::ResolvedEarlyTap parseResolvedEarlyTap(
+    const Json& value, const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(value, path, {"stepIndex"});
+  requireField(value, "stepIndex", path);
+  return {
+      parseUnsigned32(value.at("stepIndex"), std::string(path) + "/stepIndex"),
+  };
+}
+
+dsp::ResolvedEarlyReflections parseResolvedEarly(
+    const Json& value, const std::string_view path) {
+  requireObject(value, path);
+  rejectUnknownFields(
+      value, path, {"enabled", "levelDb", "gain", "taps", "downmix"});
+  for (const auto field : {"enabled", "levelDb", "gain", "taps", "downmix"}) {
+    requireField(value, field, path);
+  }
+  dsp::ResolvedEarlyReflections early;
+  early.enabled =
+      parseBoolean(value.at("enabled"), std::string(path) + "/enabled");
+  early.levelDb =
+      parseNumber(value.at("levelDb"), std::string(path) + "/levelDb");
+  early.gain = parseNumber(value.at("gain"), std::string(path) + "/gain");
+  const auto& taps = value.at("taps");
+  const auto tapsPath = std::string(path) + "/taps";
+  requireArray(taps, tapsPath);
+  early.taps.reserve(taps.size());
+  for (std::size_t index = 0; index < taps.size(); ++index) {
+    early.taps.push_back(
+        parseResolvedEarlyTap(
+            taps.at(index), tapsPath + "/" + std::to_string(index)));
+  }
+  const auto downmixPath = std::string(path) + "/downmix";
+  checkNestedDownmixType(
+      value.at("downmix"), downmixPath, /*requireType=*/true);
+  early.downmix = parseResolvedDownmix(value.at("downmix"), downmixPath);
+  return early;
+}
+
 dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
   requireObject(value, "/composition");
   rejectUnknownFields(
       value,
       "/composition",
-      {"stages", "mainEnabled", "mainLevelDb", "mainGain"});
+      {"stages", "mainEnabled", "mainLevelDb", "mainGain", "early"});
   requireField(value, "stages", "/composition");
   const auto& stages = value.at("stages");
   requireArray(stages, "/composition/stages");
@@ -1334,6 +1481,11 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
           "/composition/mainGain",
           "not applicable to the empty identity Composition");
     }
+    if (value.contains("early")) {
+      fail(
+          "/composition/early",
+          "not applicable to the empty identity Composition");
+    }
     return composition;
   }
 
@@ -1346,6 +1498,10 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
   requireField(value, "mainGain", "/composition");
   composition.mainGain = parseNumber(
       value.at("mainGain"), "/composition/mainGain");
+  if (value.contains("early")) {
+    composition.early =
+        parseResolvedEarly(value.at("early"), "/composition/early");
+  }
   return composition;
 }
 

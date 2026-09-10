@@ -189,6 +189,29 @@ struct FeedbackLoopConfig {
 using StageConfig = std::
     variant<SplitConfig, DiffuserConfig, FeedbackLoopConfig, DownmixConfig>;
 
+// One requested tap (issue #111): a zero-based Diffusion Step index. Per-tap
+// gain offsets and the branch decay slope are issue #112's own extension.
+struct EarlyTapConfig {
+  std::uint32_t stepIndex = 0;
+};
+
+// The parallel Early Reflections branch (issue #111, docs/design/reverb/
+// stages/07-early-reflections.md and docs/design/reverb/stages/
+// 09-composition.md): valid only when the Main wet path contains one
+// Diffuser. Omitted `taps`, an empty `taps` array, and an omitted `early`
+// object all mean no branch -- and `enabled`/`levelDb`/`downmix` are then
+// rejected, since they could not affect sound. This milestone accepts
+// exactly one tap; multiple taps are issue #112's own extension.
+struct EarlyConfig {
+  std::optional<bool> enabled;
+  std::optional<double> levelDb;
+  std::optional<std::vector<EarlyTapConfig>> taps;
+  // Defaults to a `select` Downmix of Channels 0/1 (Channel 0 duplicated
+  // at N=1) -- unlike the Main Downmix's own `select`, which has no
+  // implicit Channel choice (issue #107).
+  std::optional<DownmixConfig> downmix;
+};
+
 struct CompositionConfig {
   bool stagesSpecified = false;
   std::vector<StageConfig> stages;
@@ -197,6 +220,10 @@ struct CompositionConfig {
   // `stages`). Defaults to enabled at 0 dB for a non-empty Composition.
   std::optional<bool> mainEnabled;
   std::optional<double> mainLevelDb;
+  // The parallel Early Reflections branch (issue #111): not applicable,
+  // and rejected, on the empty identity Composition, exactly like
+  // mainEnabled/mainLevelDb above.
+  std::optional<EarlyConfig> early;
 };
 
 struct ReverbConfig {

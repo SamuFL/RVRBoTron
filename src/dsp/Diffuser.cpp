@@ -44,7 +44,8 @@ Diffuser::~Diffuser() = default;
 void Diffuser::processFrame(
     const Sample* const inputs,
     Sample* const outputs,
-    DiffuserCaptureSink* const captureSink) noexcept {
+    DiffuserCaptureSink* const captureSink,
+    const DiffuserEarlyTap* const earlyTap) noexcept {
   if (inputs != outputs) {
     std::copy_n(inputs, channels_, outputs);
   }
@@ -53,6 +54,11 @@ void Diffuser::processFrame(
     if (captureSink != nullptr) {
       captureSink->captureDiffusionStepFrame(
           stepIndices_[index], outputs, channels_);
+    }
+    if (earlyTap != nullptr && stepIndices_[index] == earlyTap->stepIndex) {
+      for (std::size_t channel = 0; channel < channels_; ++channel) {
+        earlyTap->accumulator[channel] += outputs[channel];
+      }
     }
   }
 }

@@ -5,6 +5,7 @@
 #include "rvrbotron/dsp/DiffusionStep.h"
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
+#include "rvrbotron/dsp/EarlyReflections.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/MixMatrix.h"
@@ -776,6 +777,65 @@ int main() {
       !close(orderedOutput[0], 0.25)) {
     std::cerr << "Diffuser did not process its resolved ordered steps\n";
     return 1;
+  }
+
+  // The Early Reflections tap seam (issue #111, docs/design/reverb/
+  // stages/07-early-reflections.md's "What this forces on the
+  // architecture"): a caller-owned accumulator, not a registered
+  // observer. Diffuser adds (+=) the configured step's completed
+  // post-step frame into it, leaves the Diffuser's own Main output
+  // bit-identical, and allocates nothing.
+  {
+    rvrbotron::dsp::Diffuser tapStep0Diffuser(orderedConfig);
+    std::array<rvrbotron::dsp::Sample, 1> tapAccumulator{
+        rvrbotron::dsp::Sample{0}};
+    const rvrbotron::dsp::DiffuserEarlyTap tapStep0{0, tapAccumulator.data()};
+    std::array<rvrbotron::dsp::Sample, 1> tapOutput{};
+    beginAllocationCount();
+    tapStep0Diffuser.processFrame(
+        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0);
+    const auto tapAllocations = endAllocationCount();
+    if (tapAllocations != 0) {
+      std::cerr << "Diffuser allocated while accumulating an Early tap\n";
+      return 1;
+    }
+    if (!close(tapAccumulator[0], -0.25)) {
+      std::cerr << "Diffuser's Early tap did not accumulate the configured "
+                   "step's completed post-step frame\n";
+      return 1;
+    }
+    if (tapOutput[0] != orderedOutput[0]) {
+      std::cerr << "configuring an Early tap changed the Diffuser's own "
+                   "Main output\n";
+      return 1;
+    }
+
+    // Accumulation is additive, not overwriting: a second call without
+    // resetting the accumulator sums both calls' contributions -- the
+    // caller (EarlyReflections) owns clearing it once per frame.
+    tapStep0Diffuser.processFrame(
+        orderedInput.data(), tapOutput.data(), nullptr, &tapStep0);
+    if (!close(tapAccumulator[0], -0.5)) {
+      std::cerr << "Diffuser's Early tap did not accumulate additively "
+                   "across repeated calls\n";
+      return 1;
+    }
+
+    // Tapping a different step accumulates that step's own completed
+    // frame instead.
+    rvrbotron::dsp::Diffuser tapStep1Diffuser(orderedConfig);
+    std::array<rvrbotron::dsp::Sample, 1> tapStep1Accumulator{
+        rvrbotron::dsp::Sample{0}};
+    const rvrbotron::dsp::DiffuserEarlyTap tapStep1{
+        1, tapStep1Accumulator.data()};
+    std::array<rvrbotron::dsp::Sample, 1> tapStep1Output{};
+    tapStep1Diffuser.processFrame(
+        orderedInput.data(), tapStep1Output.data(), nullptr, &tapStep1);
+    if (!close(tapStep1Accumulator[0], 0.25)) {
+      std::cerr << "Diffuser's Early tap did not accumulate the configured "
+                   "step's own completed post-step frame\n";
+      return 1;
+    }
   }
 
   constexpr double splitScale = 0.70710678118654752440;
@@ -1920,6 +1980,482 @@ int main() {
                       "precision\n";
         return 1;
       }
+    }
+  }
+
+  // The parallel Early Reflections branch (issue #111, docs/design/
+  // reverb/stages/07-early-reflections.md and docs/design/reverb/stages/
+  // 09-composition.md). resolveConfig is a public non-JSON entry point
+  // too, mirroring the Main wet path's own direct-construction checks
+  // above.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 2;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+
+    rvrbotron::config::CompositionConfig diffuserOnlyComposition;
+    diffuserOnlyComposition.stagesSpecified = true;
+    diffuserOnlyComposition.stages.emplace_back(split);
+    diffuserOnlyComposition.stages.emplace_back(diffuser);
+    diffuserOnlyComposition.stages.emplace_back(referenceSelectDownmixConfig(2));
+
+    // Early Reflections on the empty identity Composition is rejected
+    // directly, mirroring mainEnabled/mainLevelDb (#109).
+    {
+      rvrbotron::config::EarlyConfig earlyOnEmpty;
+      earlyOnEmpty.taps =
+          std::vector<rvrbotron::config::EarlyTapConfig>{{0}};
+      rvrbotron::config::CompositionConfig emptyWithEarly;
+      emptyWithEarly.early = earlyOnEmpty;
+      rvrbotron::config::ReverbConfig requested;
+      requested.formatVersion = 2;
+      requested.composition = emptyWithEarly;
+      bool rejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(requested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "resolveConfig accepted composition.early on the "
+                     "empty identity Composition\n";
+        return 1;
+      }
+    }
+
+    // The same rejection holds for validateResolvedConfig called
+    // directly on a hand-built ResolvedConfig, not only through
+    // resolveConfig: it is a public, non-JSON entry point too (PR review
+    // on #111), and its own empty-stages early return must not let a
+    // populated `early` slip past unrejected.
+    {
+      rvrbotron::dsp::ResolvedConfig handBuiltEmptyWithEarly;
+      handBuiltEmptyWithEarly.formatVersion = 2;
+      handBuiltEmptyWithEarly.sampleRate = 48000;
+      rvrbotron::dsp::ResolvedEarlyReflections handBuiltEarly;
+      handBuiltEarly.taps.push_back({0});
+      handBuiltEmptyWithEarly.composition.early = handBuiltEarly;
+      bool rejected = false;
+      try {
+        rvrbotron::config::validateResolvedConfig(handBuiltEmptyWithEarly);
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "validateResolvedConfig accepted composition.early on "
+                     "a hand-built empty identity Composition\n";
+        return 1;
+      }
+    }
+
+    // Early Reflections without a Diffuser are rejected: a Feedback-
+    // Loop-only Main wet path has no source for a tap.
+    {
+      rvrbotron::config::FeedbackLoopConfig loop;
+      loop.delayMinMs = 5.0;
+      loop.delayMaxMs = 10.0;
+      loop.rt60Sec = 0.1;
+      rvrbotron::config::CompositionConfig loopOnlyComposition;
+      loopOnlyComposition.stagesSpecified = true;
+      loopOnlyComposition.stages.emplace_back(split);
+      loopOnlyComposition.stages.emplace_back(loop);
+      loopOnlyComposition.stages.emplace_back(
+          referenceSelectDownmixConfig(2));
+      rvrbotron::config::EarlyConfig earlyWithoutDiffuser;
+      earlyWithoutDiffuser.taps =
+          std::vector<rvrbotron::config::EarlyTapConfig>{{0}};
+      loopOnlyComposition.early = earlyWithoutDiffuser;
+      rvrbotron::config::ReverbConfig requested;
+      requested.formatVersion = 2;
+      requested.seed = 3;
+      requested.composition = loopOnlyComposition;
+      bool rejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(requested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "resolveConfig accepted Early Reflections without a "
+                     "Diffuser\n";
+        return 1;
+      }
+    }
+
+    // Branch controls without any tap are rejected: they could not
+    // affect sound.
+    {
+      rvrbotron::config::EarlyConfig earlyWithoutTaps;
+      earlyWithoutTaps.enabled = false;
+      auto composition = diffuserOnlyComposition;
+      composition.early = earlyWithoutTaps;
+      rvrbotron::config::ReverbConfig requested;
+      requested.formatVersion = 2;
+      requested.seed = 3;
+      requested.composition = composition;
+      bool rejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(requested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "resolveConfig accepted Early Reflections controls "
+                     "without any tap\n";
+        return 1;
+      }
+    }
+
+    // Exactly one tap is accepted this milestone (#111); more than one
+    // is rejected until #112's canonical multi-tap resolution lands.
+    {
+      rvrbotron::config::EarlyConfig earlyTwoTaps;
+      earlyTwoTaps.taps =
+          std::vector<rvrbotron::config::EarlyTapConfig>{{0}, {0}};
+      auto composition = diffuserOnlyComposition;
+      composition.early = earlyTwoTaps;
+      rvrbotron::config::ReverbConfig requested;
+      requested.formatVersion = 2;
+      requested.seed = 3;
+      requested.composition = composition;
+      bool rejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(requested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "resolveConfig accepted more than one Early tap\n";
+        return 1;
+      }
+    }
+
+    // An out-of-range tap stepIndex is rejected: this Diffuser has one
+    // step (index 0), so index 1 does not exist.
+    {
+      rvrbotron::config::EarlyConfig earlyOutOfRange;
+      earlyOutOfRange.taps =
+          std::vector<rvrbotron::config::EarlyTapConfig>{{1}};
+      auto composition = diffuserOnlyComposition;
+      composition.early = earlyOutOfRange;
+      rvrbotron::config::ReverbConfig requested;
+      requested.formatVersion = 2;
+      requested.seed = 3;
+      requested.composition = composition;
+      bool rejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(requested, 48000, 1));
+      } catch (const rvrbotron::HarnessError&) {
+        rejected = true;
+      }
+      if (!rejected) {
+        std::cerr << "resolveConfig accepted an out-of-range Early tap "
+                     "stepIndex\n";
+        return 1;
+      }
+    }
+
+    // A non-empty Early branch defaults to enabled, 0 dB level, and a
+    // `select` Downmix of Channels 0/1 -- unlike the Main Downmix's own
+    // `select`, which has no implicit Channel choice (issue #107).
+    rvrbotron::config::EarlyConfig earlyDefault;
+    earlyDefault.taps = std::vector<rvrbotron::config::EarlyTapConfig>{{0}};
+    auto diffuserOnlyWithEarly = diffuserOnlyComposition;
+    diffuserOnlyWithEarly.early = earlyDefault;
+    rvrbotron::config::ReverbConfig diffuserOnlyRequested;
+    diffuserOnlyRequested.formatVersion = 2;
+    diffuserOnlyRequested.seed = 11;
+    diffuserOnlyRequested.composition = diffuserOnlyWithEarly;
+    const auto diffuserOnlyResolved =
+        rvrbotron::config::resolveConfig(diffuserOnlyRequested, 48000, 1);
+    if (!diffuserOnlyResolved.composition.early.has_value()) {
+      std::cerr << "a non-empty Early branch did not resolve\n";
+      return 1;
+    }
+    const auto& resolvedEarlyDefault =
+        *diffuserOnlyResolved.composition.early;
+    if (!resolvedEarlyDefault.enabled ||
+        resolvedEarlyDefault.levelDb != 0.0 ||
+        resolvedEarlyDefault.gain != 1.0 ||
+        resolvedEarlyDefault.taps.size() != 1 ||
+        resolvedEarlyDefault.taps[0].stepIndex != 0 ||
+        resolvedEarlyDefault.downmix.strategy !=
+            rvrbotron::dsp::DownmixStrategy::select ||
+        resolvedEarlyDefault.downmix.leftChannel != 0U ||
+        resolvedEarlyDefault.downmix.rightChannel != 1U ||
+        resolvedEarlyDefault.downmix.alignment !=
+            rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "a non-empty Early branch did not default to enabled/"
+                   "0 dB/select Channels 0-1/aligned\n";
+      return 1;
+    }
+
+    // At N=1, the default Early Downmix duplicates Channel 0 to mono,
+    // exactly like every other `select` Downmix with an omitted
+    // rightChannel.
+    {
+      rvrbotron::config::SplitConfig monoSplit;
+      monoSplit.channels = 1;
+      monoSplit.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+      monoSplit.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+      rvrbotron::config::DiffuserConfig monoDiffuser;
+      monoDiffuser.steps = 1;
+      monoDiffuser.totalMs = 1.0;
+      rvrbotron::config::CompositionConfig monoComposition;
+      monoComposition.stagesSpecified = true;
+      monoComposition.stages.emplace_back(monoSplit);
+      monoComposition.stages.emplace_back(monoDiffuser);
+      monoComposition.stages.emplace_back(referenceSelectDownmixConfig(1));
+      rvrbotron::config::EarlyConfig monoEarly;
+      monoEarly.taps = std::vector<rvrbotron::config::EarlyTapConfig>{{0}};
+      monoComposition.early = monoEarly;
+      rvrbotron::config::ReverbConfig monoRequested;
+      monoRequested.formatVersion = 2;
+      monoRequested.seed = 11;
+      monoRequested.composition = monoComposition;
+      const auto monoResolved =
+          rvrbotron::config::resolveConfig(monoRequested, 48000, 1);
+      const auto& monoEarlyResolved = *monoResolved.composition.early;
+      if (monoEarlyResolved.downmix.leftChannel != 0U ||
+          monoEarlyResolved.downmix.rightChannel.has_value()) {
+        std::cerr << "the default Early Downmix at N=1 did not duplicate "
+                     "Channel 0 to mono\n";
+        return 1;
+      }
+    }
+
+    // Diffuser-then-Feedback-Loop routes the tap in parallel too, and
+    // Early's own Downmix resolves an aligned Alignment expectation
+    // independently of the Main Downmix, which is unaligned when its
+    // source includes a Feedback Loop (issue #107).
+    rvrbotron::config::FeedbackLoopConfig loop;
+    loop.delayMinMs = 2.0;
+    loop.delayMaxMs = 3.0;
+    loop.rt60Sec = 0.05;
+    rvrbotron::config::CompositionConfig diffuserLoopComposition;
+    diffuserLoopComposition.stagesSpecified = true;
+    diffuserLoopComposition.stages.emplace_back(split);
+    diffuserLoopComposition.stages.emplace_back(diffuser);
+    diffuserLoopComposition.stages.emplace_back(loop);
+    diffuserLoopComposition.stages.emplace_back(
+        referenceSelectDownmixConfig(2));
+    diffuserLoopComposition.early = earlyDefault;
+    rvrbotron::config::ReverbConfig diffuserLoopRequested;
+    diffuserLoopRequested.formatVersion = 2;
+    diffuserLoopRequested.seed = 11;
+    diffuserLoopRequested.composition = diffuserLoopComposition;
+    const auto diffuserLoopResolved =
+        rvrbotron::config::resolveConfig(diffuserLoopRequested, 48000, 1);
+    const auto& diffuserLoopMainDownmix =
+        std::get<rvrbotron::dsp::ResolvedDownmix>(
+            diffuserLoopResolved.composition.stages.back());
+    if (diffuserLoopMainDownmix.alignment !=
+            rvrbotron::dsp::DownmixAlignment::unaligned ||
+        diffuserLoopResolved.composition.early->downmix.alignment !=
+            rvrbotron::dsp::DownmixAlignment::aligned) {
+      std::cerr << "Early's Downmix did not resolve an aligned Alignment "
+                   "expectation independently of an unaligned Main "
+                   "Downmix\n";
+      return 1;
+    }
+
+    // Early's Downmix resolves from its own domain-separated
+    // RandomOrthogonal usage tag (EARLDNMX), distinct from the Main
+    // Downmix's own (MAINDNMX, issue #108): the same seed and Channel
+    // count resolve different rows for the two branches.
+    {
+      auto orthogonalMainDownmix = referenceSelectDownmixConfig(2);
+      orthogonalMainDownmix.strategy =
+          rvrbotron::dsp::DownmixStrategy::orthogonalRows;
+      orthogonalMainDownmix.leftChannel.reset();
+      orthogonalMainDownmix.rightChannel.reset();
+      rvrbotron::config::CompositionConfig orthogonalComposition;
+      orthogonalComposition.stagesSpecified = true;
+      orthogonalComposition.stages.emplace_back(split);
+      orthogonalComposition.stages.emplace_back(diffuser);
+      orthogonalComposition.stages.emplace_back(orthogonalMainDownmix);
+      rvrbotron::config::EarlyConfig orthogonalEarly;
+      orthogonalEarly.taps =
+          std::vector<rvrbotron::config::EarlyTapConfig>{{0}};
+      rvrbotron::config::DownmixConfig orthogonalEarlyDownmix;
+      orthogonalEarlyDownmix.strategy =
+          rvrbotron::dsp::DownmixStrategy::orthogonalRows;
+      orthogonalEarly.downmix = orthogonalEarlyDownmix;
+      orthogonalComposition.early = orthogonalEarly;
+      rvrbotron::config::ReverbConfig orthogonalRequested;
+      orthogonalRequested.formatVersion = 2;
+      orthogonalRequested.seed = 17;
+      orthogonalRequested.composition = orthogonalComposition;
+      const auto orthogonalResolved = rvrbotron::config::resolveConfig(
+          orthogonalRequested, 48000, 1);
+      const auto& orthogonalMain = std::get<rvrbotron::dsp::ResolvedDownmix>(
+          orthogonalResolved.composition.stages.back());
+      const auto& orthogonalEarlyResolved =
+          orthogonalResolved.composition.early->downmix;
+      if (orthogonalMain.leftRow == orthogonalEarlyResolved.leftRow &&
+          orthogonalMain.rightRow == orthogonalEarlyResolved.rightRow) {
+        std::cerr << "Early's orthogonal-rows Downmix did not resolve "
+                     "independently of the Main Downmix's own rows\n";
+        return 1;
+      }
+    }
+
+    // EarlyReflections::ownedBytes() must not double-count its embedded
+    // Downmix's own sizeof (PR review on #111): Downmix is held by
+    // value, so its in-place storage is already part of sizeof(*this),
+    // and only its own backing-vector allocations
+    // (Downmix::ownedStorageBytes()) should be added on top. A `select`
+    // Downmix's dense rows stay empty (issue #108's fast path), so its
+    // only owned storage here is the accumulator -- exactly sized to
+    // expose an extra, wrongly-added sizeof(Downmix) if the bug
+    // regresses.
+    {
+      const rvrbotron::dsp::EarlyReflections earlyDsp(
+          *diffuserOnlyResolved.composition.early);
+      const auto expectedOwnedBytes =
+          sizeof(rvrbotron::dsp::EarlyReflections) +
+          2 * sizeof(rvrbotron::dsp::Sample);
+      if (earlyDsp.ownedBytes() != expectedOwnedBytes) {
+        std::cerr << "EarlyReflections::ownedBytes() double-counted its "
+                     "embedded Downmix's own sizeof (expected "
+                  << expectedOwnedBytes << ", got " << earlyDsp.ownedBytes()
+                  << ")\n";
+        return 1;
+      }
+    }
+
+    // Reverb-level behavior: superposition, non-interference, branch
+    // level, enablement, and never entering the Feedback Loop. Renders
+    // enough frames (this Diffuser's sample budget is 48 samples at
+    // 48 kHz) that a tapped Diffusion Step's delayed output has actually
+    // reached the observation window, with sustained input so energy
+    // checks are not sensitive to exactly where that delay lands.
+    constexpr std::size_t kEarlyTestFrames = 64;
+    const auto renderFrames =
+        [](const rvrbotron::dsp::ResolvedConfig& config) {
+          rvrbotron::dsp::Reverb reverb(config);
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> input{};
+          input.fill(rvrbotron::dsp::Sample{1});
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> left{};
+          std::array<rvrbotron::dsp::Sample, kEarlyTestFrames> right{};
+          const rvrbotron::dsp::Sample* inputs[]{input.data()};
+          rvrbotron::dsp::Sample* outputs[]{left.data(), right.data()};
+          reverb.process(inputs, 1, outputs, 2, kEarlyTestFrames);
+          return std::make_pair(left, right);
+        };
+
+    auto withoutEarlyRequested = diffuserOnlyRequested;
+    withoutEarlyRequested.composition = diffuserOnlyComposition;
+    const auto withoutEarlyResolved =
+        rvrbotron::config::resolveConfig(withoutEarlyRequested, 48000, 1);
+    const auto withoutEarly = renderFrames(withoutEarlyResolved);
+
+    // A disabled-but-configured Early branch contributes exact zero, and
+    // its presence does not perturb the Main wet path's own output --
+    // both proven together by exact equality with the no-branch render.
+    auto earlyDisabledComposition = diffuserOnlyWithEarly;
+    earlyDisabledComposition.early->enabled = false;
+    auto earlyDisabledRequested = diffuserOnlyRequested;
+    earlyDisabledRequested.composition = earlyDisabledComposition;
+    const auto earlyDisabledResolved =
+        rvrbotron::config::resolveConfig(earlyDisabledRequested, 48000, 1);
+    const auto earlyDisabled = renderFrames(earlyDisabledResolved);
+    if (earlyDisabled != withoutEarly) {
+      std::cerr << "a disabled Early branch did not contribute exact zero, "
+                   "or perturbed the Main wet path's own output\n";
+      return 1;
+    }
+
+    // Isolate Early's own stereo contribution by disabling the Main wet
+    // path, then check it is not trivially silent.
+    auto earlyOnlyComposition = diffuserOnlyWithEarly;
+    earlyOnlyComposition.mainEnabled = false;
+    auto earlyOnlyRequested = diffuserOnlyRequested;
+    earlyOnlyRequested.composition = earlyOnlyComposition;
+    const auto earlyOnlyResolved =
+        rvrbotron::config::resolveConfig(earlyOnlyRequested, 48000, 1);
+    const auto earlyOnly = renderFrames(earlyOnlyResolved);
+    double earlyOnlyEnergy = 0.0;
+    for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
+      earlyOnlyEnergy += static_cast<double>(earlyOnly.first[frame]) *
+              static_cast<double>(earlyOnly.first[frame]) +
+          static_cast<double>(earlyOnly.second[frame]) *
+              static_cast<double>(earlyOnly.second[frame]);
+    }
+    if (!(earlyOnlyEnergy > 0.0)) {
+      std::cerr << "an enabled Early branch produced silent output\n";
+      return 1;
+    }
+
+    // Superposition: combined output equals the sample-wise sum of the
+    // separately rendered Main-only and Early-only branches.
+    const auto combined = renderFrames(diffuserOnlyResolved);
+    for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
+      const auto expectedLeft = static_cast<double>(withoutEarly.first[frame]) +
+          static_cast<double>(earlyOnly.first[frame]);
+      const auto expectedRight =
+          static_cast<double>(withoutEarly.second[frame]) +
+          static_cast<double>(earlyOnly.second[frame]);
+      if (!close(combined.first[frame], expectedLeft) ||
+          !close(combined.second[frame], expectedRight)) {
+        std::cerr << "combined output was not the sample-wise sum of Main "
+                     "and Early's own separately rendered branches\n";
+        return 1;
+      }
+    }
+
+    // levelDb scales Early's own branch output by its resolved linear
+    // gain, applied once after Downmix.
+    auto earlyLeveledComposition = earlyOnlyComposition;
+    earlyLeveledComposition.early->levelDb = -6.0;
+    auto earlyLeveledRequested = diffuserOnlyRequested;
+    earlyLeveledRequested.composition = earlyLeveledComposition;
+    const auto earlyLeveledResolved =
+        rvrbotron::config::resolveConfig(earlyLeveledRequested, 48000, 1);
+    const auto earlyLeveled = renderFrames(earlyLeveledResolved);
+    const auto expectedEarlyGain = std::pow(10.0, -6.0 / 20.0);
+    for (std::size_t frame = 0; frame < kEarlyTestFrames; ++frame) {
+      const auto expectedLeft =
+          static_cast<double>(earlyOnly.first[frame]) * expectedEarlyGain;
+      const auto expectedRight =
+          static_cast<double>(earlyOnly.second[frame]) * expectedEarlyGain;
+      if (!close(earlyLeveled.first[frame], expectedLeft) ||
+          !close(earlyLeveled.second[frame], expectedRight)) {
+        std::cerr << "levelDb: -6 did not scale Early's own branch output "
+                     "by its resolved gain\n";
+        return 1;
+      }
+    }
+
+    // Early Reflections never enter the Feedback Loop: tapping the same
+    // Diffuser (same seed, same Channels, same steps) produces a
+    // bit-identical Early-only contribution whether or not a Feedback
+    // Loop follows it in the Main wet path.
+    auto diffuserLoopEarlyOnlyComposition = diffuserLoopComposition;
+    diffuserLoopEarlyOnlyComposition.mainEnabled = false;
+    rvrbotron::config::ReverbConfig diffuserLoopEarlyOnlyRequested;
+    diffuserLoopEarlyOnlyRequested.formatVersion = 2;
+    diffuserLoopEarlyOnlyRequested.seed = 11;
+    diffuserLoopEarlyOnlyRequested.composition =
+        diffuserLoopEarlyOnlyComposition;
+    const auto diffuserLoopEarlyOnlyResolved = rvrbotron::config::resolveConfig(
+        diffuserLoopEarlyOnlyRequested, 48000, 1);
+    const auto diffuserLoopEarlyOnly =
+        renderFrames(diffuserLoopEarlyOnlyResolved);
+    if (diffuserLoopEarlyOnly != earlyOnly) {
+      std::cerr << "Early Reflections' own contribution changed when a "
+                   "Feedback Loop followed the same Diffuser -- Early "
+                   "Reflections must never enter the Feedback Loop\n";
+      return 1;
     }
   }
 

@@ -77,7 +77,11 @@ std::size_t Downmix::outputChannelCount() const noexcept {
 }
 
 std::size_t Downmix::ownedBytes() const noexcept {
-  return sizeof(*this) + ownedVectorBytes(effectiveLeftRow_) +
+  return sizeof(*this) + ownedStorageBytes();
+}
+
+std::size_t Downmix::ownedStorageBytes() const noexcept {
+  return ownedVectorBytes(effectiveLeftRow_) +
          ownedVectorBytes(effectiveRightRow_);
 }
 

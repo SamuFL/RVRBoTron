@@ -69,6 +69,14 @@ constexpr std::uint64_t kDiffusionModulationChannelSelectionUsage =
 // "EARLDNMX" tag rather than reusing this one.
 constexpr std::uint64_t kMainDownmixRandomOrthogonalUsage =
     0x4d41494e444e4d58ULL;
+// The Early Downmix's own domain-separated RandomOrthogonal usage tag
+// ("EARLDNMX", issue #111, ADR-0002): distinct from both
+// kMainDownmixRandomOrthogonalUsage and kMixMatrixRandomOrthogonalUsage, so
+// Early's Downmix never draws the same value as Main's for the same
+// (seed, row/column) -- see docs/design/reverb/stages/09-composition.md's
+// seeding table.
+constexpr std::uint64_t kEarlyDownmixRandomOrthogonalUsage =
+    0x4541524c444e4d58ULL;
 
 [[noreturn]] void fail(const std::string_view path,
                        const std::string_view reason) {
@@ -1389,8 +1397,9 @@ dsp::ResolvedDownmix resolveDownmix(
     const DownmixConfig& requested,
     const std::uint32_t channels,
     const std::uint64_t seed,
+    const std::uint64_t orthogonalUsage,
     const dsp::DownmixAlignment alignment,
-    const std::size_t stageIndex,
+    const std::string& path,
     const std::uint64_t memoryBudgetBytes) {
   const auto strategy =
       requested.strategy.value_or(dsp::DownmixStrategy::select);
@@ -1417,9 +1426,7 @@ dsp::ResolvedDownmix resolveDownmix(
     // still be rejected here rather than silently resolving to the
     // archived Channel-0 default.
     if (!requested.leftChannel.has_value()) {
-      fail(
-          stagePath(stageIndex) + "/leftChannel",
-          "required field is missing");
+      fail(path + "/leftChannel", "required field is missing");
     }
     leftChannel = requested.leftChannel;
     rightChannel = requested.rightChannel;
@@ -1433,13 +1440,13 @@ dsp::ResolvedDownmix resolveDownmix(
     // strategy is rejected here too, mirroring the JSON boundary.
     if (requested.leftChannel.has_value()) {
       fail(
-          stagePath(stageIndex) + "/leftChannel",
+          path + "/leftChannel",
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(strategy));
     }
     if (requested.rightChannel.has_value()) {
       fail(
-          stagePath(stageIndex) + "/rightChannel",
+          path + "/rightChannel",
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(strategy));
     }
@@ -1458,12 +1465,12 @@ dsp::ResolvedDownmix resolveDownmix(
       rightRow = alternatingRow(channels, /*leftGroup=*/false);
     } else {
       checkDownmixMemoryBudget(
-          channels, memoryBudgetBytes, stagePath(stageIndex) + "/strategy");
+          channels, memoryBudgetBytes, path + "/strategy");
       auto matrix = resolveRandomOrthogonalMatrix(
-          channels, seed, kMainDownmixRandomOrthogonalUsage);
+          channels, seed, orthogonalUsage);
       if (!matrix.has_value()) {
         fail(
-            stagePath(stageIndex) + "/strategy",
+            path + "/strategy",
             "RandomOrthogonal construction was singular or near-singular");
       }
       auto rows = extractDownmixRows(*matrix, channels);
@@ -1494,12 +1501,36 @@ dsp::ResolvedDownmix resolveDownmix(
   };
 }
 
-// The Main wet path's requested level, converted to a linear multiplier
-// (issue #109) -- resolved once, before construction, so Reverb's audio
-// processing never computes `pow`. Shared by resolveConfig and
-// validateResolvedConfig so the two never drift on the formula.
-double resolveMainGain(const double mainLevelDb) noexcept {
-  return std::pow(10.0, mainLevelDb / 20.0);
+// A wet branch's requested level, converted to a linear multiplier (issue
+// #109; shared by the Early branch's own `levelDb`, issue #111) --
+// resolved once, before construction, so Reverb's audio processing never
+// computes `pow`. Shared by resolveConfig and validateResolvedConfig so
+// the two never drift on the formula.
+double resolveLinearGainFromDb(const double levelDb) noexcept {
+  return std::pow(10.0, levelDb / 20.0);
+}
+
+// Early's own `select` Downmix default (issue #111, docs/design/reverb/
+// stages/09-composition.md's "A present Early Reflections branch defaults
+// to ... select Channels 0/1 (or Channel 0 duplicated at N=1)"), unlike
+// the Main Downmix's own `select`, which has no implicit Channel choice
+// (issue #107) and is rejected outright when omitted. Only fills
+// leftChannel/rightChannel when the caller supplied neither -- an
+// explicit leftChannel with no rightChannel still means mono duplication,
+// exactly like every other `select` Downmix.
+DownmixConfig withEarlyDownmixDefaults(
+    DownmixConfig requested, const std::uint32_t channels) {
+  const auto strategy =
+      requested.strategy.value_or(dsp::DownmixStrategy::select);
+  requested.strategy = strategy;
+  if (strategy == dsp::DownmixStrategy::select &&
+      !requested.leftChannel.has_value()) {
+    requested.leftChannel = 0;
+    if (!requested.rightChannel.has_value() && channels > 1) {
+      requested.rightChannel = 1;
+    }
+  }
+  return requested;
 }
 
 void validateShape(const dsp::ResolvedComposition& composition) {
@@ -1571,6 +1602,11 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           "/composition/mainLevelDb",
           "not applicable to the empty identity Composition");
     }
+    if (requestedComposition->early.has_value()) {
+      fail(
+          "/composition/early",
+          "not applicable to the empty identity Composition");
+    }
   }
   if (requestedComposition != nullptr &&
       !requestedComposition->stages.empty()) {
@@ -1579,7 +1615,7 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
     resolved.composition.mainLevelDb =
         requestedComposition->mainLevelDb.value_or(0.0);
     resolved.composition.mainGain =
-        resolveMainGain(resolved.composition.mainLevelDb);
+        resolveLinearGainFromDb(resolved.composition.mainLevelDb);
     const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
         std::holds_alternative<SplitConfig>(
@@ -1695,12 +1731,57 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                       stageConfig,
                       channels,
                       resolved.seed,
+                      kMainDownmixRandomOrthogonalUsage,
                       mainAlignment,
-                      stageIndex,
+                      stagePath(stageIndex),
                       memoryBudgetBytes));
             }
           },
           stage);
+    }
+
+    // The parallel Early Reflections branch (issue #111): resolved once
+    // every Main wet path stage above is resolved, since its own tap and
+    // Downmix both need the Composition's own `channels` -- the same N
+    // the Main Downmix resolves against. Omitted `early`, an included but
+    // empty `early`, and `early: {"taps": []}` all mean no branch; a
+    // non-empty `taps` resolves one (see EarlyConfig's own declaration).
+    if (requestedComposition->early.has_value()) {
+      const auto& earlyRequested = *requestedComposition->early;
+      const auto hasTaps =
+          earlyRequested.taps.has_value() && !earlyRequested.taps->empty();
+      if (!hasTaps) {
+        if (earlyRequested.enabled.has_value() ||
+            earlyRequested.levelDb.has_value() ||
+            earlyRequested.downmix.has_value()) {
+          fail(
+              "/composition/early",
+              "enabled/levelDb/downmix are not applicable without at "
+              "least one tap");
+        }
+      } else {
+        if (earlyRequested.taps->size() != 1) {
+          fail(
+              "/composition/early/taps",
+              "expected exactly one tap");
+        }
+        dsp::ResolvedEarlyReflections early;
+        early.enabled = earlyRequested.enabled.value_or(true);
+        early.levelDb = earlyRequested.levelDb.value_or(0.0);
+        early.gain = resolveLinearGainFromDb(early.levelDb);
+        early.taps.push_back({(*earlyRequested.taps)[0].stepIndex});
+        const auto downmixRequested = withEarlyDownmixDefaults(
+            earlyRequested.downmix.value_or(DownmixConfig{}), channels);
+        early.downmix = resolveDownmix(
+            downmixRequested,
+            channels,
+            resolved.seed,
+            kEarlyDownmixRandomOrthogonalUsage,
+            dsp::DownmixAlignment::aligned,
+            "/composition/early/downmix",
+            memoryBudgetBytes);
+        resolved.composition.early = std::move(early);
+      }
     }
   }
 
@@ -2844,6 +2925,144 @@ void validateFeedbackLoopStage(
   }
 }
 
+// Validates one resolved Downmix's field-level contract: dimensions,
+// strategy/Channel selection, compensation, rows, its Alignment
+// expectation, and Width -- shared by the Main Downmix stage and the
+// Early Downmix (issue #111), which resolve independently (their own
+// `path` and domain-separated `orthogonalUsage` tag) but must never drift
+// on what a resolved Downmix is allowed to look like.
+void validateResolvedDownmixFields(
+    const dsp::ResolvedConfig& resolved,
+    const dsp::ResolvedDownmix& downmix,
+    const std::uint32_t channels,
+    const std::uint64_t orthogonalUsage,
+    const dsp::DownmixAlignment expectedAlignment,
+    const std::string& path) {
+  if (downmix.inputChannels != channels || downmix.outputChannels != 2) {
+    fail(path, "Downmix dimensions must map the internal Channels to stereo");
+  }
+  if (downmix.strategy == dsp::DownmixStrategy::select) {
+    if (!downmix.leftChannel.has_value()) {
+      fail(path + "/leftChannel", "required field is missing");
+    }
+    if (*downmix.leftChannel >= channels) {
+      fail(
+          path + "/leftChannel", "expected a Channel index within [0, N)");
+    }
+    if (downmix.rightChannel.has_value()) {
+      if (*downmix.rightChannel >= channels) {
+        fail(
+            path + "/rightChannel",
+            "expected a Channel index within [0, N)");
+      }
+      if (*downmix.rightChannel == *downmix.leftChannel) {
+        fail(
+            path + "/rightChannel",
+            "expected a Channel distinct from leftChannel");
+      }
+    }
+  } else {
+    if (downmix.leftChannel.has_value()) {
+      fail(
+          path + "/leftChannel",
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(downmix.strategy));
+    }
+    if (downmix.rightChannel.has_value()) {
+      fail(
+          path + "/rightChannel",
+          std::string("not applicable to strategy ") +
+              downmixStrategyLabel(downmix.strategy));
+    }
+    if (channels < 2) {
+      fail(
+          path + "/strategy",
+          std::string(downmixStrategyLabel(downmix.strategy)) +
+              " requires at least two Channels");
+    }
+  }
+  if (!(downmix.compensation > 0.0) || !std::isfinite(downmix.compensation)) {
+    fail(path + "/compensation", "expected finite positive gain");
+  }
+  double expectedCompensation = 0.0;
+  switch (downmix.normalisation) {
+  case dsp::EnergyNormalisation::energy:
+    expectedCompensation =
+        channels == 1
+            ? 1.0 / std::sqrt(2.0)
+            : std::sqrt(static_cast<double>(channels) / 2.0);
+    break;
+  case dsp::EnergyNormalisation::none:
+    expectedCompensation = 1.0;
+    break;
+  default:
+    fail(path + "/normalisation", "expected energy or none");
+  }
+  if (downmix.compensation != expectedCompensation) {
+    fail(
+        path + "/compensation",
+        "expected gain derived from Downmix normalisation");
+  }
+  std::vector<double> expectedLeftRow;
+  std::vector<double> expectedRightRow;
+  if (downmix.strategy == dsp::DownmixStrategy::select) {
+    expectedLeftRow = selectRow(*downmix.leftChannel, channels);
+    expectedRightRow = downmix.rightChannel.has_value()
+        ? selectRow(*downmix.rightChannel, channels)
+        : expectedLeftRow;
+  } else if (downmix.strategy == dsp::DownmixStrategy::halves) {
+    expectedLeftRow = halvesRow(channels, /*leftGroup=*/true);
+    expectedRightRow = halvesRow(channels, /*leftGroup=*/false);
+  } else if (downmix.strategy == dsp::DownmixStrategy::alternating) {
+    expectedLeftRow = alternatingRow(channels, /*leftGroup=*/true);
+    expectedRightRow = alternatingRow(channels, /*leftGroup=*/false);
+  } else {
+    auto matrix = resolveRandomOrthogonalMatrix(
+        channels, resolved.seed, orthogonalUsage);
+    if (!matrix.has_value()) {
+      fail(
+          path + "/strategy",
+          "RandomOrthogonal construction was singular or near-singular");
+    }
+    auto rows = extractDownmixRows(*matrix, channels);
+    expectedLeftRow = std::move(rows.left);
+    expectedRightRow = std::move(rows.right);
+  }
+  if (downmix.leftRow != expectedLeftRow) {
+    fail(
+        path + "/leftRow", "expected the unit-norm row derived from strategy");
+  }
+  if (downmix.rightRow != expectedRightRow) {
+    fail(
+        path + "/rightRow",
+        "expected the unit-norm row derived from strategy");
+  }
+  if (downmix.effectiveLeftRow !=
+      scaledRow(expectedLeftRow, downmix.compensation)) {
+    fail(
+        path + "/effectiveLeftRow", "expected leftRow scaled by compensation");
+  }
+  if (downmix.effectiveRightRow !=
+      scaledRow(expectedRightRow, downmix.compensation)) {
+    fail(
+        path + "/effectiveRightRow",
+        "expected rightRow scaled by compensation");
+  }
+  if (downmix.alignment != expectedAlignment) {
+    fail(
+        path + "/alignment",
+        "expected the Alignment expectation derived from Composition "
+        "wiring");
+  }
+  if (!std::isfinite(downmix.widthDeg) || downmix.widthDeg < 0.0 ||
+      downmix.widthDeg > 180.0) {
+    fail(path + "/widthDeg", "expected a finite value within [0, 180]");
+  }
+  if (downmix.widthMatrix != resolveWidthMatrix(downmix.widthDeg)) {
+    fail(path + "/widthMatrix", "expected the matrix derived from widthDeg");
+  }
+}
+
 void validateResolvedConfig(
     const dsp::ResolvedConfig& resolved,
     const ResolutionEvidence* const resolutionEvidence,
@@ -2856,6 +3075,19 @@ void validateResolvedConfig(
   }
   validateShape(resolved.composition);
   if (resolved.composition.stages.empty()) {
+    // Branch controls are invalid on the empty identity Composition
+    // (docs/design/reverb/stages/09-composition.md). mainEnabled/
+    // mainLevelDb are inert booleans/doubles Reverb never reads once
+    // stages are empty, but this public validator is also a direct,
+    // non-JSON entry point (see ResolveConfig.h) -- a populated `early`
+    // here would contradict the same invariant already enforced at the
+    // Requested/JSON boundaries, so it is rejected here too rather than
+    // silently accepted (issue #111).
+    if (resolved.composition.early.has_value()) {
+      fail(
+          "/composition/early",
+          "not applicable to the empty identity Composition");
+    }
     return;
   }
 
@@ -2886,7 +3118,7 @@ void validateResolvedConfig(
         "precision");
   }
   if (resolved.composition.mainGain !=
-      resolveMainGain(resolved.composition.mainLevelDb)) {
+      resolveLinearGainFromDb(resolved.composition.mainLevelDb)) {
     fail(
         "/composition/mainGain",
         "expected gain derived from mainLevelDb");
@@ -2967,11 +3199,16 @@ void validateResolvedConfig(
   const auto matrixElements = matrixElementCount(channels);
 
   auto containsFeedbackLoop = false;
+  // Captured for the Early Reflections branch below (issue #111): the
+  // Main wet path's own Diffuser, if any -- there is at most one per the
+  // shapes validateShape admits, so this pointer is unambiguous.
+  const dsp::ResolvedDiffuser* diffuserStage = nullptr;
   for (std::size_t stageIndex = 1; stageIndex < downmixIndex; ++stageIndex) {
     std::visit(
         [&](const auto& stage) {
           using Stage = std::decay_t<decltype(stage)>;
           if constexpr (std::is_same_v<Stage, dsp::ResolvedDiffuser>) {
+            diffuserStage = &stage;
             validateDiffuserStage(
                 resolved,
                 stage,
@@ -2999,148 +3236,62 @@ void validateResolvedConfig(
         resolved.composition.stages[stageIndex]);
   }
 
-  if (downmix.inputChannels != channels ||
-      downmix.outputChannels != 2) {
-    fail(
-        stagePath(downmixIndex),
-        "Downmix dimensions must map the internal Channels to stereo");
-  }
-  if (downmix.strategy == dsp::DownmixStrategy::select) {
-    if (!downmix.leftChannel.has_value()) {
-      fail(
-          stagePath(downmixIndex) + "/leftChannel",
-          "required field is missing");
-    }
-    if (*downmix.leftChannel >= channels) {
-      fail(
-          stagePath(downmixIndex) + "/leftChannel",
-          "expected a Channel index within [0, N)");
-    }
-    if (downmix.rightChannel.has_value()) {
-      if (*downmix.rightChannel >= channels) {
-        fail(
-            stagePath(downmixIndex) + "/rightChannel",
-            "expected a Channel index within [0, N)");
-      }
-      if (*downmix.rightChannel == *downmix.leftChannel) {
-        fail(
-            stagePath(downmixIndex) + "/rightChannel",
-            "expected a Channel distinct from leftChannel");
-      }
-    }
-  } else {
-    if (downmix.leftChannel.has_value()) {
-      fail(
-          stagePath(downmixIndex) + "/leftChannel",
-          std::string("not applicable to strategy ") +
-              downmixStrategyLabel(downmix.strategy));
-    }
-    if (downmix.rightChannel.has_value()) {
-      fail(
-          stagePath(downmixIndex) + "/rightChannel",
-          std::string("not applicable to strategy ") +
-              downmixStrategyLabel(downmix.strategy));
-    }
-    if (channels < 2) {
-      fail(
-          stagePath(downmixIndex) + "/strategy",
-          std::string(downmixStrategyLabel(downmix.strategy)) +
-              " requires at least two Channels");
-    }
-  }
-  if (!(downmix.compensation > 0.0) ||
-      !std::isfinite(downmix.compensation)) {
-    fail(
-        stagePath(downmixIndex) + "/compensation",
-        "expected finite positive gain");
-  }
-  double expectedCompensation = 0.0;
-  switch (downmix.normalisation) {
-  case dsp::EnergyNormalisation::energy:
-    expectedCompensation =
-        channels == 1
-            ? 1.0 / std::sqrt(2.0)
-            : std::sqrt(static_cast<double>(channels) / 2.0);
-    break;
-  case dsp::EnergyNormalisation::none:
-    expectedCompensation = 1.0;
-    break;
-  default:
-    fail(
-        stagePath(downmixIndex) + "/normalisation",
-        "expected energy or none");
-  }
-  if (downmix.compensation != expectedCompensation) {
-    fail(
-        stagePath(downmixIndex) + "/compensation",
-        "expected gain derived from Downmix normalisation");
-  }
-  std::vector<double> expectedLeftRow;
-  std::vector<double> expectedRightRow;
-  if (downmix.strategy == dsp::DownmixStrategy::select) {
-    expectedLeftRow = selectRow(*downmix.leftChannel, channels);
-    expectedRightRow = downmix.rightChannel.has_value()
-        ? selectRow(*downmix.rightChannel, channels)
-        : expectedLeftRow;
-  } else if (downmix.strategy == dsp::DownmixStrategy::halves) {
-    expectedLeftRow = halvesRow(channels, /*leftGroup=*/true);
-    expectedRightRow = halvesRow(channels, /*leftGroup=*/false);
-  } else if (downmix.strategy == dsp::DownmixStrategy::alternating) {
-    expectedLeftRow = alternatingRow(channels, /*leftGroup=*/true);
-    expectedRightRow = alternatingRow(channels, /*leftGroup=*/false);
-  } else {
-    auto matrix = resolveRandomOrthogonalMatrix(
-        channels, resolved.seed, kMainDownmixRandomOrthogonalUsage);
-    if (!matrix.has_value()) {
-      fail(
-          stagePath(downmixIndex) + "/strategy",
-          "RandomOrthogonal construction was singular or near-singular");
-    }
-    auto rows = extractDownmixRows(*matrix, channels);
-    expectedLeftRow = std::move(rows.left);
-    expectedRightRow = std::move(rows.right);
-  }
-  if (downmix.leftRow != expectedLeftRow) {
-    fail(
-        stagePath(downmixIndex) + "/leftRow",
-        "expected the unit-norm row derived from strategy");
-  }
-  if (downmix.rightRow != expectedRightRow) {
-    fail(
-        stagePath(downmixIndex) + "/rightRow",
-        "expected the unit-norm row derived from strategy");
-  }
-  if (downmix.effectiveLeftRow !=
-      scaledRow(expectedLeftRow, downmix.compensation)) {
-    fail(
-        stagePath(downmixIndex) + "/effectiveLeftRow",
-        "expected leftRow scaled by compensation");
-  }
-  if (downmix.effectiveRightRow !=
-      scaledRow(expectedRightRow, downmix.compensation)) {
-    fail(
-        stagePath(downmixIndex) + "/effectiveRightRow",
-        "expected rightRow scaled by compensation");
-  }
   const auto expectedAlignment = containsFeedbackLoop
       ? dsp::DownmixAlignment::unaligned
       : dsp::DownmixAlignment::aligned;
-  if (downmix.alignment != expectedAlignment) {
-    fail(
-        stagePath(downmixIndex) + "/alignment",
-        "expected the Alignment expectation derived from Composition "
-        "wiring");
-  }
-  if (!std::isfinite(downmix.widthDeg) || downmix.widthDeg < 0.0 ||
-      downmix.widthDeg > 180.0) {
-    fail(
-        stagePath(downmixIndex) + "/widthDeg",
-        "expected a finite value within [0, 180]");
-  }
-  if (downmix.widthMatrix != resolveWidthMatrix(downmix.widthDeg)) {
-    fail(
-        stagePath(downmixIndex) + "/widthMatrix",
-        "expected the matrix derived from widthDeg");
+  validateResolvedDownmixFields(
+      resolved,
+      downmix,
+      channels,
+      kMainDownmixRandomOrthogonalUsage,
+      expectedAlignment,
+      stagePath(downmixIndex));
+
+  // The parallel Early Reflections branch (issue #111): valid only when
+  // the Main wet path contains a Diffuser (docs/design/reverb/stages/
+  // 09-composition.md), its own tap must reference an in-range resolved
+  // Diffusion Step, and its Downmix is validated by the same shared field
+  // contract as Main's -- always an aligned Alignment expectation and its
+  // own domain-separated RandomOrthogonal usage tag.
+  if (resolved.composition.early.has_value()) {
+    const auto& early = *resolved.composition.early;
+    if (diffuserStage == nullptr) {
+      fail(
+          "/composition/early",
+          "requires the Main wet path to contain a Diffuser");
+    }
+    if (early.taps.size() != 1) {
+      fail("/composition/early/taps", "expected exactly one resolved tap");
+    }
+    if (early.taps.front().stepIndex >= diffuserStage->steps.size()) {
+      fail(
+          "/composition/early/taps/0/stepIndex",
+          "expected a Diffusion Step index within [0, stepCount)");
+    }
+    if (!std::isfinite(early.levelDb)) {
+      fail("/composition/early/levelDb", "expected a finite value");
+    }
+    // Checked at float precision regardless of this build's own Sample
+    // type, mirroring mainGain's own check above (issue #109).
+    const auto earlyGainAtFloatPrecision = static_cast<float>(early.gain);
+    if (!(early.gain > 0.0) || !std::isfinite(early.gain) ||
+        !std::isfinite(earlyGainAtFloatPrecision) ||
+        !(earlyGainAtFloatPrecision > 0.0f)) {
+      fail(
+          "/composition/early/gain",
+          "expected finite positive gain representable at float "
+          "precision");
+    }
+    if (early.gain != resolveLinearGainFromDb(early.levelDb)) {
+      fail("/composition/early/gain", "expected gain derived from levelDb");
+    }
+    validateResolvedDownmixFields(
+        resolved,
+        early.downmix,
+        channels,
+        kEarlyDownmixRandomOrthogonalUsage,
+        dsp::DownmixAlignment::aligned,
+        "/composition/early/downmix");
   }
 }
 

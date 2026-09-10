@@ -2752,6 +2752,443 @@ def main():
             workspace / f"main-extreme-level-{extreme_main_level_db}-result",
         )
 
+    # The parallel Early Reflections branch (issue #111, docs/design/
+    # reverb/stages/07-early-reflections.md and docs/design/reverb/
+    # stages/09-composition.md): Requested configuration, Resolved
+    # evidence, stereo WAV output, and replay covered end-to-end for one
+    # tap.
+    early_base_document = json.loads(json.dumps(main_base_document))
+    early_base_document["composition"]["early"] = {
+        "enabled": True,
+        "levelDb": -6.0,
+        "taps": [{"stepIndex": 0}],
+        "downmix": {
+            "strategy": "select",
+            "leftChannel": 0,
+            "rightChannel": 1,
+            "normalisation": "energy",
+        },
+    }
+    early_request = workspace / "early-request.json"
+    early_request_bytes = json.dumps(early_base_document).encode()
+    early_request.write_bytes(early_request_bytes)
+    early_result = workspace / "early-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_request,
+            "--output",
+            early_result,
+        )
+    )
+    if (early_result / "request.json").read_bytes() != early_request_bytes:
+        raise AssertionError(
+            "Early Reflections Render Result did not preserve the raw "
+            "request"
+        )
+
+    early_resolved_composition = json.loads(
+        (early_result / "resolved.json").read_text()
+    )["composition"]
+    early_composition = early_resolved_composition["early"]
+    expected_early_gain = 10.0 ** (-6.0 / 20.0)
+    if (
+        early_composition["enabled"] is not True
+        or early_composition["levelDb"] != -6.0
+        or abs(early_composition["gain"] - expected_early_gain) > 1e-9
+        or early_composition["taps"] != [{"stepIndex": 0}]
+        or early_composition["downmix"]["strategy"] != "select"
+        or early_composition["downmix"]["leftChannel"] != 0
+        or early_composition["downmix"]["rightChannel"] != 1
+        or early_composition["downmix"]["alignment"] != "aligned"
+    ):
+        raise AssertionError(
+            f"Resolved Configuration did not record the requested Early "
+            f"Reflections branch: {early_composition}"
+        )
+
+    early_output_channels, _ = read_float_wav(early_result / "output.wav")
+    if early_output_channels != 2:
+        raise AssertionError(
+            f"Early Reflections render did not produce stereo output: "
+            f"{early_output_channels} Channels"
+        )
+
+    # Replay from Resolved Configuration reproduces the exact same
+    # Requested-derived render.
+    early_rerender = workspace / "early-rerender"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            early_result / "resolved.json",
+            "--output",
+            early_rerender,
+        )
+    )
+    if (early_rerender / "resolved.json").read_bytes() != (
+        early_result / "resolved.json"
+    ).read_bytes():
+        raise AssertionError(
+            "Early Reflections resolved rerender changed configuration"
+        )
+    if (early_rerender / "output.wav").read_bytes() != (
+        early_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError("Early Reflections resolved rerender changed output")
+
+    # A present Early branch defaults to enabled, 0 dB, and a `select`
+    # Downmix of Channels 0/1 -- unlike the Main Downmix's own `select`,
+    # which has no implicit Channel choice (issue #107).
+    early_default_document = json.loads(json.dumps(main_base_document))
+    early_default_document["composition"]["early"] = {
+        "taps": [{"stepIndex": 0}]
+    }
+    early_default_request = workspace / "early-default-request.json"
+    early_default_request.write_text(json.dumps(early_default_document))
+    early_default_result = workspace / "early-default-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_default_request,
+            "--output",
+            early_default_result,
+        )
+    )
+    early_default_composition = json.loads(
+        (early_default_result / "resolved.json").read_text()
+    )["composition"]["early"]
+    if (
+        early_default_composition["enabled"] is not True
+        or early_default_composition["levelDb"] != 0.0
+        or early_default_composition["gain"] != 1.0
+        or early_default_composition["downmix"]["strategy"] != "select"
+        or early_default_composition["downmix"]["leftChannel"] != 0
+        or early_default_composition["downmix"]["rightChannel"] != 1
+    ):
+        raise AssertionError(
+            f"a present Early branch did not default to enabled/0 dB/"
+            f"select Channels 0-1: {early_default_composition}"
+        )
+
+    # Configuring the tap leaves the Diffuser's own Main output
+    # bit-identical: the captured Diffusion Step WAV is unaffected by
+    # whether an Early Reflections branch taps it.
+    no_early_capture_result = workspace / "early-no-capture-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            main_default_request,
+            "--capture-stages",
+            "all",
+            "--output",
+            no_early_capture_result,
+        )
+    )
+    early_capture_result = workspace / "early-capture-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_default_request,
+            "--capture-stages",
+            "all",
+            "--output",
+            early_capture_result,
+        )
+    )
+    if (
+        no_early_capture_result / "captures" / "01-diffusion-step-0.wav"
+    ).read_bytes() != (
+        early_capture_result / "captures" / "01-diffusion-step-0.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "configuring an Early tap changed the Diffuser's own captured "
+            "Main output"
+        )
+
+    # Early Reflections without a Diffuser are rejected.
+    early_without_diffuser_document = {
+        "formatVersion": 2,
+        "seed": 42,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 4,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {"type": "feedback-loop"},
+                {
+                    "type": "downmix",
+                    "strategy": "select",
+                    "leftChannel": 0,
+                    "rightChannel": 1,
+                    "normalisation": "energy",
+                },
+            ],
+            "early": {"taps": [{"stepIndex": 0}]},
+        },
+    }
+    early_without_diffuser_request = workspace / (
+        "early-without-diffuser-request.json"
+    )
+    early_without_diffuser_request.write_text(
+        json.dumps(early_without_diffuser_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_without_diffuser_request,
+            "--output",
+            workspace / "early-without-diffuser-result",
+        ),
+        "/composition/early: requires the Main wet path to contain a "
+        "Diffuser",
+        workspace / "early-without-diffuser-result",
+    )
+
+    # Diffuser-then-Feedback-Loop routes the tap in parallel too, and
+    # Early's own Downmix resolves an aligned Alignment expectation
+    # independently of the Main Downmix, which is unaligned when its
+    # source includes a Feedback Loop (issue #107).
+    early_loop_document = {
+        "formatVersion": 2,
+        "seed": 42,
+        "composition": {
+            "stages": [
+                {
+                    "type": "split",
+                    "channels": 4,
+                    "strategy": "duplicate",
+                    "normalisation": "energy",
+                },
+                {
+                    "type": "diffuser",
+                    "steps": 1,
+                    "totalMs": 1,
+                    "distribution": "even",
+                    "step": {
+                        "delayStrategy": "segmented-random",
+                        "mix": "hadamard",
+                        "shuffle": True,
+                        "polarity": "seeded-random",
+                    },
+                },
+                {"type": "feedback-loop"},
+                {
+                    "type": "downmix",
+                    "strategy": "select",
+                    "leftChannel": 0,
+                    "rightChannel": 1,
+                    "normalisation": "energy",
+                },
+            ],
+            "early": {"taps": [{"stepIndex": 0}]},
+        },
+    }
+    early_loop_request = workspace / "early-loop-request.json"
+    early_loop_request.write_text(json.dumps(early_loop_document))
+    early_loop_result = workspace / "early-loop-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_loop_request,
+            "--output",
+            early_loop_result,
+        )
+    )
+    early_loop_composition = json.loads(
+        (early_loop_result / "resolved.json").read_text()
+    )["composition"]
+    if (
+        early_loop_composition["stages"][3]["alignment"] != "unaligned"
+        or early_loop_composition["early"]["downmix"]["alignment"]
+        != "aligned"
+    ):
+        raise AssertionError(
+            "Early's Downmix did not resolve an aligned Alignment "
+            "expectation independently of an unaligned Main Downmix"
+        )
+    early_loop_output_channels, _ = read_float_wav(
+        early_loop_result / "output.wav"
+    )
+    if early_loop_output_channels != 2:
+        raise AssertionError(
+            "Diffuser-then-Feedback-Loop with Early Reflections did not "
+            "render stereo output"
+        )
+
+    # Exactly one tap is accepted this milestone (#111); a second is
+    # rejected until #112's canonical multi-tap resolution lands.
+    early_two_taps_document = json.loads(json.dumps(main_base_document))
+    early_two_taps_document["composition"]["early"] = {
+        "taps": [{"stepIndex": 0}, {"stepIndex": 0}]
+    }
+    early_two_taps_request = workspace / "early-two-taps-request.json"
+    early_two_taps_request.write_text(json.dumps(early_two_taps_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_two_taps_request,
+            "--output",
+            workspace / "early-two-taps-result",
+        ),
+        "/composition/early/taps: expected exactly one tap",
+        workspace / "early-two-taps-result",
+    )
+
+    # Branch controls without any tap are rejected: they could not
+    # affect sound.
+    early_no_taps_document = json.loads(json.dumps(main_base_document))
+    early_no_taps_document["composition"]["early"] = {"enabled": False}
+    early_no_taps_request = workspace / "early-no-taps-request.json"
+    early_no_taps_request.write_text(json.dumps(early_no_taps_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_no_taps_request,
+            "--output",
+            workspace / "early-no-taps-result",
+        ),
+        "/composition/early: enabled/levelDb/downmix are not applicable "
+        "without at least one tap",
+        workspace / "early-no-taps-result",
+    )
+
+    # Early Reflections controls are rejected on the empty identity
+    # Composition, mirroring mainEnabled/mainLevelDb (#109).
+    early_empty_document = {
+        "formatVersion": 2,
+        "composition": {"early": {"taps": [{"stepIndex": 0}]}},
+    }
+    early_empty_request = workspace / "early-empty-request.json"
+    early_empty_request.write_text(json.dumps(early_empty_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_empty_request,
+            "--output",
+            workspace / "early-empty-result",
+        ),
+        "/composition/early: not applicable to the empty identity "
+        "Composition",
+        workspace / "early-empty-result",
+    )
+
+    # An out-of-range tap stepIndex is rejected: this Diffuser has one
+    # step (index 0), so index 1 does not exist.
+    early_out_of_range_document = json.loads(json.dumps(main_base_document))
+    early_out_of_range_document["composition"]["early"] = {
+        "taps": [{"stepIndex": 1}]
+    }
+    early_out_of_range_request = workspace / "early-out-of-range-request.json"
+    early_out_of_range_request.write_text(
+        json.dumps(early_out_of_range_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_out_of_range_request,
+            "--output",
+            workspace / "early-out-of-range-result",
+        ),
+        "/composition/early/taps/0/stepIndex: expected a Diffusion Step "
+        "index within [0, stepCount)",
+        workspace / "early-out-of-range-result",
+    )
+
+    # Early's own `downmix` bypasses the composition.stages dispatcher
+    # that normally requires and checks `type` before ever parsing a
+    # Downmix (PR review on #111): a requested `downmix` whose `type`
+    # names a different stage is rejected rather than silently accepted
+    # as a Downmix.
+    early_wrong_type_document = json.loads(json.dumps(main_base_document))
+    early_wrong_type_document["composition"]["early"] = {
+        "taps": [{"stepIndex": 0}],
+        "downmix": {
+            "type": "feedback-loop",
+            "strategy": "select",
+            "leftChannel": 0,
+            "rightChannel": 1,
+        },
+    }
+    early_wrong_type_request = workspace / "early-wrong-type-request.json"
+    early_wrong_type_request.write_text(json.dumps(early_wrong_type_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            early_wrong_type_request,
+            "--output",
+            workspace / "early-wrong-type-result",
+        ),
+        "/composition/early/downmix/type: expected downmix",
+        workspace / "early-wrong-type-result",
+    )
+
+    # On replay, resolved.json always serializes `type: "downmix"` for
+    # every Downmix (unlike a request, where Early's own `downmix` never
+    # carries `type` in the documented examples), so a resolved Early
+    # `downmix` missing `type` entirely is rejected too.
+    early_resolved_missing_type = json.loads(
+        (early_result / "resolved.json").read_text()
+    )
+    del early_resolved_missing_type["composition"]["early"]["downmix"]["type"]
+    early_resolved_missing_type_path = workspace / (
+        "early-resolved-missing-type.json"
+    )
+    early_resolved_missing_type_path.write_text(
+        json.dumps(early_resolved_missing_type)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            early_resolved_missing_type_path,
+            "--output",
+            workspace / "early-resolved-missing-type-result",
+        ),
+        "/composition/early/downmix/type: required field is missing",
+        workspace / "early-resolved-missing-type-result",
+    )
+
     invalid_ablation_resolved = []
     invalid_source_gain = json.loads(json.dumps(ablation_resolved))
     invalid_source_gain["composition"]["stages"][0]["sourceGain"] = 0.5
