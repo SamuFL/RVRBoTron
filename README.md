@@ -642,6 +642,39 @@ Cancellation can make measured support narrower than the structural bound;
 it never rejects a render for falling outside it. Publication is
 append-only and idempotent, like every other analyzer here.
 
+For any Composition's Main and (if configured) Early Downmix, render with
+`--capture-stages all` and add the spatial-output Downmix artifact (issue
+#115) -- it works across every Downmix strategy and either Alignment
+expectation, with or without a Feedback Loop:
+
+```bash
+python3 tools/analyze_downmix.py build/downmix-result --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+```
+
+`analysis/downmix-v1.json` reports the Main branch's (and, when
+configured, the Early branch's) resolved strategy, Alignment expectation,
+and Coherent Downmix ablation tag (`coherentDownmixAblation`, issue #114)
+read directly from `resolved.json` rather than re-derived; a measured
+Alignment score, `analyze_diffusion.py`'s own octave-band-independent
+spectral deviation against the same N-Channel source's aggregate power,
+and actual width-energy change, all only when a Diffusion Step is that
+Downmix's own immediate input -- an unaligned source (a Feedback Loop
+between the Diffuser and Downmix, or no Diffuser at all) has no
+equivalent capture (ADR-0005), so these three are reported unavailable
+there rather than measured against the wrong signal, and a damped tail
+never receives an "absolute flatness" claim from this analyzer as a
+result. It also reports Output correlation and inter-channel level
+difference on the combined stereo output, branch energies and their
+cross term reconciled against combined energy (captured immediately
+before summation, issue #113), a peak factor, and equal-power mono
+fold-down (energy loss and octave-band spectral deviation between the
+folded signal and the stereo pair it was folded from) -- reusing
+`analyze_tail.py`'s own established raised-cosine octave-band filter for
+every spectral comparison here, rather than a fresh per-bin binning
+scheme, so deviation is a stable quantity independent of FFT length.
+None of this evidence imposes an acoustic rejection threshold. Publication
+is append-only and idempotent.
+
 For a Composition containing a Feedback Loop, add the separate tail
 artifact instead -- the diffusion analyzer's all-pass, feedback-free
 assumptions do not hold once the tail is present, so it is deliberately not
