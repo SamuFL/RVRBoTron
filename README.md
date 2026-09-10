@@ -277,7 +277,7 @@ is recorded in `resolved.json` alongside the Feedback Loop's own.
 
 | Field | Values | Default |
 | --- | --- | --- |
-| `strategy` | `"select"` \| `"orthogonal-rows"` \| `"halves"` \| `"alternating"` | `"select"` |
+| `strategy` | `"select"` \| `"orthogonal-rows"` \| `"halves"` \| `"alternating"` \| `"sum-all"` | `"select"` |
 | `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to any other strategy |
 | `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to any other strategy |
 | `normalisation` | `"energy"` \| `"none"` | `"energy"` |
@@ -301,14 +301,28 @@ disjoint groups -- `halves` puts the first `ceil(N/2)` Channels left and
 the remainder right; `alternating` puts even indices left and odd indices
 right -- and each non-empty group gets equal `1/sqrt(groupSize)`
 coefficients, so an odd N produces two unequal-size but still unit-norm
-rows. `orthogonal-rows`, `halves`, and `alternating` each require N at
-least 2 and reject `leftChannel`/`rightChannel` if either is present.
-Resolved Configuration records every strategy's rows as
+rows. `sum-all` (issue #114) instead duplicates one `1/sqrt(N)` row,
+identical across every Channel, to both left and right -- the diagnostic
+Coherent Downmix ablation: summing an aligned source coherently
+reinforces it rather than the decorrelated cancellation-free sum an
+unaligned source produces, and configuration renders it rather than
+rejecting it -- see docs/design/reverb/stages/08-downmix.md's "Two source
+signals, two rules". `orthogonal-rows`, `halves`,
+and `alternating` each require N at least 2 and reject
+`leftChannel`/`rightChannel` if either is present; `select` and `sum-all`
+both support N as low as 1 (`sum-all`'s single-Channel row is `[1.0]`,
+identical to `select`'s own N=1 mono duplication once compensation is
+applied). Resolved Configuration records every strategy's rows as
 `leftRow`/`rightRow` (unit norm) and
 `effectiveLeftRow`/`effectiveRightRow` (scaled by `compensation`), plus
 each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
 from Composition wiring rather than settable by request: aligned for a
 Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
+It also records a `coherentDownmixAblation` boolean (issue #114), true
+only for `sum-all` on an aligned source -- derived from `strategy` and
+`alignment` together, never from the strategy name alone, so the same
+`sum-all` request resolves `coherentDownmixAblation: false` once its
+source includes a Feedback Loop.
 
 `delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
 `polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for

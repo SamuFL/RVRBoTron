@@ -135,6 +135,146 @@ def dft_power_spectrum(samples):
     return power
 
 
+def sum_all_row(channels):
+    # `sum-all` (#114): equal `1/sqrt(channels)` coefficients over every
+    # Channel, the same row duplicated to both L and R -- an independent
+    # Python re-derivation of src/config/ResolveConfig.cpp's sumAllRow,
+    # for comparing against the rendered resolved.json rather than
+    # reusing that C++ code.
+    coefficient = 1.0 / math.sqrt(channels)
+    return [coefficient] * channels
+
+
+def alignment_score(channel_frames, activity_floor_db=-120.0):
+    # Alignment score (#114, CONTEXT.md's "pairwise overlap of active
+    # arrival times between Channels, measured independently of amplitude
+    # sign") -- an independent Python re-derivation of
+    # tools/analyze_diffusion.py's alignment_evidence/activity_floor,
+    # given per-Channel sample lists (e.g. a deinterleaved Diffusion Step
+    # capture) rather than a NumPy array.
+    peak = max(
+        (abs(value) for samples in channel_frames for value in samples),
+        default=0.0,
+    )
+    floor = peak * (10.0 ** (activity_floor_db / 20.0))
+    active = [
+        [abs(value) > floor for value in samples] for samples in channel_frames
+    ]
+    channels = len(active)
+    scores = []
+    for channel_a in range(channels):
+        for channel_b in range(channel_a + 1, channels):
+            union = intersection = 0
+            for a, b in zip(active[channel_a], active[channel_b]):
+                if a or b:
+                    union += 1
+                    if a and b:
+                        intersection += 1
+            # Two Channels with no activity at all trivially agree.
+            scores.append(1.0 if union == 0 else intersection / union)
+    return {
+        "mean": (sum(scores) / len(scores)) if scores else 1.0,
+        "minimum": min(scores) if scores else 1.0,
+    }
+
+
+def mono_fold_down_evidence(left, right):
+    # Equal-power mono fold-down (docs/design/reverb/stages/08-downmix.md:
+    # "mono = (L + R) / sqrt(2)"), reporting folded energy relative to
+    # stereo energy so cancellation is visible without an acoustic
+    # rejection threshold (#114).
+    half = 1.0 / math.sqrt(2.0)
+    mono = [(l + r) * half for l, r in zip(left, right)]
+    mono_energy = math.fsum(v * v for v in mono)
+    stereo_energy = math.fsum(v * v for v in left) + math.fsum(
+        v * v for v in right
+    )
+    ratio = (
+        0.0
+        if stereo_energy <= 0.0
+        else mono_energy / stereo_energy
+    )
+    return {
+        "monoEnergy": mono_energy,
+        "stereoEnergy": stereo_energy,
+        "foldedEnergyRatio": ratio,
+    }
+
+
+def peak_factor(samples):
+    # A crest-factor-style "peak factor" (#114): peak absolute sample over
+    # RMS amplitude, comparable between a coherent `sum-all` render and its
+    # matched `select` control -- coherent reinforcement raises peaks
+    # relative to RMS.
+    if not samples:
+        return 0.0
+    peak = max(abs(value) for value in samples)
+    rms = math.sqrt(math.fsum(value * value for value in samples) / len(samples))
+    return peak / rms if rms > 0.0 else 0.0
+
+
+OCTAVE_BAND_START_HZ = 20.0
+
+
+def octave_band_powers(power, sample_rate, fft_length):
+    # Groups a raw per-bin power spectrum (dft_power_spectrum's own
+    # output: bin k at k * sample_rate / fft_length Hz) into full-octave
+    # bands centered at 20 Hz * 2**band, so a comparison between two
+    # spectra is a stable, perceptually-grouped quantity rather than one
+    # that depends on the raw per-bin FFT resolution (issue #114's PR
+    # review: "the resulting max/RMS values therefore depend on FFT
+    # length"). One octave wide rather than tools/analyze_diffusion.py's
+    # twelfth-octave Coloration curve -- an independent Python
+    # re-derivation of that same idea, for this stdlib-only test file,
+    # at the coarser band width docs/design/reverb/stages/08-downmix.md
+    # itself names ("octave-band spectral deviation").
+    nyquist = sample_rate / 2.0
+    bands = []
+    band = 0
+    while True:
+        center = OCTAVE_BAND_START_HZ * (2.0**band)
+        if center > nyquist:
+            break
+        low = OCTAVE_BAND_START_HZ * (2.0 ** (band - 0.5))
+        high = OCTAVE_BAND_START_HZ * (2.0 ** (band + 0.5))
+        bands.append(
+            math.fsum(
+                value
+                for index, value in enumerate(power)
+                if low <= (index * sample_rate / fft_length) < high
+            )
+        )
+        band += 1
+    return bands
+
+
+def spectral_deviation_evidence(left, right, aggregate_source_power, sample_rate):
+    # Octave-band spectral deviation of the downmixed L/R power spectra
+    # against the same N-Channel source's aggregate power spectrum
+    # (docs/design/reverb/stages/08-downmix.md's "Mono compatibility"
+    # section and issue #114's own evidence requirement) -- the same
+    # comparison the orthogonal-rows fixture above makes, factored out
+    # for reuse by the sum-all/select matched comparison below.
+    fft_length = len(left)
+    left_power = dft_power_spectrum(left)
+    right_power = dft_power_spectrum(right)
+    combined_bands = octave_band_powers(
+        [l + r for l, r in zip(left_power, right_power)], sample_rate, fft_length
+    )
+    aggregate_bands = octave_band_powers(
+        aggregate_source_power, sample_rate, fft_length
+    )
+    deviations = [
+        abs(combined - aggregate)
+        for combined, aggregate in zip(combined_bands, aggregate_bands)
+    ]
+    max_deviation = max(deviations)
+    rms_deviation = math.sqrt(
+        math.fsum(value * value for value in deviations) / len(deviations)
+    )
+    return max_deviation, rms_deviation
+
+
 def run_renderer(renderer: Path, *arguments: str):
     return subprocess.run(
         [str(renderer), "render", *map(str, arguments)],
@@ -429,6 +569,7 @@ def main():
         "alignment": "aligned",
         "widthDeg": 90.0,
         "widthMatrix": [1.0, 0.0, 0.0, 1.0],
+        "coherentDownmixAblation": False,
     }:
         raise AssertionError(f"unexpected resolved Downmix: {stages[2]}")
 
@@ -1842,22 +1983,8 @@ def main():
                 total + value
                 for total, value in zip(aggregate_source_power, channel_power)
             ]
-        left_power = dft_power_spectrum(left)
-        right_power = dft_power_spectrum(right)
-        deviations = [
-            abs(l + r - aggregate)
-            for l, r, aggregate in zip(
-                left_power, right_power, aggregate_source_power
-            )
-        ]
-        if not all(math.isfinite(value) for value in deviations):
-            raise AssertionError(
-                f"orthogonal-rows spectral deviation is not finite at "
-                f"N={orthogonal_rows_channels}"
-            )
-        max_deviation = max(deviations)
-        rms_deviation = math.sqrt(
-            math.fsum(value * value for value in deviations) / len(deviations)
+        max_deviation, rms_deviation = spectral_deviation_evidence(
+            left, right, aggregate_source_power, 48000
         )
         if not (math.isfinite(max_deviation) and math.isfinite(rms_deviation)):
             raise AssertionError(
@@ -2352,6 +2479,517 @@ def main():
             f"not applicable to strategy {strategy_name}",
             workspace / f"{strategy_name}-with-left-channel-result",
         )
+
+    # `sum-all` (#114): the diagnostic Coherent Downmix ablation -- the
+    # same `1/sqrt(N)` row duplicated to both L and R. Unlike halves/
+    # alternating/orthogonal-rows, it supports N>=1 like `select`
+    # (docs/design/reverb/stages/08-downmix.md), so N=1 is exercised
+    # directly here rather than rejected. Each Diffuser-only (aligned) N
+    # fixture verifies rows/compensation/alignment/replay, an Alignment
+    # score measured on its own captured Diffusion Step, a Coherent
+    # Downmix ablation tag derived from strategy *and* resolved alignment
+    # together (never the strategy name alone), and mono fold-down/peak
+    # factor/spectral deviation evidence. N=4 also renders a matched
+    # `select` control to compare peak factor and spectral deviation as a
+    # non-fatal warning; the other N values instead demonstrate that the
+    # comparison is reported unavailable absent a control.
+    for sum_all_channels in (1, 4, 8):
+        sum_all_request_path = workspace / (
+            f"sum-all-{sum_all_channels}-request.json"
+        )
+        sum_all_result = workspace / f"sum-all-{sum_all_channels}-result"
+        sum_all_rerender = workspace / f"sum-all-{sum_all_channels}-rerender"
+        sum_all_request_path.write_text(
+            json.dumps(
+                {
+                    "formatVersion": 2,
+                    "seed": 42,
+                    "composition": {
+                        "stages": [
+                            {
+                                "type": "split",
+                                "channels": sum_all_channels,
+                                "strategy": "duplicate",
+                                "normalisation": "energy",
+                            },
+                            {
+                                "type": "diffuser",
+                                "steps": 1,
+                                "totalMs": 1,
+                                "distribution": "even",
+                                "step": {
+                                    "delayStrategy": "segmented-random",
+                                    # Householder (unlike the default
+                                    # Hadamard) is valid at N=1.
+                                    "mix": "householder",
+                                    "shuffle": True,
+                                    "polarity": "seeded-random",
+                                },
+                            },
+                            {
+                                "type": "downmix",
+                                "strategy": "sum-all",
+                                "normalisation": "energy",
+                            },
+                        ]
+                    },
+                }
+            )
+        )
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                sum_all_request_path,
+                "--capture-stages",
+                "all",
+                "--output",
+                sum_all_result,
+            )
+        )
+        sum_all_downmix = json.loads(
+            (sum_all_result / "resolved.json").read_text()
+        )["composition"]["stages"][2]
+        if "leftChannel" in sum_all_downmix or "rightChannel" in sum_all_downmix:
+            raise AssertionError(
+                f"sum-all resolved a Channel selection it has no use for: "
+                f"{sum_all_downmix}"
+            )
+        expected_compensation = (
+            1.0 / math.sqrt(2.0)
+            if sum_all_channels == 1
+            else math.sqrt(sum_all_channels / 2.0)
+        )
+        if (
+            sum_all_downmix["strategy"] != "sum-all"
+            or abs(sum_all_downmix["compensation"] - expected_compensation)
+            > 1e-9
+            or sum_all_downmix["alignment"] != "aligned"
+        ):
+            raise AssertionError(
+                f"unexpected sum-all resolved Downmix at N="
+                f"{sum_all_channels}: {sum_all_downmix}"
+            )
+        expected_row = sum_all_row(sum_all_channels)
+        for row_name in ("leftRow", "rightRow"):
+            actual_row = sum_all_downmix[row_name]
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(actual_row, expected_row)
+            ):
+                raise AssertionError(
+                    f"sum-all {row_name} did not match the expected "
+                    f"duplicated 1/sqrt(N) row at N={sum_all_channels}: "
+                    f"{sum_all_downmix}"
+                )
+        if sum_all_downmix["leftRow"] != sum_all_downmix["rightRow"]:
+            raise AssertionError(
+                f"sum-all leftRow/rightRow were not the same duplicated "
+                f"row at N={sum_all_channels}: {sum_all_downmix}"
+            )
+        for row_name, effective_row_name in (
+            ("leftRow", "effectiveLeftRow"),
+            ("rightRow", "effectiveRightRow"),
+        ):
+            expected_effective_row = [
+                value * expected_compensation
+                for value in sum_all_downmix[row_name]
+            ]
+            actual_effective_row = sum_all_downmix[effective_row_name]
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(
+                    actual_effective_row, expected_effective_row
+                )
+            ):
+                raise AssertionError(
+                    f"{effective_row_name} did not match {row_name} scaled "
+                    f"by compensation at N={sum_all_channels}: "
+                    f"{sum_all_downmix}"
+                )
+
+        # A Coherent Downmix ablation tag (issue #114): resolved.json's
+        # own `coherentDownmixAblation` field (production code --
+        # ResolveConfig.cpp's resolveCoherentDownmixAblation, derived from
+        # strategy *and* resolved Alignment together, never the strategy
+        # name alone) is asserted directly here, not re-derived from
+        # strategy/alignment inside the test, so this genuinely exercises
+        # the emitted artifact rather than a tautology. Given the
+        # strategy/alignment checks above already confirmed "sum-all"/
+        # "aligned", the field must be True; the matching Feedback-Loop
+        # fixture below confirms the *same* emitted field is False once
+        # the source is unaligned.
+        if sum_all_downmix["coherentDownmixAblation"] is not True:
+            raise AssertionError(
+                f"aligned sum-all's own coherentDownmixAblation field was "
+                f"not True at N={sum_all_channels}: {sum_all_downmix}"
+            )
+
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--resolved",
+                sum_all_result / "resolved.json",
+                "--output",
+                sum_all_rerender,
+            )
+        )
+        if (sum_all_rerender / "resolved.json").read_bytes() != (
+            sum_all_result / "resolved.json"
+        ).read_bytes():
+            raise AssertionError(
+                f"sum-all resolved rerender changed configuration at N="
+                f"{sum_all_channels}"
+            )
+        if (sum_all_rerender / "output.wav").read_bytes() != (
+            sum_all_result / "output.wav"
+        ).read_bytes():
+            raise AssertionError(
+                f"sum-all resolved rerender changed output at N="
+                f"{sum_all_channels}"
+            )
+
+        output_channels, output_samples = read_float_wav(
+            sum_all_result / "output.wav"
+        )
+        diffusion_channels, diffusion_samples = read_float_wav(
+            sum_all_result / "captures" / "01-diffusion-step-0.wav"
+        )
+        if output_channels != 2 or diffusion_channels != sum_all_channels:
+            raise AssertionError(
+                f"unexpected Channel counts at N={sum_all_channels}: "
+                f"output={output_channels}, "
+                f"captured diffusion-step={diffusion_channels}"
+            )
+        left, right = deinterleave(2, output_samples)
+        source_channels = deinterleave(sum_all_channels, diffusion_samples)
+
+        # Alignment score (#114): measured on the captured Diffusion Step
+        # feeding this Downmix, independent of Downmix strategy itself --
+        # reported alongside the Alignment expectation above rather than
+        # conflated with it (CONTEXT.md's "Alignment score" entry).
+        score = alignment_score(source_channels)
+        if not (
+            0.0 <= score["mean"] <= 1.0 and 0.0 <= score["minimum"] <= 1.0
+        ):
+            raise AssertionError(
+                f"sum-all Alignment score is not a valid Jaccard overlap "
+                f"at N={sum_all_channels}: {score}"
+            )
+
+        fold_down = mono_fold_down_evidence(left, right)
+        if not math.isfinite(fold_down["foldedEnergyRatio"]):
+            raise AssertionError(
+                f"sum-all mono fold-down ratio is not finite at N="
+                f"{sum_all_channels}: {fold_down}"
+            )
+        sum_all_peak_factor = peak_factor(list(left) + list(right))
+        if not math.isfinite(sum_all_peak_factor):
+            raise AssertionError(
+                f"sum-all peak factor is not finite at N={sum_all_channels}: "
+                f"{sum_all_peak_factor}"
+            )
+        aggregate_source_power = [0.0] * (len(left) // 2 + 1)
+        for channel_samples in source_channels:
+            channel_power = dft_power_spectrum(channel_samples)
+            aggregate_source_power = [
+                total + value
+                for total, value in zip(aggregate_source_power, channel_power)
+            ]
+        sum_all_max_deviation, sum_all_rms_deviation = (
+            spectral_deviation_evidence(
+                left, right, aggregate_source_power, 48000
+            )
+        )
+        if not (
+            math.isfinite(sum_all_max_deviation)
+            and math.isfinite(sum_all_rms_deviation)
+        ):
+            raise AssertionError(
+                f"sum-all spectral deviation is not finite at N="
+                f"{sum_all_channels}: {sum_all_max_deviation}, "
+                f"{sum_all_rms_deviation}"
+            )
+
+        evidence = {
+            "channels": sum_all_channels,
+            "alignmentExpectation": sum_all_downmix["alignment"],
+            "alignmentScore": score,
+            "coherentDownmixAblation": sum_all_downmix["coherentDownmixAblation"],
+            "monoFoldDown": fold_down,
+            "peakFactor": sum_all_peak_factor,
+            "spectralMaxDeviation": sum_all_max_deviation,
+            "spectralRmsDeviation": sum_all_rms_deviation,
+        }
+
+        # A matched `select` control (issue #114): rendered from the same
+        # Diffuser-only Composition and seed, differing only in Downmix
+        # strategy, so peak factor and spectral deviation can be compared
+        # directly. Exercised once (N=4) to keep the render count
+        # bounded; the other N values instead demonstrate the AC's own
+        # "absent a control, the report states that comparison is
+        # unavailable".
+        if sum_all_channels == 4:
+            control_document = json.loads(sum_all_request_path.read_text())
+            control_document["composition"]["stages"][2] = {
+                "type": "downmix",
+                "strategy": "select",
+                "leftChannel": 0,
+                "rightChannel": 1,
+                "normalisation": "energy",
+            }
+            control_request = workspace / "sum-all-4-control-request.json"
+            control_request.write_text(json.dumps(control_document))
+            control_result = workspace / "sum-all-4-control-result"
+            require_success(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--config",
+                    control_request,
+                    "--capture-stages",
+                    "all",
+                    "--output",
+                    control_result,
+                )
+            )
+            control_downmix = json.loads(
+                (control_result / "resolved.json").read_text()
+            )["composition"]["stages"][2]
+            if control_downmix["strategy"] != "select":
+                raise AssertionError(
+                    f"matched control did not resolve select: "
+                    f"{control_downmix}"
+                )
+            _, control_output_samples = read_float_wav(
+                control_result / "output.wav"
+            )
+            control_left, control_right = deinterleave(
+                2, control_output_samples
+            )
+            control_peak_factor = peak_factor(
+                list(control_left) + list(control_right)
+            )
+            control_max_deviation, control_rms_deviation = (
+                spectral_deviation_evidence(
+                    control_left, control_right, aggregate_source_power, 48000
+                )
+            )
+            if not (
+                math.isfinite(control_peak_factor)
+                and math.isfinite(control_max_deviation)
+                and math.isfinite(control_rms_deviation)
+            ):
+                raise AssertionError(
+                    f"matched select control evidence is not finite: "
+                    f"{control_peak_factor}, {control_max_deviation}, "
+                    f"{control_rms_deviation}"
+                )
+            evidence["comparativeControl"] = {
+                "available": True,
+                "controlStrategy": "select",
+                "peakFactorDelta": sum_all_peak_factor - control_peak_factor,
+                "spectralMaxDeviationDelta": (
+                    sum_all_max_deviation - control_max_deviation
+                ),
+                "spectralRmsDeviationDelta": (
+                    sum_all_rms_deviation - control_rms_deviation
+                ),
+                # Non-fatal: a comparative warning, never a Render Result
+                # rejection (issue #114's "No acoustic measurement or
+                # warning rejects the Render Result").
+                "warning": (
+                    "aligned sum-all coherently reinforces Channels that a "
+                    "matched select control keeps separate; compare peak "
+                    "factor and spectral deviation before treating this "
+                    "as a defect"
+                ),
+            }
+        else:
+            evidence["comparativeControl"] = {
+                "available": False,
+                "reason": "no matched select control provided",
+            }
+
+        evidence_path = workspace / f"sum-all-{sum_all_channels}-evidence.json"
+        evidence_path.write_text(json.dumps(evidence, indent=2))
+
+    # normalisation: "none" omits only the common compensation scalar --
+    # rows stay the same unit-norm intrinsic rows as under "energy", but
+    # compensation and the effective rows collapse to 1.0/row itself
+    # (#114, matching orthogonal-rows/halves/alternating's own contract
+    # above). Uses the last loop iteration's N=8 fixture.
+    sum_all_none_document = json.loads(sum_all_request_path.read_text())
+    sum_all_none_document["composition"]["stages"][2]["normalisation"] = "none"
+    sum_all_none_request = workspace / "sum-all-none-request.json"
+    sum_all_none_request.write_text(json.dumps(sum_all_none_document))
+    sum_all_none_result = workspace / "sum-all-none-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            sum_all_none_request,
+            "--output",
+            sum_all_none_result,
+        )
+    )
+    sum_all_none_downmix = json.loads(
+        (sum_all_none_result / "resolved.json").read_text()
+    )["composition"]["stages"][2]
+    if (
+        sum_all_none_downmix["normalisation"] != "none"
+        or sum_all_none_downmix["compensation"] != 1.0
+        or sum_all_none_downmix["leftRow"] != sum_all_none_downmix["effectiveLeftRow"]
+        or sum_all_none_downmix["rightRow"] != sum_all_none_downmix["effectiveRightRow"]
+    ):
+        raise AssertionError(
+            f"unexpected sum-all none-normalisation resolved Downmix: "
+            f"{sum_all_none_downmix}"
+        )
+
+    # leftChannel/rightChannel are select-specific: providing either
+    # alongside sum-all is rejected, not silently ignored (#114, matching
+    # halves/alternating's own contract above).
+    sum_all_with_left_channel_document = json.loads(
+        (workspace / "sum-all-4-request.json").read_text()
+    )
+    sum_all_with_left_channel_document["composition"]["stages"][2][
+        "leftChannel"
+    ] = 0
+    sum_all_with_left_channel_request = (
+        workspace / "sum-all-with-left-channel-request.json"
+    )
+    sum_all_with_left_channel_request.write_text(
+        json.dumps(sum_all_with_left_channel_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            sum_all_with_left_channel_request,
+            "--output",
+            workspace / "sum-all-with-left-channel-result",
+        ),
+        "/composition/stages/2/leftChannel: not applicable to strategy sum-all",
+        workspace / "sum-all-with-left-channel-result",
+    )
+
+    # sum-all through a Feedback Loop (#114): Alignment expectation is
+    # derived from Composition wiring, so a source that includes a
+    # Feedback Loop must resolve unaligned, and the same strategy name
+    # must then *not* be tagged as a Coherent Downmix ablation -- proving
+    # the tag is never derived from the strategy name alone. This
+    # unaligned fixture also supplies Output correlation and
+    # inter-channel level difference evidence (docs/design/reverb/
+    # stages/08-downmix.md: "Tests use seeded unaligned fixtures").
+    sum_all_unaligned_request = workspace / "sum-all-unaligned-request.json"
+    sum_all_unaligned_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 2,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 4,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {"type": "feedback-loop"},
+                        {
+                            "type": "downmix",
+                            "strategy": "sum-all",
+                            "normalisation": "energy",
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    sum_all_unaligned_result = workspace / "sum-all-unaligned-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--config",
+            sum_all_unaligned_request,
+            "--output",
+            sum_all_unaligned_result,
+        )
+    )
+    sum_all_unaligned_downmix = json.loads(
+        (sum_all_unaligned_result / "resolved.json").read_text()
+    )["composition"]["stages"][2]
+    if sum_all_unaligned_downmix["alignment"] != "unaligned":
+        raise AssertionError(
+            f"sum-all Feedback Loop Downmix did not resolve unaligned: "
+            f"{sum_all_unaligned_downmix}"
+        )
+    # The same emitted `coherentDownmixAblation` field asserted directly
+    # above (not re-derived here either) must be False for this fixture:
+    # the strategy name is still "sum-all", but Alignment now resolves
+    # "unaligned", proving production code never tags solely from the
+    # strategy name.
+    unaligned_tag = sum_all_unaligned_downmix["coherentDownmixAblation"]
+    if unaligned_tag is not False:
+        raise AssertionError(
+            f"unaligned sum-all's own coherentDownmixAblation field was "
+            f"not False: {sum_all_unaligned_downmix}"
+        )
+    _, sum_all_unaligned_samples = read_float_wav(
+        sum_all_unaligned_result / "output.wav"
+    )
+    unaligned_left, unaligned_right = deinterleave(
+        2, sum_all_unaligned_samples
+    )
+    # sum-all's leftRow/rightRow are the same duplicated row by
+    # construction (asserted above), so L and R are always bit-identical
+    # regardless of Alignment: correlation is trivially 1.0 and level
+    # difference trivially 0 dB. Still reported, as the AC requires, but
+    # expected to be a structural constant rather than a varying
+    # measurement -- unlike peak factor and spectral deviation above,
+    # which the matched-control comparison actually distinguishes.
+    unaligned_correlation = zero_lag_correlation(unaligned_left, unaligned_right)
+    unaligned_level_difference_db = inter_channel_level_difference_db(
+        unaligned_left, unaligned_right
+    )
+    if (
+        not math.isfinite(unaligned_correlation)
+        or abs(unaligned_correlation) > 1.0 + 1e-9
+    ):
+        raise AssertionError(
+            f"sum-all Output correlation is not a valid correlation "
+            f"coefficient: {unaligned_correlation}"
+        )
+    if not math.isfinite(unaligned_level_difference_db):
+        raise AssertionError(
+            f"sum-all inter-channel level difference is not finite: "
+            f"{unaligned_level_difference_db}"
+        )
+    unaligned_evidence_path = workspace / "sum-all-unaligned-evidence.json"
+    unaligned_evidence_path.write_text(
+        json.dumps(
+            {
+                "channels": 4,
+                "alignmentExpectation": sum_all_unaligned_downmix["alignment"],
+                "coherentDownmixAblation": unaligned_tag,
+                "outputCorrelation": unaligned_correlation,
+                "interChannelLevelDifferenceDb": unaligned_level_difference_db,
+            },
+            indent=2,
+        )
+    )
 
     # Main wet path enablement, level, and Width (#109): docs/design/
     # reverb/stages/09-composition.md's mainEnabled/mainLevelDb and

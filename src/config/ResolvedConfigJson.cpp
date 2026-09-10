@@ -36,6 +36,8 @@ const char* downmixStrategyName(const dsp::DownmixStrategy strategy) {
     return "halves";
   case dsp::DownmixStrategy::alternating:
     return "alternating";
+  case dsp::DownmixStrategy::sumAll:
+    return "sum-all";
   }
   throw HarnessError(
       ErrorCategory::invalidConfiguration,
@@ -310,6 +312,7 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
       {"alignment", downmixAlignmentName(downmix.alignment)},
       {"widthDeg", downmix.widthDeg},
       {"widthMatrix", downmix.widthMatrix},
+      {"coherentDownmixAblation", downmix.coherentDownmixAblation},
   };
   // leftChannel/rightChannel are `select`-specific (issue #108) and,
   // within `select`, an omitted rightChannel means mono duplication

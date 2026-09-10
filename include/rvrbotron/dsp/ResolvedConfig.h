@@ -40,6 +40,10 @@ enum class DownmixStrategy {
   orthogonalRows,
   halves,
   alternating,
+  // The diagnostic Coherent Downmix ablation (issue #114): the same
+  // `1/sqrt(N)` row duplicated to both L/R. Supports N>=1, like `select`,
+  // unlike halves/alternating/orthogonalRows, which require N>=2.
+  sumAll,
 };
 
 // Whether a Downmix's source Channels carry independent echo times
@@ -332,6 +336,13 @@ struct ResolvedDownmix {
   // serialized so replay never recomputes trigonometry.
   double widthDeg = 90.0;
   std::vector<double> widthMatrix;
+  // True only for `sum-all` on an aligned source (issue #114): derived
+  // from `strategy` *and* `alignment` together, never from the strategy
+  // name alone -- the same strategy through a Feedback Loop resolves
+  // `alignment: unaligned` and this stays false. Serialized so analysis
+  // and reports read this fact from Resolved Configuration rather than
+  // re-deriving it from strategy/alignment independently.
+  bool coherentDownmixAblation = false;
 };
 
 using ResolvedStage = std::variant<
