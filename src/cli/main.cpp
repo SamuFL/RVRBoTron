@@ -657,7 +657,7 @@ void render(const RenderArguments& arguments) {
           tailBudgetFrames,
           arguments.blockSize,
           arguments.captureAllStages
-              ? std::optional<std::string>{"all-v1"}
+              ? std::optional<std::string>{"all-v2"}
               : std::nullopt,
           std::move(stageCaptures),
       });

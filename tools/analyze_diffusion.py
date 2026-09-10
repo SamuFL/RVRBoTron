@@ -341,7 +341,7 @@ def analyze(render_result, source_path):
             f"expected {expected_frames} frames"
         )
     captures = metadata.get("stageCaptures")
-    if metadata.get("stageCaptureProfile") != "all-v1" or not captures:
+    if metadata.get("stageCaptureProfile") != "all-v2" or not captures:
         raise ValueError("diffusion analysis requires --capture-stages all")
 
     split_capture = None

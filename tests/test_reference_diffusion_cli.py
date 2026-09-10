@@ -154,7 +154,7 @@ def main():
         raise AssertionError("Stage capture changed output.wav")
 
     captured_metadata = json.loads((captured / "render.json").read_text())
-    if captured_metadata["stageCaptureProfile"] != "all-v1":
+    if captured_metadata["stageCaptureProfile"] != "all-v2":
         raise AssertionError("render metadata did not record capture profile")
     # No Early Reflections branch is configured, so only the N-Channel
     # Split/Diffusion-Step captures and the always-present Main-stereo

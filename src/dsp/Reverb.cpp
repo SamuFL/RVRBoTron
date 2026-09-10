@@ -168,10 +168,12 @@ void Reverb::process(const Sample* const* inputs,
     // caller-sorted array handed to the Diffuser below, populated as a
     // side effect of its normal per-step processing -- never perturbing
     // the Diffuser's own Main output, and never entering the Feedback
-    // Loop.
+    // Loop. A disabled Early branch skips this setup entirely (issue
+    // #113): otherwise the Diffuser would still run its per-tap
+    // accumulation loop for taps whose result is never read.
     const DiffuserEarlyTap* earlyTaps = nullptr;
     std::size_t earlyTapCount = 0;
-    if (state.early != nullptr) {
+    if (state.early != nullptr && state.early->enabled()) {
       state.early->beginFrame();
       earlyTaps = state.early->taps();
       earlyTapCount = state.early->tapCount();
