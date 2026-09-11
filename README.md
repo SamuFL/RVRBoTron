@@ -609,8 +609,9 @@ python3 tools/analyze_diffusion.py \
 ```
 
 `analysis/diffusion-v1.json` verifies source and Stage-capture provenance,
-requires `inputFrames + resolved diffuser.totalSamples` frames in the output
-and every capture, measures the actual captured Split and cumulative Diffusion
+requires `inputFrames + preDelayFrames + resolved diffuser.totalSamples`
+frames in the output and every capture, measures the actual captured Split
+and cumulative Diffusion
 Step energies (including each step's relative error from Split), and measures
 orthogonality from every serialized resolved matrix (Hadamard, Householder, or
 RandomOrthogonal alike). Python does not reconstruct Split mapping or DSP

@@ -463,7 +463,14 @@ def analyze(render_result, source_path):
             f'{output["frameCount"]}'
         )
 
-    expected_frames = metadata["inputFrames"] + metadata["tailBudgetFrames"]
+    # Total drain is inputFrames + preDelayFrames + tailBudgetFrames
+    # (Pre-delay's own additional drain, issue #133); preDelayFrames
+    # defaults to 0 for a render.json predating Pre-delay.
+    expected_frames = (
+        metadata["inputFrames"]
+        + metadata.get("preDelayFrames", 0)
+        + metadata["tailBudgetFrames"]
+    )
     silence_floor_enabled = loop.get("silenceFloorDb") is not None
     if silence_floor_enabled:
         if metadata["frames"] > expected_frames:
@@ -486,8 +493,14 @@ def analyze(render_result, source_path):
 
     decay = analyze_tail_v2.decay_evidence(frames, sample_rate, loop, damping)
     decay_tilt = decay_tilt_evidence(decay["bands"], loop["rt60Sec"])
+    # The tail window must start once real source material has finished
+    # arriving at the wet path, not at inputFrames itself: Pre-delay
+    # (issue #133) keeps delayed source samples entering Split until
+    # inputFrames + preDelayFrames.
     bounded_energy = bounded_energy_evidence(
-        frames, sample_rate, metadata["inputFrames"]
+        frames,
+        sample_rate,
+        metadata["inputFrames"] + metadata.get("preDelayFrames", 0),
     )
     summed = frames[:, 0] + frames[:, 1]
     coherent_pitch_movement = coherent_pitch_movement_evidence(

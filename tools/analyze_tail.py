@@ -379,8 +379,17 @@ def analyze(render_result, source_path):
     sample_rate = metadata["sampleRate"]
 
     decay = decay_evidence(frames, sample_rate, loop["rt60Sec"])
+    # The decay envelope's own "post-input" window must start once real
+    # source material has finished arriving at the wet path, not at
+    # inputFrames itself: Pre-delay (issue #133) keeps delayed source
+    # samples entering Split until inputFrames + preDelayFrames, and a
+    # window starting earlier would span still-arriving signal and
+    # already-decaying tail together, which is not the render's own
+    # decay evidence this check exists to verify.
     decay_envelope = decay_envelope_evidence(
-        frames, sample_rate, metadata["inputFrames"]
+        frames,
+        sample_rate,
+        metadata["inputFrames"] + metadata.get("preDelayFrames", 0),
     )
 
     peak, floor = analyze_diffusion.activity_floor(frames)

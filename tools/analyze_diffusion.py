@@ -329,7 +329,14 @@ def analyze(render_result, source_path):
     total_samples = diffuser["totalSamples"]
     if not isinstance(total_samples, int) or total_samples < 0:
         raise ValueError("resolved Diffuser totalSamples is invalid")
-    expected_frames = metadata["inputFrames"] + total_samples
+    # inputFrames + preDelayFrames + the Diffuser's own finite response
+    # (Pre-delay's own additional drain, issue #133); preDelayFrames
+    # defaults to 0 for a render.json predating Pre-delay.
+    expected_frames = (
+        metadata["inputFrames"]
+        + metadata.get("preDelayFrames", 0)
+        + total_samples
+    )
     if metadata["frames"] != expected_frames:
         raise ValueError(
             "render metadata does not contain the complete finite response: "
