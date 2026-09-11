@@ -445,6 +445,16 @@ struct ResolvedComposition {
   double wetDb = 0.0;
   double wetGain = 1.0;
   bool wetOnly = true;
+  // Pre-delay (issue #133): the single delay before Split, completing
+  // the Composition envelope. Moot and unserialized for the empty
+  // identity Composition, exactly like the fields above.
+  // `preDelaySamples` is `preDelayMs` resolved by the established
+  // nearest-frame rule (`floor(exactSamples + 0.5)`), recorded
+  // explicitly so rerendering never repeats the floating-point
+  // conversion. ADR-0007's legacy neutral reading extends to zero
+  // Pre-delay -- the same values as these defaults.
+  double preDelayMs = 0.0;
+  std::uint64_t preDelaySamples = 0;
 };
 
 // The Main wet path's own resolved Diffuser stage, if any -- absent for a

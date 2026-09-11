@@ -791,7 +791,8 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
        "early",
        "dryDb",
        "wetDb",
-       "wetOnly"});
+       "wetOnly",
+       "preDelayMs"});
 
   config::CompositionConfig composition;
   if (value.contains("stages")) {
@@ -859,6 +860,11 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
           "/composition/wetOnly",
           "not applicable to the empty identity Composition");
     }
+    if (value.contains("preDelayMs")) {
+      fail(
+          "/composition/preDelayMs",
+          "not applicable to the empty identity Composition");
+    }
     return composition;
   }
 
@@ -887,6 +893,11 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
   if (value.contains("wetOnly")) {
     composition.wetOnly =
         parseBoolean(value.at("wetOnly"), "/composition/wetOnly");
+  }
+  // Pre-delay (issue #133) completes the envelope set above.
+  if (value.contains("preDelayMs")) {
+    composition.preDelayMs =
+        parseNumber(value.at("preDelayMs"), "/composition/preDelayMs");
   }
   return composition;
 }
@@ -1554,7 +1565,9 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
        "wetDb",
        "wetOnly",
        "dryGain",
-       "wetGain"});
+       "wetGain",
+       "preDelayMs",
+       "preDelaySamples"});
   requireField(value, "stages", "/composition");
   const auto& stages = value.at("stages");
   requireArray(stages, "/composition/stages");
@@ -1604,7 +1617,13 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
           "not applicable to the empty identity Composition");
     }
     for (const char* field :
-         {"dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"}) {
+         {"dryDb",
+          "wetDb",
+          "wetOnly",
+          "dryGain",
+          "wetGain",
+          "preDelayMs",
+          "preDelaySamples"}) {
       if (value.contains(field)) {
         fail(
             std::string("/composition/") + field,
@@ -1628,17 +1647,24 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
         parseResolvedEarly(value.at("early"), "/composition/early");
   }
 
-  // The Composition's own dry/wet envelope (issue #114, ADR-0007): a
-  // non-empty format-v2 Resolved Composition may omit the complete
-  // envelope set entirely as legacy neutral behavior (the defaults
-  // dsp::ResolvedComposition already carries: wetOnly true, dryDb/wetDb
-  // 0, dryGain/wetGain 1.0) -- so accumulated evidence predating this
+  // The Composition's own dry/wet envelope, completed by Pre-delay
+  // (issues #114/#133, ADR-0007): a non-empty format-v2 Resolved
+  // Composition may omit the complete envelope set entirely as legacy
+  // neutral behavior (the defaults dsp::ResolvedComposition already
+  // carries: wetOnly true, dryDb/wetDb/preDelayMs 0, dryGain/wetGain 1.0,
+  // preDelaySamples 0) -- so accumulated evidence predating this
   // envelope needs no migration. A partial set is hand-corrupted or
   // truncated evidence, never a legitimate complete artifact, and is
   // rejected outright rather than guessed at.
   const char* const envelopeFields[]{
-      "dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"};
-  constexpr std::size_t envelopeFieldCount = 5;
+      "dryDb",
+      "wetDb",
+      "wetOnly",
+      "dryGain",
+      "wetGain",
+      "preDelayMs",
+      "preDelaySamples"};
+  constexpr std::size_t envelopeFieldCount = 7;
   std::size_t presentEnvelopeFields = 0;
   for (const char* field : envelopeFields) {
     if (value.contains(field)) {
@@ -1652,7 +1678,8 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
         fail(
             std::string("/composition/") + field,
             "expected the complete envelope set (dryDb/wetDb/wetOnly/"
-            "dryGain/wetGain) when any envelope field is present");
+            "dryGain/wetGain/preDelayMs/preDelaySamples) when any "
+            "envelope field is present");
       }
     }
   }
@@ -1667,6 +1694,10 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
         parseNumber(value.at("dryGain"), "/composition/dryGain");
     composition.wetGain =
         parseNumber(value.at("wetGain"), "/composition/wetGain");
+    composition.preDelayMs =
+        parseNumber(value.at("preDelayMs"), "/composition/preDelayMs");
+    composition.preDelaySamples = parseUnsigned64(
+        value.at("preDelaySamples"), "/composition/preDelaySamples");
   }
   return composition;
 }

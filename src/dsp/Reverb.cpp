@@ -1,5 +1,6 @@
 #include "rvrbotron/dsp/Reverb.h"
 
+#include "rvrbotron/dsp/DelayLine.h"
 #include "rvrbotron/dsp/Diffuser.h"
 #include "rvrbotron/dsp/Downmix.h"
 #include "rvrbotron/dsp/EarlyReflections.h"
@@ -43,6 +44,13 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   bool dryEnabled = false;
   Sample dryGain{1};
   Sample wetGain{1};
+  // Pre-delay (issue #133): the single delay before Split. Moot while
+  // `identity` is true. Null when preDelaySamples is zero -- DelayLine's
+  // own read()/write() are only valid for a Channel with delaySamples()
+  // > 0, and zero Pre-delay must bypass delay processing entirely
+  // rather than construct a degenerate zero-length buffer.
+  std::uint64_t preDelaySamples = 0;
+  std::unique_ptr<DelayLine> preDelayLine;
 
   std::unique_ptr<Split> split;
   std::unique_ptr<Diffuser> diffuser;
@@ -100,6 +108,16 @@ Reverb::Reverb(const ResolvedConfig& config,
   state.dryEnabled = !config.composition.wetOnly;
   state.dryGain = static_cast<Sample>(config.composition.dryGain);
   state.wetGain = static_cast<Sample>(config.composition.wetGain);
+  state.preDelaySamples = config.composition.preDelaySamples;
+  if (state.preDelaySamples > 0) {
+    // Sized exactly to the resolved delay, no headroom: Pre-delay is a
+    // single fixed integer-sample delay, never modulated or fractionally
+    // read (issue #133), unlike the Feedback Loop/Diffusion Step's own
+    // DelayLine usage.
+    state.preDelayLine = std::make_unique<DelayLine>(
+        std::vector<std::uint64_t>(state.inputChannels, state.preDelaySamples),
+        std::vector<std::uint64_t>(state.inputChannels, state.preDelaySamples));
+  }
   state.split = std::make_unique<Split>(split);
 
   // Middle stages: none, a Diffuser alone, a Feedback Loop alone, or a
@@ -169,8 +187,31 @@ void Reverb::process(const Sample* const* inputs,
       state.blockSizeBound == 0 ||
       frameCount <= state.blockSizeBound);
 
+  // Pre-delay (issue #133): a single delay before Split, applied to the
+  // source feeding the wet path only -- dry keeps reading `inputs`
+  // directly below, undelayed. Read before write per Channel, mirroring
+  // FeedbackLoop's own DelayLine usage, though Pre-delay has no cross-
+  // Channel coupling for that ordering to protect. Declared once outside
+  // the frame loop; only its contents change per frame, never its shape,
+  // so this allocates nothing regardless of preDelayLine's presence.
+  Sample preDelayedFrame[2]{};
+  const Sample* const preDelayedFramePointers[]{
+      &preDelayedFrame[0], &preDelayedFrame[1]};
+
   for (std::size_t frame = 0; frame < frameCount; ++frame) {
-    state.split->processFrame(inputs, frame, state.splitValues.data());
+    const Sample* const* splitInputs = inputs;
+    std::size_t splitFrame = frame;
+    if (state.preDelayLine != nullptr) {
+      for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+        preDelayedFrame[channel] = state.preDelayLine->read(channel);
+      }
+      for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+        state.preDelayLine->write(channel, inputs[channel][frame]);
+      }
+      splitInputs = preDelayedFramePointers;
+      splitFrame = 0;
+    }
+    state.split->processFrame(splitInputs, splitFrame, state.splitValues.data());
     if (state.captureSink != nullptr) {
       state.captureSink->captureFrame(
           StageCaptureBoundary::split,
@@ -326,11 +367,18 @@ std::uint64_t Reverb::tailBudgetFrames() const noexcept {
   return implementation_->tailFrames;
 }
 
+std::uint64_t Reverb::preDelayFrames() const noexcept {
+  return implementation_->preDelaySamples;
+}
+
 std::size_t Reverb::ownedBytes() const noexcept {
   const auto& state = *implementation_;
   std::size_t total = sizeof(state) + ownedVectorBytes(state.splitValues) +
                       ownedVectorBytes(state.midStageValues) +
                       ownedVectorBytes(state.diffuserOutputValues);
+  if (state.preDelayLine != nullptr) {
+    total += state.preDelayLine->ownedStorageBytes();
+  }
   if (state.split != nullptr) {
     total += state.split->ownedBytes();
   }

@@ -207,6 +207,7 @@ build/default/rvrbotron render \
 | `composition.dryDb` | finite number (dB) | `0` | The Composition's own dry level (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Stays legal and preserved while `wetOnly` gates it off; Resolved Configuration additionally records the derived linear `dryGain`. |
 | `composition.wetDb` | finite number (dB) | `0` | The Composition's own global wet level, applied once to the complete Wet sum (Main plus Early) before dry is mixed in (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived linear `wetGain`. |
 | `composition.wetOnly` | boolean | `true` | An exact gate on the dry path (issue #131): `true` (the default, reproducing every pre-envelope render) mutes dry regardless of `dryDb`; `false` maps dry into the mix, stereo input channel-for-channel and mono duplicated to both channels without energy compensation. Not applicable, and rejected, when `composition.stages` is empty. |
+| `composition.preDelayMs` | finite number (ms), 0-200 | `0` | A single delay before Split, applied to the wet path only; dry stays sample-aligned from frame zero (issue #133). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived integer `preDelaySamples` (the established nearest-frame rule), separate from Render Result's own `tailBudgetFrames`. |
 
 #### `split` stage
 

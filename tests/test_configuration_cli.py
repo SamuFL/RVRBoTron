@@ -39,6 +39,30 @@ def read_float_wav(path: Path):
     return channels, samples
 
 
+def write_float32_wav(path: Path, sample_rate: int, channels: int, samples):
+    # A minimal canonical IEEE float32 RIFF/WAVE file -- the renderer's
+    # own accepted input format, mirroring tests/fixtures/
+    # generate_wav_matrix.py's make_wav rather than introducing a second
+    # WAV-writing convention.
+    audio = struct.pack("<" + "f" * len(samples), *samples)
+    bytes_per_sample = 4
+    block_align = channels * bytes_per_sample
+    fmt = struct.pack(
+        "<HHIIHH",
+        3,
+        channels,
+        sample_rate,
+        sample_rate * block_align,
+        block_align,
+        bytes_per_sample * 8,
+    )
+    chunks = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack("<I", len(audio)) + audio
+    if len(audio) % 2:
+        chunks += b"\x00"
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(chunks) + 4) + b"WAVE" + chunks)
+
+
 def deinterleave(channels: int, samples):
     return [samples[channel::channels] for channel in range(channels)]
 
@@ -3035,6 +3059,7 @@ def main():
         ("dryDb", -6.0),
         ("wetDb", -6.0),
         ("wetOnly", False),
+        ("preDelayMs", 20.0),
     ):
         empty_with_field_document = {
             "formatVersion": 2,
@@ -3102,6 +3127,14 @@ def main():
     ):
         raise AssertionError(
             f"unexpected default dry/wet envelope: {main_default_composition}"
+        )
+    # Pre-delay (#133) completes the envelope: 0 ms / 0 sample default.
+    if (
+        main_default_composition["preDelayMs"] != 0.0
+        or main_default_composition["preDelaySamples"] != 0
+    ):
+        raise AssertionError(
+            f"unexpected default Pre-delay: {main_default_composition}"
         )
     _, main_default_output_samples = read_float_wav(
         main_default_result / "output.wav"
@@ -3290,7 +3323,15 @@ def main():
     envelope_resolved_composition = json.loads(
         (envelope_requested_result / "resolved.json").read_text()
     )["composition"]
-    for envelope_field in ("dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"):
+    for envelope_field in (
+        "dryDb",
+        "wetDb",
+        "wetOnly",
+        "dryGain",
+        "wetGain",
+        "preDelayMs",
+        "preDelaySamples",
+    ):
         if envelope_field not in envelope_resolved_composition:
             raise AssertionError(
                 f"newly emitted resolved.json omitted {envelope_field}"
@@ -3322,7 +3363,15 @@ def main():
     legacy_resolved_document = json.loads(
         (main_default_result / "resolved.json").read_text()
     )
-    for envelope_field in ("dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"):
+    for envelope_field in (
+        "dryDb",
+        "wetDb",
+        "wetOnly",
+        "dryGain",
+        "wetGain",
+        "preDelayMs",
+        "preDelaySamples",
+    ):
         del legacy_resolved_document["composition"][envelope_field]
     legacy_resolved_path = workspace / "legacy-resolved.json"
     legacy_resolved_path.write_text(json.dumps(legacy_resolved_document))
@@ -3433,6 +3482,281 @@ def main():
                 workspace
                 / f"envelope-extreme-{extreme_field}-{extreme_level}-result",
             )
+
+    # Pre-delay (#133, docs/design/reverb/stages/09-composition.md's
+    # "Pre-delay and dry/wet"): completes the Composition envelope.
+    pre_delay_ms = 0.5
+    pre_delay_samples = 24  # 0.5ms @ 48kHz is exact.
+
+    pre_delay_document = envelope_document(
+        {"wetOnly": False, "preDelayMs": pre_delay_ms}
+    )
+    pre_delay_result = render_envelope_document(
+        pre_delay_document, fixture, "pre-delay"
+    )
+    pre_delay_composition = json.loads(
+        (pre_delay_result / "resolved.json").read_text()
+    )["composition"]
+    if (
+        pre_delay_composition["preDelayMs"] != pre_delay_ms
+        or pre_delay_composition["preDelaySamples"] != pre_delay_samples
+    ):
+        raise AssertionError(
+            f"preDelayMs: {pre_delay_ms} did not resolve the expected "
+            f"nearest-frame sample count: {pre_delay_composition}"
+        )
+    pre_delay_metadata = json.loads(
+        (pre_delay_result / "render.json").read_text()
+    )
+    if pre_delay_metadata["preDelayFrames"] != pre_delay_samples:
+        raise AssertionError(
+            f"render.json did not carry the resolved preDelayFrames: "
+            f"{pre_delay_metadata}"
+        )
+    if pre_delay_metadata["frames"] != (
+        pre_delay_metadata["inputFrames"]
+        + pre_delay_metadata["preDelayFrames"]
+        + pre_delay_metadata["tailBudgetFrames"]
+    ):
+        raise AssertionError(
+            f"total output length was not inputFrames + preDelayFrames + "
+            f"tailBudgetFrames: {pre_delay_metadata}"
+        )
+
+    # The wet path receives silence for exactly the resolved Pre-delay
+    # interval before the (delayed) source reaches Split; the dry signal
+    # stays sample-aligned from frame zero. Verified by exact equivalence
+    # against a reference fed a manually zero-padded copy of the same
+    # source at zero Pre-delay, using the "split" Stage capture -- and,
+    # separately, frame zero of output.wav, where wet is still exact
+    # silence, isolating dry directly.
+    #
+    # Every local name below is prefixed pre_delay_ (not the shorter
+    # names this pattern would otherwise suggest, e.g. reference_result):
+    # this function is one long flat scope, and a handful of short,
+    # generic names -- reference_request/reference_result chief among
+    # them -- are already established and reused hundreds of lines
+    # further down, so reusing them here would silently overwrite state
+    # later tests still depend on.
+    #
+    # read_float_wav decodes canonical IEEE float WAVs only (matching
+    # analyze_diffusion.numpy_frames' own contract); stereo_fixture is
+    # float32, unlike the mono PCM16 fixture used for the JSON-only
+    # checks above.
+    pre_delay_source_channels, pre_delay_source_samples = read_float_wav(
+        stereo_fixture
+    )
+    pre_delay_padded_source = (
+        0.0,
+    ) * (pre_delay_samples * pre_delay_source_channels) + tuple(
+        pre_delay_source_samples
+    )
+    pre_delay_padded_source_path = workspace / "pre-delay-padded-source.wav"
+    write_float32_wav(
+        pre_delay_padded_source_path,
+        48000,
+        pre_delay_source_channels,
+        pre_delay_padded_source,
+    )
+
+    pre_delay_capture_document = json.loads(json.dumps(pre_delay_document))
+    pre_delay_capture_request = workspace / "pre-delay-capture-request.json"
+    pre_delay_capture_request.write_text(json.dumps(pre_delay_capture_document))
+    pre_delay_capture_result = workspace / "pre-delay-capture-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            stereo_fixture,
+            "--config",
+            pre_delay_capture_request,
+            "--capture-stages",
+            "all",
+            "--output",
+            pre_delay_capture_result,
+        )
+    )
+
+    pre_delay_zero_reference_document = json.loads(json.dumps(pre_delay_document))
+    del pre_delay_zero_reference_document["composition"]["preDelayMs"]
+    pre_delay_zero_reference_request = workspace / (
+        "pre-delay-zero-reference-request.json"
+    )
+    pre_delay_zero_reference_request.write_text(
+        json.dumps(pre_delay_zero_reference_document)
+    )
+    pre_delay_zero_reference_result = workspace / "pre-delay-zero-reference-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            pre_delay_padded_source_path,
+            "--config",
+            pre_delay_zero_reference_request,
+            "--capture-stages",
+            "all",
+            "--output",
+            pre_delay_zero_reference_result,
+        )
+    )
+
+    def pre_delay_split_capture_samples(result_dir):
+        metadata = json.loads((result_dir / "render.json").read_text())
+        split_capture = next(
+            capture
+            for capture in metadata["stageCaptures"]
+            if capture["boundary"] == "split"
+        )
+        return read_float_wav(result_dir / split_capture["path"])
+
+    (
+        pre_delay_split_channels,
+        pre_delay_split_samples,
+    ) = pre_delay_split_capture_samples(pre_delay_capture_result)
+    (
+        pre_delay_zero_reference_split_channels,
+        pre_delay_zero_reference_split_samples,
+    ) = pre_delay_split_capture_samples(pre_delay_zero_reference_result)
+    if (
+        pre_delay_split_channels != pre_delay_zero_reference_split_channels
+        or pre_delay_split_samples != pre_delay_zero_reference_split_samples
+    ):
+        raise AssertionError(
+            "Pre-delay did not reproduce a manually zero-padded, "
+            "zero-Pre-delay reference at the split Stage capture"
+        )
+    pre_delay_silent_prefix_samples = pre_delay_split_channels * pre_delay_samples
+    if any(
+        value != 0.0
+        for value in pre_delay_split_samples[:pre_delay_silent_prefix_samples]
+    ):
+        raise AssertionError(
+            "the wet path was not exact silence during the resolved "
+            "Pre-delay interval"
+        )
+
+    _, pre_delay_output_samples = read_float_wav(
+        pre_delay_capture_result / "output.wav"
+    )
+    pre_delay_expected_dry_frame_zero = tuple(
+        pre_delay_source_samples[channel]
+        for channel in range(pre_delay_source_channels)
+    )
+    if (
+        pre_delay_output_samples[:pre_delay_source_channels]
+        != pre_delay_expected_dry_frame_zero
+    ):
+        raise AssertionError(
+            "dry was not sample-aligned from frame zero under a nonzero "
+            "Pre-delay"
+        )
+
+    # Rerendering from resolved.json is bit-identical for a nonzero
+    # Pre-delay too, and the complete envelope set is recorded.
+    for envelope_field in (
+        "dryDb",
+        "wetDb",
+        "wetOnly",
+        "dryGain",
+        "wetGain",
+        "preDelayMs",
+        "preDelaySamples",
+    ):
+        if envelope_field not in pre_delay_composition:
+            raise AssertionError(
+                f"newly emitted resolved.json omitted {envelope_field}"
+            )
+    pre_delay_rerendered_result = workspace / "pre-delay-rerendered-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            pre_delay_result / "resolved.json",
+            "--output",
+            pre_delay_rerendered_result,
+        )
+    )
+    if (pre_delay_rerendered_result / "output.wav").read_bytes() != (
+        pre_delay_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "rerendering a nonzero Pre-delay from resolved.json was not "
+            "bit-identical"
+        )
+
+    # Modulation advances while the initial silence traverses the wet
+    # path: a modulated Pre-delay render is deterministic and repeatable
+    # (Repeat determinism, CONTEXT.md) -- proven directly here, without
+    # asserting any byte-shift equivalence to a zero-Pre-delay
+    # configuration, which #133 explicitly does not require.
+    modulated_pre_delay_document = envelope_document(
+        {"wetOnly": False, "preDelayMs": pre_delay_ms}
+    )
+    modulated_pre_delay_document["composition"]["stages"][1]["stepOverrides"] = [
+        {"index": 0, "modulation": {"depthMs": 0.01, "rateHz": 5.0}}
+    ]
+    modulated_pre_delay_result_a = render_envelope_document(
+        modulated_pre_delay_document, stereo_fixture, "modulated-pre-delay-a"
+    )
+    modulated_pre_delay_result_b = render_envelope_document(
+        modulated_pre_delay_document, stereo_fixture, "modulated-pre-delay-b"
+    )
+    if (modulated_pre_delay_result_a / "output.wav").read_bytes() != (
+        modulated_pre_delay_result_b / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "a modulated Pre-delay render was not deterministic and "
+            "repeatable"
+        )
+
+    # Out-of-range preDelayMs is rejected.
+    for invalid_pre_delay_ms in (-1.0, 201.0):
+        invalid_document = envelope_document({"preDelayMs": invalid_pre_delay_ms})
+        invalid_request = workspace / (
+            f"pre-delay-invalid-{invalid_pre_delay_ms}-request.json"
+        )
+        invalid_request.write_text(json.dumps(invalid_document))
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--config",
+                invalid_request,
+                "--output",
+                workspace / f"pre-delay-invalid-{invalid_pre_delay_ms}-result",
+            ),
+            "/composition/preDelayMs: expected a finite value within "
+            "0-200 ms",
+            workspace / f"pre-delay-invalid-{invalid_pre_delay_ms}-result",
+        )
+
+    # A preDelaySamples inconsistent with its preDelayMs is rejected at
+    # the Composition path, naming the derivation it violates.
+    inconsistent_resolved_document = json.loads(
+        (pre_delay_result / "resolved.json").read_text()
+    )
+    inconsistent_resolved_document["composition"]["preDelaySamples"] += 1
+    inconsistent_resolved_path = workspace / "pre-delay-inconsistent-resolved.json"
+    inconsistent_resolved_path.write_text(
+        json.dumps(inconsistent_resolved_document)
+    )
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            inconsistent_resolved_path,
+            "--output",
+            workspace / "pre-delay-inconsistent-result",
+        ),
+        "/composition/preDelaySamples: expected samples derived from "
+        "preDelayMs by the nearest-frame rule",
+        workspace / "pre-delay-inconsistent-result",
+    )
 
     # Width (#109): endpoint identity (0/90/180) and an intermediate
     # angle, each checked against the resolved matrix and replayed from

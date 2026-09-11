@@ -564,6 +564,7 @@ void render(const RenderArguments& arguments) {
   std::uint64_t inputFrames = 0;
   std::uint64_t renderedFrames = 0;
   std::uint64_t tailBudgetFrames = 0;
+  std::uint64_t preDelayFrames = 0;
 
   {
     rvrbotron::io::WavWriter writer(
@@ -606,7 +607,13 @@ void render(const RenderArguments& arguments) {
     }
 
     tailBudgetFrames = reverb.tailBudgetFrames();
-    std::uint64_t remainingTail = tailBudgetFrames;
+    preDelayFrames = reverb.preDelayFrames();
+    // Pre-delay (issue #133) pushes the wet path's own onset later, so
+    // its response also finishes later: draining tailBudgetFrames alone
+    // past EOF would truncate that delayed energy. tailBudgetFrames
+    // itself keeps its existing decay-only meaning; preDelayFrames is
+    // additional drain, not folded into it.
+    std::uint64_t remainingTail = preDelayFrames + tailBudgetFrames;
     std::fill(
         inputSamples.begin(),
         inputSamples.end(),
@@ -654,6 +661,7 @@ void render(const RenderArguments& arguments) {
           static_cast<std::uint32_t>(outputChannelCount),
           inputFrames,
           renderedFrames,
+          preDelayFrames,
           tailBudgetFrames,
           arguments.blockSize,
           arguments.captureAllStages

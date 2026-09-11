@@ -395,6 +395,9 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
     document["wetOnly"] = composition.wetOnly;
     document["dryGain"] = composition.dryGain;
     document["wetGain"] = composition.wetGain;
+    // Pre-delay (issue #133) completes the envelope set above.
+    document["preDelayMs"] = composition.preDelayMs;
+    document["preDelaySamples"] = composition.preDelaySamples;
   }
   // Omitted entirely (rather than emitted as null) when no branch is
   // configured (issue #111), mirroring mainEnabled/mainLevelDb/mainGain
