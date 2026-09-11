@@ -4,6 +4,7 @@ RVRBoTron is a research-grade algorithmic reverb laboratory. It is designed to m
 
 ## Project documentation
 
+- [Configure the Composition](docs/guides/configure-the-composition.md) -- every request field, with examples
 - [Run experiments](docs/guides/run-experiments.md) -- catalogs, sweeps, and listening material
 - [Reverb design overview](docs/design/reverb/README.md)
 - [Stage specifications](docs/design/reverb/stages/)
@@ -121,9 +122,10 @@ build/default/rvrbotron render \
 ### Render the first Reference Diffusion Step
 
 Format version 2 also accepts the ordered `[split, diffuser, downmix]` and
-`[split, feedback-loop, downmix]` Composition shapes (the latter documented
-in [Sustain a Response with a Feedback Loop](#sustain-a-response-with-a-feedback-loop)
-below). The Diffuser resolves to an ordered chain of Hadamard Diffusion
+`[split, feedback-loop, downmix]` Composition shapes (every shape and field is
+documented in [Configure the
+Composition](docs/guides/configure-the-composition.md)).
+The Diffuser resolves to an ordered chain of Hadamard Diffusion
 Steps (`4` by default) feeding a select Downmix. Diagnostic ablations
 support `normalisation: "none"`, `delayStrategy: "even"` or
 `"uniform-random"`, `shuffle: false`, and `polarity: "none"`:
@@ -183,223 +185,14 @@ The versioned `all-v2` capture profile writes canonical WAVs under
 `captures/`. `render.json` manifests each boundary with its stable path,
 SHA-256, sample rate, Channel count, and complete output-timeline frame count.
 
-### Experiment with a Diffuser Configuration
+### Configure the Composition
 
-Every field below is optional; the resolver substitutes the listed default
-for anything omitted. Unknown fields anywhere in the request are rejected.
-Render a curated listening sample (see
-[Run experiments](docs/guides/run-experiments.md#validate-a-listening-sample))
-through a modified `request.json` to hear the effect of each change:
+Every request field, its accepted values, defaults, the valid stage shapes, and
+worked examples are in
+[Configure the Composition](docs/guides/configure-the-composition.md).
 
-```bash
-build/default/rvrbotron render \
-  --input samples/listening/PianoDry.wav \
-  --config request.json \
-  --output build/listening-diffusion-result
-```
 
-#### Top level
-
-| Field | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `formatVersion` | integer | *(required)* | Must be `2`. Missing or unsupported values fail at `/formatVersion`; version `1` fails with the exact recovery message naming tag `format-v1-final` (commit `8a4e718`), the last build able to render or analyze it. See [ADR-0006](docs/adr/0006-format-v2-compatibility-boundary.md). |
-| `seed` | unsigned 64-bit integer | `0` | Drives every seeded-random derivation (delays, shuffle, polarity). |
-| `composition.stages` | array | `[]` (empty Composition, exact identity) | When present, must be exactly `[split, diffuser, downmix]`, `[split, feedback-loop, downmix]`, or `[split, diffuser, feedback-loop, downmix]`. |
-| `composition.mainEnabled` | boolean | `true` | The Main wet path's enablement. Not applicable, and rejected, when `composition.stages` is empty (issue #109). `false` skips Downmix/Width processing and contributes exact stereo zero. |
-| `composition.mainLevelDb` | finite number (dB) | `0` | The Main wet path's level, applied once after its Downmix (including Width). Not applicable, and rejected, when `composition.stages` is empty (issue #109). Resolved Configuration additionally records the derived linear `mainGain`. |
-| `composition.early` | object, or omitted | omitted (no branch) | The parallel Early Reflections branch, tapped from the Main wet path's own Diffuser (issues #111/#112). Valid only when `composition.stages` includes exactly one Diffuser; not applicable, and rejected, when `composition.stages` is empty. See [`early` branch](#early-branch) below. |
-| `composition.dryDb` | finite number (dB) | `0` | The Composition's own dry level (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Stays legal and preserved while `wetOnly` gates it off; Resolved Configuration additionally records the derived linear `dryGain`. |
-| `composition.wetDb` | finite number (dB) | `0` | The Composition's own global wet level, applied once to the complete Wet sum (Main plus Early) before dry is mixed in (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived linear `wetGain`. |
-| `composition.wetOnly` | boolean | `true` | An exact gate on the dry path (issue #131): `true` (the default, reproducing every pre-envelope render) mutes dry regardless of `dryDb`; `false` maps dry into the mix, stereo input channel-for-channel and mono duplicated to both channels without energy compensation. Not applicable, and rejected, when `composition.stages` is empty. |
-| `composition.preDelayMs` | finite number (ms), 0-200 | `0` | A single delay before Split, applied to the wet path only; dry stays sample-aligned from frame zero (issue #133). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived integer `preDelaySamples` (the established nearest-frame rule), separate from Render Result's own `tailBudgetFrames`. |
-
-#### `split` stage
-
-| Field | Values | Default |
-| --- | --- | --- |
-| `channels` | unsigned 32-bit integer (N) | `8` |
-| `strategy` | `"duplicate"` \| `"stereo-halves"` \| `"stereo-interleave"` | `"duplicate"` |
-| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
-
-`"duplicate"` sums stereo input to `(L + R)/√2` and distributes it to every
-Channel; it discards stereo position. `"stereo-halves"` and
-`"stereo-interleave"` preserve L/R independently and require an even
-Channel count when the source is stereo; `"stereo-halves"` feeds the first
-half of the Channels from the left input and the second half from the
-right, and `"stereo-interleave"` alternates left/right by Channel index.
-For mono input, every strategy resolves to the same mono duplication
-mapping.
-
-#### `diffuser` stage
-
-| Field | Values | Default | Notes |
-| --- | --- | --- | --- |
-| `steps` | unsigned 32-bit integer (N) | `4` | Number of ordered Diffusion Steps sharing `totalMs`/`distribution`. Mutually exclusive with `lengthsMs`. |
-| `totalMs` | finite number | `300` | Combined length of every Diffusion Step, apportioned per `distribution`. Mutually exclusive with `lengthsMs`. |
-| `distribution` | `"even"` \| `"doubling"` | `"doubling"` | `"even"` gives every step an equal share of `totalMs`; `"doubling"` weights step *i* by `2^i` (each step roughly twice the previous). Mutually exclusive with `lengthsMs`. |
-| `lengthsMs` | array of finite numbers (one per step, N ≥ 1) | unset | Explicit per-step lengths in milliseconds, in step order. Use instead of `steps`/`totalMs`/`distribution` for full control over each step's share. |
-| `step.delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | Shared default applied to every step unless overridden in `stepOverrides`. `"uniform-random"` samples each Channel's delay independently with replacement, so it permits duplicate delays and is exempt from the "N distinct positions" requirement the other two strategies enforce. |
-| `step.mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"hadamard"` | Shared default applied to every step unless overridden in `stepOverrides`. A matrix of a given type is resolved once and shared across every step that uses it. `"hadamard"` requires a power-of-two Channel count; `"householder"` and `"random-orthogonal"` accept any Channel count. |
-| `step.shuffle` | boolean | `true` | Shared default applied to every step unless overridden in `stepOverrides`. |
-| `step.polarity` | `"seeded-random"` \| `"none"` | `"seeded-random"` | Shared default applied to every step unless overridden in `stepOverrides`. |
-| `step.modulation` | object, or omitted | omitted (disabled) | Seeded per-Channel delay-time movement scoped to that step alone -- the signal passes once, so detuning applies once and does not compound, in contrast to the Feedback Loop's own Modulation (compounds every circulation; see below). Omitted preserves that step's existing rendered output; an included empty object (`{}`) resolves the same research baseline as the Feedback Loop's own `modulation`. Shared default applied to every step unless overridden in `stepOverrides`; see the Feedback Loop's `modulation` field table below for the nested fields, shared verbatim between the two stages. |
-| `stepOverrides` | array of `{index, delayStrategy?, mix?, shuffle?, polarity?, modulation?}` | unset | Sparse per-step overrides keyed by zero-based step index. Only listed fields are overridden; omitted fields fall back to the shared `step` defaults above. Each index must be unique and within `[0, stepCount)`. |
-
-`"hadamard"` mixes maximally (`N·log₂N` additions) and is the diffuser's
-default. `"householder"` subtracts twice the mean of the Channels from every
-Channel — cheap, mild mixing, valid for any N. `"random-orthogonal"` is a
-seeded dense orthogonal matrix with no Haar-uniformity claim: a fixed
-`[-1, 1]` fill is orthogonalized via Householder QR with a fixed sign
-convention, and a singular or near-singular fill is rejected outright rather
-than silently repaired.
-
-Every Diffusion Step's `delaysSamples`, `permutation`, and `polaritySigns`
-are derived from `(seed, step index, Channel)`, so a given step index's
-`permutation`/`polaritySigns` are stable across changes to `steps`/`totalMs`/
-`lengthsMs` — only `delaysSamples` shifts when a step's own resolved length
-changes. Per-step sample lengths are apportioned from `totalMs`/`lengthsMs`
-using largest-remainder rounding, so they always sum exactly to the
-resolved total.
-
-The resolved Diffuser is rejected before allocation if its estimated DSP
-memory footprint (delay lines plus per-step mix matrices) exceeds the
-configured budget — 512 MiB by default, overridable with
-`--memory-budget-mib <mebibytes>` on `render`. `--capture-stages all` writes
-one canonical WAV per resolved step, named `01-diffusion-step-{i}.wav`.
-
-A step's Modulation trajectories are seeded per step *and* per Channel, so
-two modulated steps never share a trajectory — and neither does a
-modulated step share one with the Feedback Loop's own Modulation, even
-when both otherwise resolve identical parameters. Zero depth on a step is
-the resolved bypass, bit-identical to `modulation` omitted from that
-step; buffer headroom (the resolved Excursion plus the fixed
-Interpolation margin) is reserved only on the Channels a step actually
-modulates. A modulated Channel's resolved delay too short to serve its
-own step's requested Excursion is rejected before any audio is
-processed, naming that step's own `modulation/depthMs` — the same
-Excursion rejection rule as the Feedback Loop's, since a short step delay
-is exactly as unsafe as a short loop delay. Resolved per-step Modulation
-is recorded in `resolved.json` alongside the Feedback Loop's own.
-
-#### `downmix` stage
-
-| Field | Values | Default |
-| --- | --- | --- |
-| `strategy` | `"select"` \| `"orthogonal-rows"` \| `"halves"` \| `"alternating"` \| `"sum-all"` | `"select"` |
-| `leftChannel` | zero-based Channel index within `[0, N)` | required for `select`; not applicable to any other strategy |
-| `rightChannel` | zero-based Channel index within `[0, N)`, distinct from `leftChannel`, or omitted | omitted (mono duplication of `leftChannel`); not applicable to any other strategy |
-| `normalisation` | `"energy"` \| `"none"` | `"energy"` |
-| `widthDeg` | finite number within `[0, 180]` | `90` |
-
-`widthDeg` (issue #109) applies a constant-power mid/side Width law to the
-Downmix's pre-Width `[left, right]` output: `0` collapses to mono, `90` is an
-exact identity bypass, and `180` is side-only and out of phase. Resolved
-Configuration records the resolved `widthMatrix`, the concrete 2x2 matrix
-`widthDeg` resolves to (exact at `0`/`90`/`180`; trigonometric otherwise), so
-replay never recomputes it.
-
-`leftChannel` has no implicit default -- every `select` Downmix names its
-Channel explicitly (see issue #107). `orthogonal-rows` (issue #108) instead
-fills a deterministic N-by-N dense matrix from the branch-specific
-RandomOrthogonal derivation (usage tag `MAINDNMX`; see
-[ADR-0002](docs/adr/0002-version-positional-random-resolution.md)) and takes
-its rows 0 and 1 as the left and right Downmix rows. `halves` and
-`alternating` (issue #110) instead partition the N Channels into two
-disjoint groups -- `halves` puts the first `ceil(N/2)` Channels left and
-the remainder right; `alternating` puts even indices left and odd indices
-right -- and each non-empty group gets equal `1/sqrt(groupSize)`
-coefficients, so an odd N produces two unequal-size but still unit-norm
-rows. `sum-all` (issue #114) instead duplicates one `1/sqrt(N)` row,
-identical across every Channel, to both left and right -- the diagnostic
-Coherent Downmix ablation: summing an aligned source coherently
-reinforces it rather than the decorrelated cancellation-free sum an
-unaligned source produces, and configuration renders it rather than
-rejecting it -- see docs/design/reverb/stages/08-downmix.md's "Two source
-signals, two rules". `orthogonal-rows`, `halves`,
-and `alternating` each require N at least 2 and reject
-`leftChannel`/`rightChannel` if either is present; `select` and `sum-all`
-both support N as low as 1 (`sum-all`'s single-Channel row is `[1.0]`,
-identical to `select`'s own N=1 mono duplication once compensation is
-applied). Resolved Configuration records every strategy's rows as
-`leftRow`/`rightRow` (unit norm) and
-`effectiveLeftRow`/`effectiveRightRow` (scaled by `compensation`), plus
-each row's Alignment expectation (`"aligned"` or `"unaligned"`), derived
-from Composition wiring rather than settable by request: aligned for a
-Diffuser-only Main wet path, unaligned when it includes a Feedback Loop.
-It also records a `coherentDownmixAblation` boolean (issue #114), true
-only for `sum-all` on an aligned source -- derived from `strategy` and
-`alignment` together, never from the strategy name alone, so the same
-`sum-all` request resolves `coherentDownmixAblation: false` once its
-source includes a Feedback Loop.
-
-`delayStrategy: "even"` or `"uniform-random"`, `shuffle: false`,
-`polarity: "none"`, and `normalisation: "none"` are diagnostic ablations for
-isolating one DSP behavior at a time; they are not intended as listening
-presets.
-
-#### `early` branch
-
-| Field | Values | Default |
-| --- | --- | --- |
-| `enabled` | boolean | `true` |
-| `levelDb` | finite number (dB) | `0` |
-| `decayDbPerSec` | finite number `>= 0` | `0` |
-| `taps` | array of `{stepIndex, gainDb?}` | required |
-| `taps[].stepIndex` | unique zero-based Diffusion Step index within `[0, stepCount)` | *(required)* |
-| `taps[].gainDb` | finite number (dB) | `0` |
-| `downmix` | object, or omitted | omitted (`select` Channels 0/1, or Channel 0 duplicated at N=1) |
-
-The parallel Early Reflections branch (issues #111/#112, docs/design/reverb/
-stages/07-early-reflections.md): one or more taps on the Main wet path's own
-Diffuser, shaped and summed into one N-Channel frame, Downmixed
-independently of the Main Downmix, then added into the same stereo output --
-never fed into a Feedback Loop. Valid only when `composition.stages`
-contains exactly one Diffuser (a Diffuser-only or Diffuser-then-Feedback-Loop
-Main wet path); rejected when the Main wet path has no Diffuser.
-
-Omitting `composition.early`, an empty `early: {}`, and an explicit
-`early: {"taps": []}` all mean no branch, and `enabled`/`levelDb`/
-`decayDbPerSec`/`downmix` are then rejected since they could not affect
-sound. A present, non-empty `taps` requires unique `stepIndex` values --
-duplicates are rejected -- and resolves them sorted ascending (canonical
-order), so a Requested tap-list permutation resolves and renders
-identically.
-
-Each tap's own resolved shaping gain is its `gainDb` minus `decayDbPerSec`
-times its own nominal support end in seconds (the "Early envelope"): a
-later tap, whose nominal support reaches further, is attenuated more at a
-positive `decayDbPerSec`. Every tap's shaped N-Channel contribution is
-summed into the branch's one shared accumulator before Downmix; `levelDb`
-is then applied once more, after Downmix, to the combined branch.
-
-`downmix` accepts the same fields as the Main Downmix's own `downmix` stage
-above, with one difference: `strategy: "select"` defaults `leftChannel`/
-`rightChannel` to Channels 0/1 (Channel 0 duplicated to mono at N=1) rather
-than requiring `leftChannel` explicitly. Its resolved Alignment expectation
-is always `"aligned"` (the Diffuser's own output shares one onset across
-Channels), and its `orthogonal-rows` strategy draws from its own
-domain-separated RandomOrthogonal derivation (usage tag `EARLDNMX`, distinct
-from the Main Downmix's own `MAINDNMX`; see
-[ADR-0002](docs/adr/0002-version-positional-random-resolution.md)).
-
-Resolved Configuration records `enabled`, `levelDb`, the derived linear
-`gain`, `decayDbPerSec`, canonical `taps`, and the full resolved `downmix`
-object -- omitted entirely, like `mainEnabled`/`mainLevelDb`/`mainGain`,
-when no branch is configured. Each resolved tap additionally records its
-own `gainDb`; nominal Tap support bounds (`nominalSupportMin/MaxSamples`,
-`nominalSupportMin/MaxMs`) summed from the resolved Diffuser's own
-per-Channel delays through that tap's step; conservative bounds
-(`conservativeSupportMin/MaxSamples`, `conservativeSupportMin/MaxMs`) --
-the interval no tap energy occurs outside -- additionally widened by every
-contributing step's own active Modulation Excursion and the fixed
-Interpolation margin; and its resolved `shapingGainDb`/`gain`. Modulation on
-a tapped step never changes its nominal support or its shaping gain, only
-its conservative support.
-
-Keep this table in sync whenever a request field, its accepted values, or its
-default changes.
-
-#### Capturing and ablating the Main and Early branches
+### Capturing and ablating the Main and Early branches
 
 `--capture-stages all` (issue #113) additionally publishes each branch's own
 stereo contribution, captured after its own shaping, Downmix, Width, and
@@ -421,159 +214,13 @@ Diffuser) still captures `main-stereo`; it has no Diffusion Steps to capture
 and cannot carry an Early Reflections branch, since Early requires a
 Diffuser.
 
-`output.wav` equals the sample-wise sum of `main-stereo` and (when present)
-`early-stereo`, and each branch's own measured energy plus their cross term
-reconciles with the combined signal's own measured energy -- overlapping
-signals are not simply additive in energy, since `sum(a+b)^2 != sum(a^2) +
-sum(b^2)` unless the two are uncorrelated.
-
-### Sustain a Response with a Feedback Loop
-
-The `[split, feedback-loop, downmix]` Composition shape circulates each
-Channel through its own delay line, deliberately loses energy each
-circulation via a per-Channel decay gain solved from a requested RT60, and
-mixes the Channels orthogonally. Unlike the Diffuser, its output is
-**unaligned** (Channels carry different echo times) and **not all-pass** --
-the Feedback Loop is the one stage documented to lose energy on purpose.
-Render a curated listening sample through it to hear a sustained,
-decaying tail:
-
-```bash
-build/default/rvrbotron render \
-  --input samples/listening/PianoDry.wav \
-  --config request.json \
-  --output build/tail-result
-```
-
-```json
-{
-  "formatVersion": 2,
-  "seed": 0,
-  "composition": {
-    "stages": [
-      {
-        "type": "split",
-        "channels": 8,
-        "strategy": "duplicate",
-        "normalisation": "energy"
-      },
-      {
-        "type": "feedback-loop",
-        "delayMinMs": 100,
-        "delayMaxMs": 200,
-        "delayStrategy": "segmented-random",
-        "rt60Sec": 2.4,
-        "decayMargin": 1.5,
-        "mix": "householder",
-        "gainMode": "per-channel",
-        "silenceFloorDb": null
-      },
-      {
-        "type": "downmix",
-        "strategy": "select",
-        "leftChannel": 0,
-        "rightChannel": 1
-      }
-    ]
-  }
-}
-```
-
-| Field | Values | Default | Notes |
-| --- | --- | --- | --- |
-| `delayMinMs` / `delayMaxMs` | finite number > 0 | `100` / `200` | Room size; `delayMinMs` also sets the pre-tail gap. |
-| `delayStrategy` | `"segmented-random"` \| `"uniform-random"` \| `"even"` | `"segmented-random"` | `"even"` demonstrates flutter -- avoid it for a listening preset. |
-| `rt60Sec` | finite number > 0 | `2.4` | Requested decay time at the 1 kHz Reference band; solved into per-Channel gain at configuration. |
-| `decayMargin` | finite number > 0 | `1.5` | Multiplies `rt60Sec` to derive the resolved Tail budget (the upper bound on frames rendered past input EOF); `1.5` places the drain's end near -90 dB. |
-| `mix` | `"hadamard"` \| `"householder"` \| `"random-orthogonal"` | `"householder"` | Mild mixing is the default here, in contrast to the Diffuser's maximal Hadamard default. `"hadamard"` at a non-power-of-two Channel count is a hard error. |
-| `gainMode` | `"per-channel"` \| `"uniform"` | `"per-channel"` | `"per-channel"` solves each Channel's gain from its own loop time; `"uniform"` solves one shared gain from the mean loop time across Channels instead (the reference design's approach), measurably less accurate at a wide delay spread. |
-| `silenceFloorDb` | finite number, or `null`/omitted | `null` (disabled) | Reserved seam for the eventual plugin's runtime idle behavior; dormant here -- disabled output is bit-identical to a build without the field. |
-| `damping` | object, or omitted | omitted (disabled) | Two-shelf damping: independent per-Channel low and high shelves applied after decay gain and before mixing, on every circulation. Omitted preserves undamped output; an included empty object (`{}`) resolves the research baseline below. See the field table underneath. |
-| `modulation` | object, or omitted | omitted (disabled) | Seeded per-Channel delay-time movement, read through a fractional interpolator on every circulation. Omitted preserves existing rendered output; an included empty object (`{}`) resolves the research baseline below. See the field table underneath. |
-
-Omitting `damping` entirely preserves existing undamped output, and an
-existing `resolved.json` written before Damping existed loads back as
-disabled. An included `damping` object resolves any missing nested field to
-the baseline shown here:
-
-| `damping` field | Values | Default | Notes |
-| --- | --- | --- | --- |
-| `highRatio` | finite number > 0 | `0.5` | Decay time above `highHz`, relative to `rt60Sec` (`0.5` = half, `2.0` = double). Above `1.0` is a boost, accepted only when the conservative one-circulation contraction certificate passes for every Channel at both float32 and float64 precision. |
-| `highHz` | finite number, strictly between `0` and Nyquist | `4000` | Half-gain shelf corner: the response is halfway (in dB) between unity and the shelf plateau at this frequency. |
-| `lowRatio` | finite number > 0 | `1.0` | Decay time below `lowHz`, relative to `rt60Sec`. Same boost certificate as `highRatio`. |
-| `lowHz` | finite number, strictly between `0` and Nyquist | `200` | Half-gain shelf corner for the low shelf. May sit on either side of `highHz`, including a crossed or overlapping layout -- there is no required corner order. |
-
-A ratio of `1.0` bypasses that shelf entirely (independently of the other
-shelf), so explicit unity ratios for both render bit-identically to
-`damping` omitted. Resolved per-Channel low- and high-shelf gain, canonical
-prewarped coefficients, and expected low/reference/high decay (seconds) are
-recorded in `resolved.json`. A corner/ratio combination whose solved 1 kHz
-response lands far from `rt60Sec` is not rejected -- see
-[ADR-0004](docs/adr/0004-validate-structure-not-acoustics.md) -- the
-resolved evidence records the actual implied decay either way.
-
-A boosted ratio (above `1.0`) is proven safe by a cheap conservative
-structural bound rather than a frequency grid or complete FDN pole solve:
-resolution bounds one circulation from the decay gain, each monotonic
-shelf's maximum plateau magnitude, and the realized mixing matrix's
-quantization error, for both float32 and float64 coefficients. Every
-Channel's bound must land strictly below unity at both precisions or the
-request is rejected, never clamped; the bound, margin, and precision are
-recorded per Channel in `resolved.json`. This conservative certificate may
-reject an overlapping boost-and-cut combination an exact modal analysis
-could prove safe -- an accepted trade-off for a cheap, deterministic proof.
-When a shelf boosts, the Tail budget follows the slower of `rt60Sec`, that
-shelf's own conservative feedback-decay estimate, and its state-settling
-time, so the renderer always drains the complete authorized response.
-
-Omitting `modulation` entirely preserves existing rendered output, and an
-existing `resolved.json` written before Modulation existed loads back as
-disabled. An included `modulation` object resolves any missing nested field
-to the baseline shown here:
-
-| `modulation` field | Values | Default | Notes |
-| --- | --- | --- | --- |
-| `depthMs` | finite number >= 0 | `0.4` | Peak Excursion, in milliseconds, above and below each Channel's nominal resolved delay. `0` disables movement -- a resolved bypass, bit-identical to `modulation` omitted, rather than an interpolator collapsing to identity. |
-| `rateHz` | finite number >= 0 | `0.7` | Multiplies with `depthMs` for perceived detuning (the Detune product). `0` freezes each Channel's fractional offset as a static per-Channel detune spread, isolating interpolation error from movement artefact. Means the same thing for every `shape`. |
-| `shape` | `"smoothed-random"` / `"sine"` / `"triangle"` | `"smoothed-random"` | The per-Channel trajectory waveform. `sine`'s periodicity becomes an audible regular wobble at a larger Excursion; `smoothed-random` (band-limited noise) has no period to lock onto. `triangle` shares `sine`'s zero crossings and peak locations, so comparing the two at a fixed `rateHz` compares only the shape. |
-| `channelFraction` | finite number in `[0, 1]` | `1.0` | Proportion of Channels modulated, rounded up. `0` disables Modulation for the stage, exactly like `depthMs: 0`. The modulated Channels are the first `ceil(channelFraction * N)` entries of a positionally seeded fixed permutation, independent of delay ordering -- raising the fraction only adds Channels, never reshuffling ones already selected. |
-| `interpolation` | `"lagrange3"` / `"linear"` / `"allpass"` | `"lagrange3"` | The delay line's fractional-read method. `linear` (#92) is a deliberate ablation: it darkens a modulated tail as depth rises, an unintended depth-dependent lowpass. `allpass` (#93) has flat magnitude at any fixed fractional delay but carries persistent per-Channel filter state a moving delay repeatedly invalidates -- stable and bounded at every depth/rate tested, but measurably rougher (more sample-to-sample discontinuity) than the other two; see [the design doc's recorded finding](docs/design/reverb/stages/06-modulation.md#allpass-viability-inside-the-feedback-loop-issue-93). Both are made available on purpose, to be heard and compared against `lagrange3`, not hidden. |
-
-`smoothed-random` is Catmull-Rom interpolation between per-Channel targets
-drawn uniformly in `[-1, +1]`, a new target every `1/rateHz`, reproducible
-from an integer target counter with no accumulated state. Every Channel
-carries a fixed, undocumented-as-a-parameter +-10% seeded rate spread and a
-positionally seeded phase offset so trajectories decorrelate across
-Channels regardless of `shape`; trajectories are not pinned at render
-start. A Channel `channelFraction` excludes keeps the cheaper integer read
-path with no Channel reordering, and the Excursion rejection rule below
-applies to modulated Channels only -- an excluded Channel may carry a delay
-too short to ever serve the requested Excursion without being rejected.
-Resolution reserves each *modulated* Channel's buffer as its nominal delay
-plus `depthMs` in samples (the Excursion) plus a fixed worst-case
-Interpolation margin, so a Channel's *buffer size* does not move when
-`interpolation` changes -- the margin is sized for the worst case across
-every method, not the configured one. `allpass` alone also carries its own
-small per-Channel filter state (one persistent output sample), allocated
-only for a Channel actually modulated with `allpass` chosen and counted
-toward the owning stage's DSP-owned memory -- a bypassed stage or an
-excluded Channel allocates none of it. A modulated Channel's resolved
-delay too short to serve that Excursion plus margin is rejected before
-any audio is processed
--- naming `modulation/depthMs` -- rather than overrunning intermittently at
-the modulation peak; the Feedback Loop's Block-size bound is derived from
-the shortest *instantaneous* per-Channel delay across every Channel, moved
-or not. Resolved shape, per-Channel trajectory seeds, rates, and phases,
-the per-Channel bypass mask, the resolved Excursion, and the Interpolation
-margin are recorded in `resolved.json`.
-
-Each Channel's decay gain is solved independently from that Channel's own
-loop time (`gain = 10^(-3L/R)`), so every Channel decays at the same rate
-regardless of its own delay -- the requested `rt60Sec` is measurable in the
-output even with unequal delays. The resolved Tail budget, delays, gains,
-and matrix coefficients are recorded in `resolved.json`, so a resolved
-rerender reproduces the tail exactly. `render.json`'s `tailBudgetFrames`
-records the upper bound actually authorised for this render.
+`main-stereo` plus (when present) `early-stereo` is the **Wet sum**. With the
+default envelope (`wetOnly: true`, 0 dB wet) that is exactly `output.wav`;
+with a configured envelope, `output.wav` is the dry contribution plus the
+Wet sum scaled by `wetGain` (issue #131). Either way each branch's own
+measured energy plus their cross term reconciles with the Wet sum's own
+measured energy -- overlapping signals are not simply additive in energy,
+since `sum(a+b)^2 != sum(a^2) + sum(b^2)` unless the two are uncorrelated.
 
 ### Analyze the Render Result
 
