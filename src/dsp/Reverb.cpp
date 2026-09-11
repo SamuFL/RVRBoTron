@@ -300,9 +300,17 @@ void Reverb::process(const Sample* const* inputs,
     // Fixed-order final addition (issue #114): the dry contribution
     // first, then the scaled Wet sum -- so final output remains
     // reconstructable from the dry input, the Main/Early stereo
-    // captures, and the Resolved envelope values.
-    outputs[0][frame] = dryLeft + wetLeft;
-    outputs[1][frame] = dryRight + wetRight;
+    // captures, and the Resolved envelope values. `wetOnly` skips the
+    // addition itself rather than relying on dryLeft/dryRight already
+    // being exact zero, so summation is genuinely bypassed rather than
+    // merely a neutral no-op operand.
+    if (state.dryEnabled) {
+      outputs[0][frame] = dryLeft + wetLeft;
+      outputs[1][frame] = dryRight + wetRight;
+    } else {
+      outputs[0][frame] = wetLeft;
+      outputs[1][frame] = wetRight;
+    }
   }
 }
 

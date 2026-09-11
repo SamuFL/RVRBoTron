@@ -3367,6 +3367,45 @@ def main():
         workspace / "partial-envelope-result",
     )
 
+    # An envelope field on an empty-stage Resolved Composition is
+    # rejected there too, mirroring the Requested-side empty-Composition
+    # rejection above -- a resolved.json is a direct, non-JSON-adjacent
+    # entry point in its own right.
+    for empty_resolved_field, empty_resolved_value in (
+        ("dryDb", -6.0),
+        ("wetDb", -6.0),
+        ("wetOnly", False),
+        ("dryGain", 0.5),
+        ("wetGain", 0.5),
+    ):
+        empty_resolved_document = {
+            "formatVersion": 2,
+            "seed": 0,
+            "sampleRate": 48000,
+            "composition": {
+                "stages": [],
+                empty_resolved_field: empty_resolved_value,
+            },
+        }
+        empty_resolved_path = workspace / (
+            f"empty-resolved-with-{empty_resolved_field}.json"
+        )
+        empty_resolved_path.write_text(json.dumps(empty_resolved_document))
+        require_failure(
+            run_renderer(
+                renderer,
+                "--input",
+                fixture,
+                "--resolved",
+                empty_resolved_path,
+                "--output",
+                workspace / f"empty-resolved-with-{empty_resolved_field}-result",
+            ),
+            f"/composition/{empty_resolved_field}: not applicable to the "
+            f"empty identity Composition",
+            workspace / f"empty-resolved-with-{empty_resolved_field}-result",
+        )
+
     # An extreme dryDb/wetDb resolves a gain that is a valid finite
     # positive double but not representable at float precision, mirroring
     # mainLevelDb's own extreme-value check.
