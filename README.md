@@ -13,16 +13,19 @@ than turn knobs until it sounds nice, this is built for you.
 
 ---
 
-## Requirements
+## Setup
 
-- CMake 3.25+, Ninja, and a C++17 compiler
-- Python 3 — for the analyzers
-- Git LFS — only for the curated listening samples
+You need CMake 3.25+, Ninja, a C++17 compiler, Python 3, and Git LFS.
+
+From the repository root:
 
 ```bash
-pip3 install -r tools/requirements.txt   # analyzers beyond the baseline one
-git lfs install && git lfs pull          # curated listening samples
+pip3 install -r tools/requirements.txt   # NumPy — the analyzers, and the test suite
+git lfs install && git lfs pull          # the curated listening samples
 ```
+
+Both are needed before you go further: a third of the test suite runs the
+analyzers, and the listening samples are Git LFS pointers until you pull them.
 
 ## Build and test
 
@@ -35,13 +38,13 @@ ctest --preset default
 That builds the renderer at `build/default/rvrbotron` and runs the full suite.
 
 Other presets: `double` for float64 DSP samples, and `release` /
-`release-double` for optimized builds — use those for any benchmark timing,
-since `default` is a Debug build.
+`release-double` for optimized builds.
 
 ## Render your first reverb
 
-Save this as `hall.json` — a diffuser feeding a damped tail, with 20 ms of
-pre-delay and the dry signal mixed back in:
+Still in the repository root, save this as `build/hall.json` — a diffuser
+feeding a damped tail, with 20 ms of pre-delay and the dry signal mixed back
+in:
 
 ```json
 {
@@ -68,7 +71,7 @@ Send an impulse through it and listen to the tail:
 ```bash
 build/default/rvrbotron render \
   --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
-  --config hall.json \
+  --config build/hall.json \
   --output build/first-reverb
 ```
 
@@ -77,7 +80,7 @@ Then try it on music — `samples/listening/` holds curated dry material:
 ```bash
 build/default/rvrbotron render \
   --input samples/listening/PianoDry.wav \
-  --config hall.json \
+  --config build/hall.json \
   --output build/first-reverb-music
 ```
 
@@ -94,15 +97,17 @@ python3 tools/analyze_render.py build/first-reverb-music
 
 ```text
 1108800 frames, 23.100000000 s, 48000 Hz, 2 channels, 0 non-finite samples
+build/first-reverb-music/analysis/baseline-v1.json
 ```
 
-That publishes `analysis/baseline-v1.json` beside the audio, with peak, RMS,
-and sum-of-squares per channel and combined.
+The artifact it wrote holds peak, RMS, and sum-of-squares per channel and
+combined.
 
-Notice the render is longer than the 20 s input: `render.json` accounts for
-that exactly, as `inputFrames` plus `preDelayFrames` plus `tailBudgetFrames`.
-Deeper analyzers measure RT60 per octave band, echo density, stereo image, and
-Modulation — see the evidence guide below.
+Notice the render is longer than the 20 s input — the pre-delay and the tail
+both extend it, and `render.json` accounts for every frame. Deeper analyzers
+measure RT60 per octave band, echo density, stereo image, and Modulation. All
+of that is in [Render and analyze
+evidence](docs/guides/render-and-analyze-evidence.md).
 
 ## What you just produced
 
