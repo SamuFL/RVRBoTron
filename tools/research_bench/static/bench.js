@@ -4,16 +4,44 @@
   var token = new URLSearchParams(window.location.search).get("token") || "";
   var sourceInput = document.getElementById("source");
   var sourceName = document.getElementById("source-name");
-  var requestBox = document.getElementById("request");
   var renderButton = document.getElementById("render");
+  var formatButton = document.getElementById("format");
+  var downloadRequestButton = document.getElementById("download-request");
   var statusBox = document.getElementById("status");
   var factsBox = document.getElementById("facts");
   var player = document.getElementById("player");
   var download = document.getElementById("download");
 
+  // The JSON editing surface (issue #138). Ace text APIs only -- no HTML
+  // annotations, tooltips, or completion markup: request text and renderer
+  // diagnostics are untrusted content, and the one status panel is where
+  // they are shown, as text. Workers are disabled before the mode is
+  // attached, not left to the Content-Security-Policy to block; the
+  // renderer remains the sole validator.
+  var editor = ace.edit("request-editor");
+  editor.session.setOption("useWorker", false);
+  editor.session.setMode("ace/mode/json");
+  editor.setTheme("ace/theme/tomorrow_night");
+  editor.setOptions({
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "13px",
+    showPrintMargin: false,
+    wrap: false
+  });
+
+  // The editor's current string is the one request source of truth, for
+  // both Render and Download -- never a separate parsed/re-serialized copy.
+  function getRequestText() {
+    return editor.getValue();
+  }
+
+  function setRequestText(text) {
+    editor.setValue(text, -1); // -1: cursor at the start, nothing selected
+  }
+
   // A starting request, so the bench is usable before reading a guide.
   // Edit it freely: this text, not this file, is what gets rendered.
-  requestBox.value = JSON.stringify({
+  setRequestText(JSON.stringify({
     formatVersion: 2,
     seed: 42,
     composition: {
@@ -28,7 +56,7 @@
       wetDb: -3,
       wetOnly: false
     }
-  }, null, 2);
+  }, null, 2));
 
   function api(path) {
     return path + "?token=" + encodeURIComponent(token);
@@ -62,6 +90,21 @@
         return body;
       });
     });
+  }
+
+  // Triggers a real browser download of in-memory text -- on explicit
+  // request only, and never through a plain <a href> the browser might
+  // just navigate to instead of saving.
+  function downloadText(filename, text, mimeType) {
+    var blob = new Blob([text], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
   }
 
   sourceInput.addEventListener("change", function () {
@@ -105,11 +148,11 @@
   renderButton.addEventListener("click", function () {
     setBusy(true);
     say("Rendering…");
-    // The textarea's current string is the request, sent through as-is.
+    // The editor's current string is sent through as-is.
     send("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: requestBox.value
+      body: getRequestText()
     }).then(function (facts) {
       factsBox.textContent =
         facts.sourceFilename + " — " + facts.durationSeconds + " s, " +
@@ -127,5 +170,25 @@
     }).then(function () {
       setBusy(false);
     });
+  });
+
+  // Explicit action, and the only one that ever rewrites the editor text.
+  // Malformed JSON is reported and the text is left exactly as it was.
+  formatButton.addEventListener("click", function () {
+    var parsed;
+    try {
+      parsed = JSON.parse(getRequestText());
+    } catch (error) {
+      say("Format JSON: " + String(error.message || error), "error");
+      return;
+    }
+    setRequestText(JSON.stringify(parsed, null, 2));
+    say("Formatted.", "ok");
+  });
+
+  // The current editor string, regardless of validity or render status --
+  // never the last-rendered or reformatted text -- on explicit request only.
+  downloadRequestButton.addEventListener("click", function () {
+    downloadText("request.json", getRequestText(), "application/json");
   });
 })();

@@ -7,6 +7,7 @@ fixture -- select a source, render an editor string, read the facts back,
 and fetch the served audio -- rather than testing handler internals.
 """
 
+import hashlib
 import json
 import re
 import shutil
@@ -126,14 +127,29 @@ def main():
             raise AssertionError("bench granted a CORS permission")
 
         # The policy must permit what the page actually does -- load its own
-        # script and style, and call its own API -- without ever allowing
-        # inline script. A page whose script the policy forbids is inert.
+        # script and style, call its own API, and (style-src only, for
+        # Ace's own runtime CSS injection -- see vendor/ace/VENDORING.md)
+        # use inline style -- without ever allowing inline script. A page
+        # whose script the policy forbids is inert.
         policy = headers.get("Content-Security-Policy", "")
-        for directive in ("script-src 'self'", "style-src 'self'", "connect-src 'self'"):
-            if directive not in policy:
-                raise AssertionError(f"policy is missing {directive}: {policy}")
-        if "unsafe-inline" in policy or "unsafe-eval" in policy:
-            raise AssertionError(f"policy relaxes inline execution: {policy}")
+        directives = {}
+        for clause in policy.split(";"):
+            tokens = clause.split()
+            if tokens:
+                directives[tokens[0]] = tokens[1:]
+        for name, required in (
+            ("script-src", ["'self'"]),
+            ("style-src", ["'self'", "'unsafe-inline'"]),
+            ("connect-src", ["'self'"]),
+            ("worker-src", ["'none'"]),
+            ("img-src", ["'self'", "data:"]),
+        ):
+            missing = [v for v in required if v not in directives.get(name, [])]
+            if missing:
+                raise AssertionError(f"{name} is missing {missing}: {policy}")
+        script_src = directives.get("script-src", [])
+        if "'unsafe-inline'" in script_src or "'unsafe-eval'" in script_src:
+            raise AssertionError(f"script-src relaxes inline execution: {policy}")
         if re.search(r"<script(?![^>]*\ssrc=)[^>]*>\s*\S", text) or "<style" in text:
             raise AssertionError("page carries inline script or style the policy forbids")
 
@@ -153,6 +169,30 @@ def main():
         status, _, _ = call(f"{base}bench.js")
         if status != 403:
             raise AssertionError(f"an untokened asset was served: {status}")
+
+        # Vendored Ace files (issue #138) must be exactly what VENDORING.md
+        # records -- that manifest's whole point is catching silent drift
+        # or corruption, not just documenting a version number once.
+        vendor_manifest = Path(sys.argv[6])
+        manifest_text = vendor_manifest.read_text()
+        vendor_hashes = dict(
+            re.findall(r"\| `([^`]+)` \| `[^`]+` \| \d+ \| `([0-9a-f]{64})` \|", manifest_text)
+        )
+        if len(vendor_hashes) < 4:
+            raise AssertionError(f"vendor manifest table looks short: {vendor_hashes}")
+        for name, expected_hash in vendor_hashes.items():
+            if name == "LICENSE":
+                actual = (vendor_manifest.parent / name).read_bytes()
+            else:
+                status, actual, _ = call(f"{base}vendor/ace/{name}?token={token}")
+                if status != 200:
+                    raise AssertionError(f"vendored {name} was not served: {status}")
+            digest = hashlib.sha256(actual).hexdigest()
+            if digest != expected_hash:
+                raise AssertionError(
+                    f"vendored {name} does not match VENDORING.md: "
+                    f"{digest} != {expected_hash}"
+                )
 
         # -- rendering needs a source first --------------------------------
 

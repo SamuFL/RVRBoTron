@@ -44,12 +44,33 @@ STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/bench.css": ("bench.css", "text/css; charset=utf-8"),
     "/bench.js": ("bench.js", "text/javascript; charset=utf-8"),
+    "/vendor/ace/ace.js": ("vendor/ace/ace.js", "text/javascript; charset=utf-8"),
+    "/vendor/ace/mode-json.js": (
+        "vendor/ace/mode-json.js",
+        "text/javascript; charset=utf-8",
+    ),
+    "/vendor/ace/theme-tomorrow_night.js": (
+        "vendor/ace/theme-tomorrow_night.js",
+        "text/javascript; charset=utf-8",
+    ),
 }
 
+# style-src carries 'unsafe-inline': Ace injects its base, scrollbar, and
+# theme CSS as inline <style> elements at runtime (ace/lib/dom's own
+# importCssString), not through a <link> the integration controls --
+# confirmed the sole source of every blocked style-src-elem violation with a
+# headless-browser probe before this was added. Nothing the bench ever
+# shows (filenames, request text, renderer diagnostics) reaches a style
+# context, so this widens no attack surface the bench has; script-src stays
+# 'self' with no inline exception. img-src allows data: for one drag-cursor
+# glyph Ace requests. worker-src is spelled out (default-src 'none' already
+# covers it) because Ace workers are a deliberate omission: see bench.js,
+# which also disables useWorker explicitly rather than relying on this alone.
 CONTENT_SECURITY_POLICY = (
-    "default-src 'none'; script-src 'self'; style-src 'self'; "
-    "connect-src 'self'; media-src 'self'; img-src 'self'; "
-    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "connect-src 'self'; media-src 'self'; img-src 'self' data:; "
+    "worker-src 'none'; form-action 'none'; base-uri 'none'; "
+    "frame-ancestors 'none'"
 )
 
 # The renderer's own WAV contract (src/io/WavStream.cpp): mono or stereo

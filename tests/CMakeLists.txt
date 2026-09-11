@@ -387,6 +387,7 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-contract
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/static/vendor/ace/VENDORING.md
 )
 
 # The test drives a live server it starts itself. If the launcher ever hangs

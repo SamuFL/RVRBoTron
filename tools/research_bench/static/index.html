@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>RVRBoTron Research Bench</title>
-<!-- The script and style are same-origin files, not inline: the bench
-     serves a Content-Security-Policy of script-src 'self' with no inline
-     exception. __BENCH_TOKEN__ is replaced at startup. -->
+<!-- The script and style are same-origin files, not inline: the bench's
+     script-src stays 'self' with no inline exception (style-src allows
+     'unsafe-inline' only for Ace's own runtime CSS injection -- see
+     vendor/ace/VENDORING.md). __BENCH_TOKEN__ is replaced at startup. -->
 <link rel="stylesheet" href="bench.css?token=__BENCH_TOKEN__">
 </head>
 <body>
@@ -22,13 +23,15 @@
 </section>
 
 <section>
-  <label for="request">Requested configuration</label>
-  <textarea id="request" spellcheck="false"></textarea>
+  <label id="request-label">Requested configuration</label>
+  <div id="request-editor" aria-labelledby="request-label"></div>
 </section>
 
 <section>
   <div class="row">
     <button id="render" type="button">Render</button>
+    <button id="format" type="button">Format JSON</button>
+    <button id="download-request" type="button">Download request.json</button>
     <a id="download" hidden download="output.wav">Download output.wav</a>
   </div>
 </section>
@@ -39,6 +42,10 @@
   <audio id="player" controls preload="none" hidden></audio>
 </section>
 
+<!-- Ace 1.44.0, vendored under vendor/ace/ -- see VENDORING.md there. -->
+<script src="vendor/ace/ace.js?token=__BENCH_TOKEN__"></script>
+<script src="vendor/ace/mode-json.js?token=__BENCH_TOKEN__"></script>
+<script src="vendor/ace/theme-tomorrow_night.js?token=__BENCH_TOKEN__"></script>
 <script src="bench.js?token=__BENCH_TOKEN__"></script>
 
 </body>
