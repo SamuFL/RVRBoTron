@@ -2499,6 +2499,72 @@ int main() {
       return 1;
     }
 
+    // The reserved timeline (preDelayFrames plus tailBudgetFrames) does
+    // not depend on whether the wet branches are actually enabled:
+    // both are resolved from the Composition's own structure, not from
+    // whether Main/Early happen to be silenced -- so total output
+    // length still reserves them even when both wet branches are
+    // disabled.
+    auto bothDisabledComposition = composition;
+    bothDisabledComposition.mainEnabled = false;
+    bothDisabledComposition.preDelayMs = kPreDelayMs;
+    rvrbotron::config::ReverbConfig bothDisabledRequested;
+    bothDisabledRequested.formatVersion = 2;
+    bothDisabledRequested.seed = 7;
+    bothDisabledRequested.composition = std::move(bothDisabledComposition);
+    const auto bothDisabledResolved = rvrbotron::config::resolveConfig(
+        bothDisabledRequested, kSampleRate, 2);
+    rvrbotron::dsp::Reverb bothDisabledReverb(bothDisabledResolved);
+    if (bothDisabledReverb.preDelayFrames() != kPreDelaySamples ||
+        bothDisabledReverb.tailBudgetFrames() !=
+            preDelayReverb.tailBudgetFrames()) {
+      std::cerr << "a disabled Main wet path (and no Early Reflections) "
+                   "changed the reserved Pre-delay/Tail-budget timeline\n";
+      return 1;
+    }
+
+    // DSP-owned memory grows to include Pre-delay storage: exactly the
+    // DelayLine object's own footprint plus its reported owned storage
+    // -- checked against an independently constructed reference
+    // DelayLine (the same public API Reverb itself uses), not merely a
+    // "grew by some positive amount" bound, which a much larger audio
+    // buffer would satisfy even if the smaller sizeof(DelayLine) term
+    // were dropped entirely. Reverb holds Pre-delay's DelayLine behind
+    // a unique_ptr, unlike FeedbackLoop's embedded-by-value DelayLine
+    // (whose own sizeof(*this) already covers it), so sizeof(DelayLine)
+    // is not otherwise counted anywhere in Reverb::ownedBytes().
+    const rvrbotron::dsp::DelayLine referencePreDelayLine(
+        std::vector<std::uint64_t>(2, kPreDelaySamples),
+        std::vector<std::uint64_t>(2, kPreDelaySamples));
+    const auto expectedPreDelayBytes =
+        sizeof(rvrbotron::dsp::DelayLine) +
+        referencePreDelayLine.ownedStorageBytes();
+    if (preDelayReverb.ownedBytes() - defaultReverb.ownedBytes() !=
+        expectedPreDelayBytes) {
+      std::cerr << "DSP-owned memory did not grow by exactly the "
+                   "Pre-delay DelayLine's own object footprint plus its "
+                   "owned storage\n";
+      return 1;
+    }
+
+    // A longer configured delay grows DSP-owned memory further, proving
+    // the audio buffer itself scales rather than a fixed per-instance
+    // overhead.
+    auto longerPreDelayComposition = composition;
+    longerPreDelayComposition.preDelayMs = kPreDelayMs * 2.0;
+    rvrbotron::config::ReverbConfig longerPreDelayRequested;
+    longerPreDelayRequested.formatVersion = 2;
+    longerPreDelayRequested.seed = 7;
+    longerPreDelayRequested.composition = std::move(longerPreDelayComposition);
+    const auto longerPreDelayResolved = rvrbotron::config::resolveConfig(
+        longerPreDelayRequested, kSampleRate, 2);
+    rvrbotron::dsp::Reverb longerPreDelayReverb(longerPreDelayResolved);
+    if (longerPreDelayReverb.ownedBytes() <= preDelayReverb.ownedBytes()) {
+      std::cerr << "DSP-owned memory did not grow with a longer "
+                   "configured Pre-delay\n";
+      return 1;
+    }
+
     // Out-of-range and non-finite preDelayMs are rejected.
     for (const auto invalidPreDelayMs :
          {-1.0,

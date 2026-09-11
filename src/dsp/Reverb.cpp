@@ -194,6 +194,9 @@ void Reverb::process(const Sample* const* inputs,
   // Channel coupling for that ordering to protect. Declared once outside
   // the frame loop; only its contents change per frame, never its shape,
   // so this allocates nothing regardless of preDelayLine's presence.
+  // Fixed at 2 (state.inputChannels is validated elsewhere to be 1 or
+  // 2, mono or stereo source) rather than sized from inputChannelCount,
+  // since sizing it would itself need an allocation.
   Sample preDelayedFrame[2]{};
   const Sample* const preDelayedFramePointers[]{
       &preDelayedFrame[0], &preDelayedFrame[1]};
@@ -377,7 +380,16 @@ std::size_t Reverb::ownedBytes() const noexcept {
                       ownedVectorBytes(state.midStageValues) +
                       ownedVectorBytes(state.diffuserOutputValues);
   if (state.preDelayLine != nullptr) {
-    total += state.preDelayLine->ownedStorageBytes();
+    // DelayLine::ownedStorageBytes() is deliberately the backing-vector
+    // allocations only (see its own doc comment): FeedbackLoop embeds
+    // its DelayLine by value, so FeedbackLoop's own sizeof(*this)
+    // already covers DelayLine's object storage there. Reverb instead
+    // holds Pre-delay's DelayLine behind a unique_ptr -- a second heap
+    // allocation neither sizeof(state) above nor ownedStorageBytes()
+    // accounts for -- so sizeof(DelayLine) itself must be added here
+    // explicitly, mirroring how Split::ownedBytes() covers its own
+    // heap-held SplitStrategy.
+    total += sizeof(DelayLine) + state.preDelayLine->ownedStorageBytes();
   }
   if (state.split != nullptr) {
     total += state.split->ownedBytes();

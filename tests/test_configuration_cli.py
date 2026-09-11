@@ -3523,6 +3523,45 @@ def main():
             f"tailBudgetFrames: {pre_delay_metadata}"
         )
 
+    # The same total-length formula holds even when both wet branches
+    # are disabled: preDelayFrames and tailBudgetFrames are resolved
+    # from the Composition's own structure, not from whether Main/Early
+    # happen to be silenced. wetOnly stays at its default (true), so
+    # output.wav is pure silence throughout despite reserving the full
+    # timeline.
+    pre_delay_both_disabled_document = envelope_document(
+        {"mainEnabled": False, "preDelayMs": pre_delay_ms}
+    )
+    pre_delay_both_disabled_result = render_envelope_document(
+        pre_delay_both_disabled_document, fixture, "pre-delay-both-disabled"
+    )
+    pre_delay_both_disabled_metadata = json.loads(
+        (pre_delay_both_disabled_result / "render.json").read_text()
+    )
+    if pre_delay_both_disabled_metadata["preDelayFrames"] != pre_delay_samples:
+        raise AssertionError(
+            f"a disabled Main wet path (and no Early Reflections) changed "
+            f"the resolved preDelayFrames: {pre_delay_both_disabled_metadata}"
+        )
+    if pre_delay_both_disabled_metadata["frames"] != (
+        pre_delay_both_disabled_metadata["inputFrames"]
+        + pre_delay_both_disabled_metadata["preDelayFrames"]
+        + pre_delay_both_disabled_metadata["tailBudgetFrames"]
+    ):
+        raise AssertionError(
+            f"total output length was not inputFrames + preDelayFrames + "
+            f"tailBudgetFrames with both wet branches disabled: "
+            f"{pre_delay_both_disabled_metadata}"
+        )
+    _, pre_delay_both_disabled_samples = read_float_wav(
+        pre_delay_both_disabled_result / "output.wav"
+    )
+    if any(value != 0.0 for value in pre_delay_both_disabled_samples):
+        raise AssertionError(
+            "both wet branches disabled (with wetOnly still muting dry) "
+            "did not render exact stereo silence"
+        )
+
     # The wet path receives silence for exactly the resolved Pre-delay
     # interval before the (delayed) source reaches Split; the dry signal
     # stays sample-aligned from frame zero. Verified by exact equivalence

@@ -1601,6 +1601,33 @@ void validateFloatRepresentableGain(
   }
 }
 
+// Pre-delay's own ms-to-samples resolution (issue #133): the established
+// nearest-frame rule (`floor(exactSamples + 0.5)`) already used by the
+// Diffuser's own sample-budget derivation (deriveSampleBudget above) and
+// the Feedback Loop's own delay resolution -- written once here so
+// resolveConfig's derivation and validateResolvedConfig's independent
+// re-derivation cannot drift from each other. Returns 0 for a
+// non-finite preDelayMs or one whose exact-samples value would not fit
+// in a std::uint64_t, rather than converting either directly (undefined
+// behavior for NaN or an out-of-range value): both are already invalid
+// on their own terms and rejected by validateResolvedConfig's own
+// finite-range check, so an exact 0 here is immaterial rather than
+// silently wrong.
+std::uint64_t resolvePreDelaySamples(
+    const double preDelayMs, const std::uint32_t sampleRate) noexcept {
+  if (!std::isfinite(preDelayMs)) {
+    return 0;
+  }
+  const auto exactSamples =
+      static_cast<long double>(preDelayMs) * sampleRate / 1000.0L;
+  if (!std::isfinite(exactSamples) ||
+      exactSamples >=
+          static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(std::floor(exactSamples + 0.5L));
+}
+
 // Early's own `select` Downmix default (issue #111, docs/design/reverb/
 // stages/09-composition.md's "A present Early Reflections branch defaults
 // to ... select Channels 0/1 (or Channel 0 duplicated at N=1)"), unlike
@@ -1847,30 +1874,13 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
     resolved.composition.wetOnly =
         requestedComposition->wetOnly.value_or(true);
     // Pre-delay (issue #133): defaults to 0 (no delay), completing the
-    // Composition envelope. Resolved by the established nearest-frame
-    // rule shared with the Diffuser's own sample-budget derivation and
-    // the Feedback Loop's own delay resolution above (`floor(exactSamples
-    // + 0.5)`) -- recorded explicitly as `preDelaySamples` so rerendering
-    // never repeats the floating-point conversion. Guarded against
-    // non-finite/overflowing input rather than converting it to
-    // std::uint64_t directly (undefined behavior for NaN or an
-    // out-of-range value): an invalid preDelayMs is rejected on its own
-    // terms by validateResolvedConfig below, where preDelaySamples
-    // staying 0 here is immaterial.
+    // Composition envelope. resolvePreDelaySamples above recorded
+    // explicitly as `preDelaySamples` so rerendering never repeats the
+    // floating-point conversion.
     resolved.composition.preDelayMs =
         requestedComposition->preDelayMs.value_or(0.0);
-    if (std::isfinite(resolved.composition.preDelayMs)) {
-      const auto preDelayExactSamples =
-          static_cast<long double>(resolved.composition.preDelayMs) *
-          sampleRate / 1000.0L;
-      if (std::isfinite(preDelayExactSamples) &&
-          preDelayExactSamples <
-              static_cast<long double>(
-                  std::numeric_limits<std::uint64_t>::max())) {
-        resolved.composition.preDelaySamples = static_cast<std::uint64_t>(
-            std::floor(preDelayExactSamples + 0.5L));
-      }
-    }
+    resolved.composition.preDelaySamples = resolvePreDelaySamples(
+        resolved.composition.preDelayMs, sampleRate);
     const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
         std::holds_alternative<SplitConfig>(
@@ -3490,18 +3500,11 @@ void validateResolvedConfig(
         "/composition/preDelayMs",
         "expected a finite value within 0-200 ms");
   }
-  // preDelaySamples must be derived from preDelayMs by the established
-  // nearest-frame rule (see resolveConfig's own derivation above) --
-  // sampleRate is already validated nonzero above, and preDelayMs is
-  // already bounded finite within [0, 200] by the check just above, so
-  // this multiplication cannot itself produce a non-finite or
-  // out-of-range exact-samples value the way an unbounded preDelayMs
-  // could.
-  const auto preDelayExactSamples =
-      static_cast<long double>(resolved.composition.preDelayMs) *
-      resolved.sampleRate / 1000.0L;
-  const auto expectedPreDelaySamples = static_cast<std::uint64_t>(
-      std::floor(preDelayExactSamples + 0.5L));
+  // preDelaySamples must be derived from preDelayMs by resolvePreDelaySamples
+  // above -- the same helper resolveConfig itself uses, so the two
+  // cannot drift.
+  const auto expectedPreDelaySamples = resolvePreDelaySamples(
+      resolved.composition.preDelayMs, resolved.sampleRate);
   if (resolved.composition.preDelaySamples != expectedPreDelaySamples) {
     fail(
         "/composition/preDelaySamples",
