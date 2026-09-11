@@ -45,9 +45,11 @@ is the same thing said explicitly.
 }
 ```
 
-Echo density without decay. Every field here is already the default — the
-shortest form is `{"type": "split"}`, `{"type": "diffuser"}`,
-`{"type": "downmix", "strategy": "select", "leftChannel": 0}`.
+Echo density without decay. Every value shown is already the default, so
+`{"type": "split"}` and `{"type": "diffuser"}` render identically. The Downmix
+is the exception: `leftChannel` must always be named, and dropping
+`rightChannel` is not a shorthand — it mono-duplicates `leftChannel` instead of
+picking Channel 1.
 
 ### A decaying tail
 
@@ -170,7 +172,7 @@ trajectories.
 
 ## Composition envelope
 
-Applies to the whole wet path. All five are rejected on an identity
+Applies to the whole wet path. Every field here is rejected on an identity
 Composition — there is no wet path for them to affect.
 See [stage 09](../design/reverb/stages/09-composition.md).
 
@@ -249,6 +251,14 @@ and `"random-orthogonal"` accept any N. `"uniform-random"` samples each
 Channel's delay with replacement, so it permits duplicate delays — the other
 two strategies require N distinct positions.
 
+A Diffuser is rejected before it allocates if its estimated DSP memory
+(delay lines plus per-step mix matrices) exceeds the budget — 512 MiB by
+default. Raise it for a large N or a long `totalMs`:
+
+```bash
+build/default/rvrbotron render --memory-budget-mib 2048 ...
+```
+
 ## `feedback-loop` stage
 
 [Stage 04](../design/reverb/stages/04-feedback-loop.md). Circulating delay
@@ -268,6 +278,7 @@ energy on purpose, and its output is unaligned.
 | `modulation` | object, or omitted | omitted (off) |
 
 - Delay range reads as room size; `delayMinMs` also sets the pre-tail gap.
+  `delayMaxMs` must be at least `delayMinMs`.
 - `rt60Sec` is the requested decay at the 1 kHz Reference band, solved into
   per-Channel gain at configuration time.
 - `decayMargin` multiplies `rt60Sec` to derive the Tail budget — how many
@@ -348,8 +359,9 @@ to stereo.
 - `widthDeg` is a constant-power mid/side law: `0` is mono, `90` an exact
   bypass, `180` side-only and out of phase.
 
-`orthogonal-rows`, `halves`, and `alternating` need N ≥ 2 and reject
-`leftChannel`/`rightChannel`. `select` and `sum-all` work down to N = 1.
+`select` is the only strategy that accepts `leftChannel`/`rightChannel`; every
+other strategy rejects them. `orthogonal-rows`, `halves`, and `alternating`
+need N ≥ 2; `select` and `sum-all` work down to N = 1.
 
 ## `early` branch
 
@@ -362,7 +374,7 @@ the result into the same stereo output. Never feeds the Feedback Loop.
 | `enabled` | boolean | `true` |
 | `levelDb` | finite number (dB) | `0` |
 | `decayDbPerSec` | finite number ≥ 0 | `0` |
-| `taps` | array of `{stepIndex, gainDb?}` | *required* |
+| `taps` | array of `{stepIndex, gainDb?}` | unset (no branch) |
 | `taps[].stepIndex` | unique index in `[0, steps)` | *required* |
 | `taps[].gainDb` | finite number (dB) | `0` |
 | `downmix` | object, or omitted | omitted (`select` Channels 0/1) |

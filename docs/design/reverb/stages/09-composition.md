@@ -52,11 +52,14 @@ The valid serial shapes remain:
 
 ```text
 []
-[split, downmix]
 [split, diffuser, downmix]
 [split, feedback-loop, downmix]
 [split, diffuser, feedback-loop, downmix]
 ```
+
+A bare `[split, downmix]` was considered but is not implemented: `validateShape`
+requires a Diffuser or a Feedback Loop between them, so a Composition with
+neither is the empty identity.
 
 A Feedback Loop sits in series after a Diffuser and never inside it, so the four-stage shape only ever admits that one middle order.
 
