@@ -312,9 +312,9 @@ the Feedback Loop `stages/1`, the Downmix `stages/2`. The Split's `channels`
 /composition/stages/0/channels
 ```
 
-Any field in the [request-field
-reference](../../README.md#render-a-requested-configuration) can be addressed
-this way — `/composition/stages/1/rt60Sec` for the loop's RT60,
+Any field in [Configure the
+Composition](configure-the-composition.md) can be addressed this way —
+`/composition/stages/1/rt60Sec` for the loop's RT60,
 `/composition/stages/2/widthDeg` for Main Width, and so on.
 
 ### 3. Add your axis to `axes`
