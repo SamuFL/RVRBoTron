@@ -537,6 +537,64 @@ def main():
             f"{bypass_owners}"
         )
 
+    # A nonzero Pre-delay (issue #133) extends the render's own total
+    # drain past what tailBudgetFrames alone authorises; the analyzer's
+    # own expected-frames check, and its bounded-energy tail window,
+    # must both account for preDelayFrames rather than rejecting the
+    # renderer's own valid, longer output or measuring "post-input"
+    # decay while delayed source material is still arriving at Split.
+    pre_delay_document = feedback_loop_request(
+        damping={"highRatio": 0.5, "highHz": 4000, "lowRatio": 1.0},
+        modulation={
+            "depthMs": 0.4,
+            "rateHz": 0.7,
+            "shape": "sine",
+            "interpolation": "linear",
+        },
+    )
+    pre_delay_document["composition"]["preDelayMs"] = 10.0
+    pre_delay_request_path = workspace / "pre-delay-request.json"
+    pre_delay_request_path.write_text(json.dumps(pre_delay_document))
+    pre_delay_render_result = workspace / "pre-delay-render-result"
+    run_renderer(
+        renderer, pre_delay_request_path, pre_delay_render_result, fixture
+    )
+    pre_delay_analyzed = run_analyzer(
+        modulation_analyzer, pre_delay_render_result, fixture
+    )
+    if pre_delay_analyzed.returncode != 0:
+        raise AssertionError(
+            f"modulation analyzer rejected a valid nonzero Pre-delay "
+            f"render: {pre_delay_analyzed.stderr}"
+        )
+    pre_delay_metadata = json.loads(
+        (pre_delay_render_result / "render.json").read_text()
+    )
+    if pre_delay_metadata["preDelayFrames"] != 480:  # 10ms @ 48kHz, exact
+        raise AssertionError(f"unexpected preDelayFrames: {pre_delay_metadata}")
+    pre_delay_analysis = json.loads(
+        (pre_delay_render_result / "analysis" / "modulation-v1.json").read_text()
+    )
+    expected_pre_delay_frames = (
+        pre_delay_metadata["inputFrames"]
+        + pre_delay_metadata["preDelayFrames"]
+        + pre_delay_metadata["tailBudgetFrames"]
+    )
+    if (
+        pre_delay_analysis["completeResponse"]["expectedFrames"]
+        != expected_pre_delay_frames
+        or pre_delay_analysis["completeResponse"]["frameCountCheck"] != "exact"
+    ):
+        raise AssertionError(
+            f"modulation-v1's own expectedFrames did not include "
+            f"preDelayFrames: {pre_delay_analysis['completeResponse']}"
+        )
+    if pre_delay_analysis["boundedEnergy"]["segmentCount"] == 0:
+        raise AssertionError(
+            "the bounded-energy tail window collapsed to nothing under "
+            f"a nonzero Pre-delay: {pre_delay_analysis}"
+        )
+
 
 if __name__ == "__main__":
     main()

@@ -94,10 +94,13 @@ The immutable Render Result contains:
 `render.json` records the input filename and SHA-256, renderer version,
 platform, architecture, sample precision, block size, configuration input
 mode, sample rate, output channel count, input frame count, output frame
-count, and the resolved Tail budget authorised for draining past input EOF
-(0 for a Composition with no Diffuser or Feedback Loop). It intentionally
-contains no timestamp, host or user identity, full input path, or
-source-tree fingerprint.
+count, the resolved Pre-delay authorised before Split (`preDelayFrames`,
+0 for the empty identity Composition or zero Pre-delay, issue #133), and
+the resolved Tail budget authorised for draining past input EOF
+(`tailBudgetFrames`, 0 for a Composition with no Diffuser or Feedback
+Loop -- kept separate from `preDelayFrames` so onset delay is never
+confused with decay duration). It intentionally contains no timestamp,
+host or user identity, full input path, or source-tree fingerprint.
 
 Rendering builds the evidence in a temporary sibling and publishes it
 atomically. Choose a fresh output path for every render because an existing
@@ -207,6 +210,7 @@ build/default/rvrbotron render \
 | `composition.dryDb` | finite number (dB) | `0` | The Composition's own dry level (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Stays legal and preserved while `wetOnly` gates it off; Resolved Configuration additionally records the derived linear `dryGain`. |
 | `composition.wetDb` | finite number (dB) | `0` | The Composition's own global wet level, applied once to the complete Wet sum (Main plus Early) before dry is mixed in (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived linear `wetGain`. |
 | `composition.wetOnly` | boolean | `true` | An exact gate on the dry path (issue #131): `true` (the default, reproducing every pre-envelope render) mutes dry regardless of `dryDb`; `false` maps dry into the mix, stereo input channel-for-channel and mono duplicated to both channels without energy compensation. Not applicable, and rejected, when `composition.stages` is empty. |
+| `composition.preDelayMs` | finite number (ms), 0-200 | `0` | A single delay before Split, applied to the wet path only; dry stays sample-aligned from frame zero (issue #133). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived integer `preDelaySamples` (the established nearest-frame rule), separate from Render Result's own `tailBudgetFrames`. |
 
 #### `split` stage
 
@@ -605,8 +609,9 @@ python3 tools/analyze_diffusion.py \
 ```
 
 `analysis/diffusion-v1.json` verifies source and Stage-capture provenance,
-requires `inputFrames + resolved diffuser.totalSamples` frames in the output
-and every capture, measures the actual captured Split and cumulative Diffusion
+requires `inputFrames + preDelayFrames + resolved diffuser.totalSamples`
+frames in the output and every capture, measures the actual captured Split
+and cumulative Diffusion
 Step energies (including each step's relative error from Split), and measures
 orthogonality from every serialized resolved matrix (Hadamard, Householder, or
 RandomOrthogonal alike). Python does not reconstruct Split mapping or DSP
@@ -716,10 +721,11 @@ elsewhere in this document.
 `[split, feedback-loop, downmix]` or `[split, diffuser, feedback-loop,
 downmix]`; any other shape is rejected. It verifies source provenance from
 `render.json` and checks the output frame count against
-`inputFrames + tailBudgetFrames` -- exactly, while the dormant
-`silenceFloorDb` seam is disabled, relaxing to an upper bound once it is
-enabled, keyed off the Resolved Configuration rather than a schema change.
-Measurement reads only `output.wav`; no Stage captures are required.
+`inputFrames + preDelayFrames + tailBudgetFrames` -- exactly, while the
+dormant `silenceFloorDb` seam is disabled, relaxing to an upper bound
+once it is enabled, keyed off the Resolved Configuration rather than a
+schema change. Measurement reads only `output.wav`; no Stage captures
+are required.
 
 RT60 is measured per octave band from 63 Hz to 16 kHz by Schroeder backward
 integration of the band-limited stereo output's energy (a raised-cosine

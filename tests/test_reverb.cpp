@@ -2192,14 +2192,19 @@ int main() {
   // wetOnly set on the empty identity Composition must be rejected
   // there directly.
   for (const auto& emptyField :
-       {std::string("dryDb"), std::string("wetDb"), std::string("wetOnly")}) {
+       {std::string("dryDb"),
+        std::string("wetDb"),
+        std::string("wetOnly"),
+        std::string("preDelayMs")}) {
     rvrbotron::config::CompositionConfig emptyWithEnvelopeField;
     if (emptyField == "dryDb") {
       emptyWithEnvelopeField.dryDb = -6.0;
     } else if (emptyField == "wetDb") {
       emptyWithEnvelopeField.wetDb = -6.0;
-    } else {
+    } else if (emptyField == "wetOnly") {
       emptyWithEnvelopeField.wetOnly = false;
+    } else {
+      emptyWithEnvelopeField.preDelayMs = 20.0;
     }
     rvrbotron::config::ReverbConfig requested;
     requested.formatVersion = 2;
@@ -2231,7 +2236,9 @@ int main() {
         std::string("dryGain"),
         std::string("wetDb"),
         std::string("wetGain"),
-        std::string("wetOnly")}) {
+        std::string("wetOnly"),
+        std::string("preDelayMs"),
+        std::string("preDelaySamples")}) {
     rvrbotron::dsp::ResolvedConfig handBuiltEmptyWithEnvelope;
     handBuiltEmptyWithEnvelope.formatVersion = 2;
     handBuiltEmptyWithEnvelope.sampleRate = 48000;
@@ -2243,8 +2250,12 @@ int main() {
       handBuiltEmptyWithEnvelope.composition.wetDb = -6.0;
     } else if (nonNeutralField == "wetGain") {
       handBuiltEmptyWithEnvelope.composition.wetGain = 0.5;
-    } else {
+    } else if (nonNeutralField == "wetOnly") {
       handBuiltEmptyWithEnvelope.composition.wetOnly = false;
+    } else if (nonNeutralField == "preDelayMs") {
+      handBuiltEmptyWithEnvelope.composition.preDelayMs = 20.0;
+    } else {
+      handBuiltEmptyWithEnvelope.composition.preDelaySamples = 960;
     }
     bool rejected = false;
     try {
@@ -2256,6 +2267,351 @@ int main() {
       std::cerr << "validateResolvedConfig accepted a non-neutral "
                 << nonNeutralField
                 << " on a hand-built empty identity Composition\n";
+      return 1;
+    }
+  }
+
+  // Pre-delay (issue #133, docs/design/reverb/stages/09-composition.md's
+  // "Pre-delay and dry/wet"): a single delay before Split, completing
+  // the Composition envelope.
+  {
+    rvrbotron::config::SplitConfig split;
+    split.channels = 2;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    auto downmix = referenceSelectDownmixConfig(2);
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmix);
+
+    constexpr std::uint32_t kSampleRate = 48000;
+    constexpr double kPreDelayMs = 10.0;
+    // 10ms @ 48kHz is exact (480.0), so the nearest-frame rule's rounding
+    // is not itself under test here -- a fixture chosen to isolate
+    // Pre-delay's own behavior from the rounding formula.
+    constexpr std::uint64_t kPreDelaySamples = 480;
+
+    // Nearest-frame resolution.
+    auto preDelayComposition = composition;
+    preDelayComposition.wetOnly = false;
+    preDelayComposition.preDelayMs = kPreDelayMs;
+    rvrbotron::config::ReverbConfig preDelayRequested;
+    preDelayRequested.formatVersion = 2;
+    preDelayRequested.seed = 7;
+    preDelayRequested.composition = preDelayComposition;
+    const auto preDelayResolved =
+        rvrbotron::config::resolveConfig(preDelayRequested, kSampleRate, 2);
+    if (preDelayResolved.composition.preDelayMs != kPreDelayMs ||
+        preDelayResolved.composition.preDelaySamples != kPreDelaySamples) {
+      std::cerr << "preDelayMs: 10 did not resolve the expected "
+                   "nearest-frame sample count\n";
+      return 1;
+    }
+
+    // A non-empty Composition defaults to 0 ms / 0 sample Pre-delay, and
+    // zero Pre-delay bypasses delay processing: complete omission and an
+    // explicit 0 resolve and render bit-identically.
+    rvrbotron::config::ReverbConfig defaultRequested;
+    defaultRequested.formatVersion = 2;
+    defaultRequested.seed = 7;
+    defaultRequested.composition = composition;
+    const auto defaultResolved =
+        rvrbotron::config::resolveConfig(defaultRequested, kSampleRate, 2);
+    if (defaultResolved.composition.preDelayMs != 0.0 ||
+        defaultResolved.composition.preDelaySamples != 0) {
+      std::cerr << "a non-empty Composition did not default to 0 ms / "
+                   "0 sample Pre-delay\n";
+      return 1;
+    }
+    auto explicitZeroComposition = composition;
+    explicitZeroComposition.preDelayMs = 0.0;
+    rvrbotron::config::ReverbConfig explicitZeroRequested;
+    explicitZeroRequested.formatVersion = 2;
+    explicitZeroRequested.seed = 7;
+    explicitZeroRequested.composition = std::move(explicitZeroComposition);
+    const auto explicitZeroResolved = rvrbotron::config::resolveConfig(
+        explicitZeroRequested, kSampleRate, 2);
+
+    constexpr std::size_t kFrames = 600; // > kPreDelaySamples (480)
+    std::vector<rvrbotron::dsp::Sample> steadyLeft(
+        kFrames, rvrbotron::dsp::Sample{1});
+    std::vector<rvrbotron::dsp::Sample> steadyRight(
+        kFrames, rvrbotron::dsp::Sample{1});
+    const rvrbotron::dsp::Sample* steadyInputs[]{
+        steadyLeft.data(), steadyRight.data()};
+
+    rvrbotron::dsp::Reverb defaultReverb(defaultResolved);
+    rvrbotron::dsp::Reverb explicitZeroReverb(explicitZeroResolved);
+    if (defaultReverb.preDelayFrames() != 0 ||
+        explicitZeroReverb.preDelayFrames() != 0) {
+      std::cerr << "omitted/explicit-zero Pre-delay did not report zero "
+                   "preDelayFrames\n";
+      return 1;
+    }
+    std::vector<rvrbotron::dsp::Sample> defaultLeft(kFrames);
+    std::vector<rvrbotron::dsp::Sample> defaultRight(kFrames);
+    std::vector<rvrbotron::dsp::Sample> explicitZeroLeft(kFrames);
+    std::vector<rvrbotron::dsp::Sample> explicitZeroRight(kFrames);
+    rvrbotron::dsp::Sample* defaultOutputs[]{
+        defaultLeft.data(), defaultRight.data()};
+    rvrbotron::dsp::Sample* explicitZeroOutputs[]{
+        explicitZeroLeft.data(), explicitZeroRight.data()};
+    beginAllocationCount();
+    defaultReverb.process(steadyInputs, 2, defaultOutputs, 2, kFrames);
+    explicitZeroReverb.process(
+        steadyInputs, 2, explicitZeroOutputs, 2, kFrames);
+    if (endAllocationCount() != 0) {
+      std::cerr << "zero Pre-delay allocated while processing\n";
+      return 1;
+    }
+    if (defaultLeft != explicitZeroLeft || defaultRight != explicitZeroRight) {
+      std::cerr << "omitted and explicit-zero Pre-delay did not render "
+                   "bit-identically\n";
+      return 1;
+    }
+
+    // The wet path receives silence for exactly preDelaySamples frames
+    // before the (delayed) source reaches Split; the dry signal stays
+    // sample-aligned from frame zero. Verified two ways: (1) the "split"
+    // Stage capture, by exact equivalence against a reference fed a
+    // manually zero-padded input at zero Pre-delay -- rigorous without
+    // assuming anything about Split's own internal scaling; (2) frame
+    // zero of the final output, where wet is still exact silence (the
+    // Diffuser's own step delay is comfortably longer than one frame),
+    // isolating dry directly.
+    auto referenceComposition = composition;
+    referenceComposition.wetOnly = false;
+    rvrbotron::config::ReverbConfig referenceRequested;
+    referenceRequested.formatVersion = 2;
+    referenceRequested.seed = 7;
+    referenceRequested.composition = std::move(referenceComposition);
+    const auto referenceResolved =
+        rvrbotron::config::resolveConfig(referenceRequested, kSampleRate, 2);
+
+    class SplitCaptureCollector final : public rvrbotron::dsp::StageCaptureSink {
+    public:
+      std::vector<rvrbotron::dsp::Sample> left;
+      std::vector<rvrbotron::dsp::Sample> right;
+
+      void captureFrame(
+          const rvrbotron::dsp::StageCaptureBoundary boundary,
+          const std::uint32_t,
+          const rvrbotron::dsp::Sample* const channels,
+          const std::size_t channelCount) noexcept override {
+        if (boundary != rvrbotron::dsp::StageCaptureBoundary::split) {
+          return;
+        }
+        left.push_back(channels[0]);
+        right.push_back(channelCount > 1 ? channels[1] : channels[0]);
+      }
+    };
+
+    SplitCaptureCollector preDelayCapture;
+    rvrbotron::dsp::Reverb preDelayReverb(preDelayResolved, &preDelayCapture);
+    std::vector<rvrbotron::dsp::Sample> preDelayLeft(kFrames);
+    std::vector<rvrbotron::dsp::Sample> preDelayRight(kFrames);
+    rvrbotron::dsp::Sample* preDelayOutputs[]{
+        preDelayLeft.data(), preDelayRight.data()};
+    if (preDelayReverb.preDelayFrames() != kPreDelaySamples) {
+      std::cerr << "Reverb::preDelayFrames() did not report the resolved "
+                   "Pre-delay\n";
+      return 1;
+    }
+    preDelayReverb.process(steadyInputs, 2, preDelayOutputs, 2, kFrames);
+
+    std::vector<rvrbotron::dsp::Sample> paddedLeft(kFrames, rvrbotron::dsp::Sample{0});
+    std::vector<rvrbotron::dsp::Sample> paddedRight(kFrames, rvrbotron::dsp::Sample{0});
+    std::copy(
+        steadyLeft.begin(),
+        steadyLeft.end() - static_cast<std::ptrdiff_t>(kPreDelaySamples),
+        paddedLeft.begin() + static_cast<std::ptrdiff_t>(kPreDelaySamples));
+    std::copy(
+        steadyRight.begin(),
+        steadyRight.end() - static_cast<std::ptrdiff_t>(kPreDelaySamples),
+        paddedRight.begin() + static_cast<std::ptrdiff_t>(kPreDelaySamples));
+    const rvrbotron::dsp::Sample* paddedInputs[]{
+        paddedLeft.data(), paddedRight.data()};
+
+    SplitCaptureCollector referenceCapture;
+    rvrbotron::dsp::Reverb referenceReverb(
+        referenceResolved, &referenceCapture);
+    std::vector<rvrbotron::dsp::Sample> referenceLeft(kFrames);
+    std::vector<rvrbotron::dsp::Sample> referenceRight(kFrames);
+    rvrbotron::dsp::Sample* referenceOutputs[]{
+        referenceLeft.data(), referenceRight.data()};
+    referenceReverb.process(paddedInputs, 2, referenceOutputs, 2, kFrames);
+
+    if (preDelayReverb.tailBudgetFrames() != referenceReverb.tailBudgetFrames()) {
+      std::cerr << "Pre-delay changed tailBudgetFrames, which must keep "
+                   "its existing decay-only meaning\n";
+      return 1;
+    }
+    for (std::size_t frame = 0; frame < kPreDelaySamples; ++frame) {
+      if (preDelayCapture.left[frame] != rvrbotron::dsp::Sample{0} ||
+          preDelayCapture.right[frame] != rvrbotron::dsp::Sample{0}) {
+        std::cerr << "the wet path was not exact silence during the "
+                     "resolved Pre-delay interval at frame " << frame
+                  << '\n';
+        return 1;
+      }
+    }
+    if (preDelayCapture.left != referenceCapture.left ||
+        preDelayCapture.right != referenceCapture.right) {
+      std::cerr << "Pre-delay did not reproduce a manually zero-padded, "
+                   "zero-Pre-delay reference at the split Stage capture\n";
+      return 1;
+    }
+    // Frame zero: wet is still exact silence (the Diffuser's own step
+    // delay exceeds one frame), so output equals dry alone -- proving
+    // the dry signal is sample-aligned from frame zero, not delayed
+    // alongside wet.
+    if (!close(preDelayLeft[0], 1.0) || !close(preDelayRight[0], 1.0)) {
+      std::cerr << "dry was not sample-aligned from frame zero under a "
+                   "nonzero Pre-delay\n";
+      return 1;
+    }
+
+    // Representative renders are identical across legal block sizes,
+    // including a Pre-delay boundary (480 samples) falling within and
+    // across block boundaries -- 7 shares no common factor with 480.
+    SplitCaptureCollector blockedCapture;
+    rvrbotron::dsp::Reverb blockedReverb(preDelayResolved, &blockedCapture);
+    std::vector<rvrbotron::dsp::Sample> blockedLeft(kFrames);
+    std::vector<rvrbotron::dsp::Sample> blockedRight(kFrames);
+    std::size_t rendered = 0;
+    while (rendered < kFrames) {
+      const auto blockFrames = std::min<std::size_t>(7, kFrames - rendered);
+      const rvrbotron::dsp::Sample* blockInputs[]{
+          steadyLeft.data() + rendered, steadyRight.data() + rendered};
+      rvrbotron::dsp::Sample* blockOutputs[]{
+          blockedLeft.data() + rendered, blockedRight.data() + rendered};
+      blockedReverb.process(blockInputs, 2, blockOutputs, 2, blockFrames);
+      rendered += blockFrames;
+    }
+    if (blockedLeft != preDelayLeft || blockedRight != preDelayRight) {
+      std::cerr << "Pre-delay output changed when rendered in 7-frame "
+                   "blocks instead of one call\n";
+      return 1;
+    }
+
+    // The reserved timeline (preDelayFrames plus tailBudgetFrames) does
+    // not depend on whether the wet branches are actually enabled:
+    // both are resolved from the Composition's own structure, not from
+    // whether Main/Early happen to be silenced -- so total output
+    // length still reserves them even when both wet branches are
+    // disabled.
+    auto bothDisabledComposition = composition;
+    bothDisabledComposition.mainEnabled = false;
+    bothDisabledComposition.preDelayMs = kPreDelayMs;
+    rvrbotron::config::ReverbConfig bothDisabledRequested;
+    bothDisabledRequested.formatVersion = 2;
+    bothDisabledRequested.seed = 7;
+    bothDisabledRequested.composition = std::move(bothDisabledComposition);
+    const auto bothDisabledResolved = rvrbotron::config::resolveConfig(
+        bothDisabledRequested, kSampleRate, 2);
+    rvrbotron::dsp::Reverb bothDisabledReverb(bothDisabledResolved);
+    if (bothDisabledReverb.preDelayFrames() != kPreDelaySamples ||
+        bothDisabledReverb.tailBudgetFrames() !=
+            preDelayReverb.tailBudgetFrames()) {
+      std::cerr << "a disabled Main wet path (and no Early Reflections) "
+                   "changed the reserved Pre-delay/Tail-budget timeline\n";
+      return 1;
+    }
+
+    // DSP-owned memory grows to include Pre-delay storage: exactly the
+    // DelayLine object's own footprint plus its reported owned storage
+    // -- checked against an independently constructed reference
+    // DelayLine (the same public API Reverb itself uses), not merely a
+    // "grew by some positive amount" bound, which a much larger audio
+    // buffer would satisfy even if the smaller sizeof(DelayLine) term
+    // were dropped entirely. Reverb holds Pre-delay's DelayLine behind
+    // a unique_ptr, unlike FeedbackLoop's embedded-by-value DelayLine
+    // (whose own sizeof(*this) already covers it), so sizeof(DelayLine)
+    // is not otherwise counted anywhere in Reverb::ownedBytes().
+    const rvrbotron::dsp::DelayLine referencePreDelayLine(
+        std::vector<std::uint64_t>(2, kPreDelaySamples),
+        std::vector<std::uint64_t>(2, kPreDelaySamples));
+    const auto expectedPreDelayBytes =
+        sizeof(rvrbotron::dsp::DelayLine) +
+        referencePreDelayLine.ownedStorageBytes();
+    if (preDelayReverb.ownedBytes() - defaultReverb.ownedBytes() !=
+        expectedPreDelayBytes) {
+      std::cerr << "DSP-owned memory did not grow by exactly the "
+                   "Pre-delay DelayLine's own object footprint plus its "
+                   "owned storage\n";
+      return 1;
+    }
+
+    // A longer configured delay grows DSP-owned memory further, proving
+    // the audio buffer itself scales rather than a fixed per-instance
+    // overhead.
+    auto longerPreDelayComposition = composition;
+    longerPreDelayComposition.preDelayMs = kPreDelayMs * 2.0;
+    rvrbotron::config::ReverbConfig longerPreDelayRequested;
+    longerPreDelayRequested.formatVersion = 2;
+    longerPreDelayRequested.seed = 7;
+    longerPreDelayRequested.composition = std::move(longerPreDelayComposition);
+    const auto longerPreDelayResolved = rvrbotron::config::resolveConfig(
+        longerPreDelayRequested, kSampleRate, 2);
+    rvrbotron::dsp::Reverb longerPreDelayReverb(longerPreDelayResolved);
+    if (longerPreDelayReverb.ownedBytes() <= preDelayReverb.ownedBytes()) {
+      std::cerr << "DSP-owned memory did not grow with a longer "
+                   "configured Pre-delay\n";
+      return 1;
+    }
+
+    // Out-of-range and non-finite preDelayMs are rejected.
+    for (const auto invalidPreDelayMs :
+         {-1.0,
+          201.0,
+          std::numeric_limits<double>::quiet_NaN(),
+          std::numeric_limits<double>::infinity()}) {
+      auto invalidComposition = composition;
+      invalidComposition.preDelayMs = invalidPreDelayMs;
+      rvrbotron::config::ReverbConfig invalidRequested;
+      invalidRequested.formatVersion = 2;
+      invalidRequested.seed = 7;
+      invalidRequested.composition = std::move(invalidComposition);
+      bool invalidRejected = false;
+      try {
+        static_cast<void>(
+            rvrbotron::config::resolveConfig(invalidRequested, kSampleRate, 2));
+      } catch (const rvrbotron::HarnessError&) {
+        invalidRejected = true;
+      }
+      if (!invalidRejected) {
+        std::cerr << "resolveConfig accepted an out-of-range or "
+                     "non-finite preDelayMs: " << invalidPreDelayMs << '\n';
+        return 1;
+      }
+    }
+
+    // A preDelaySamples inconsistent with its preDelayMs is rejected by
+    // the direct validator, naming the derivation it violates.
+    auto inconsistentResolved = preDelayResolved;
+    inconsistentResolved.composition.preDelaySamples = kPreDelaySamples + 1;
+    bool inconsistentRejected = false;
+    try {
+      rvrbotron::config::validateResolvedConfig(inconsistentResolved);
+    } catch (const rvrbotron::HarnessError& error) {
+      inconsistentRejected = true;
+      if (!error.location().has_value() ||
+          error.location()->find("/composition/preDelaySamples") ==
+              std::string::npos) {
+        std::cerr << "an inconsistent preDelaySamples was not rejected "
+                     "at its own path: "
+                  << error.location().value_or("<none>") << '\n';
+        return 1;
+      }
+    }
+    if (!inconsistentRejected) {
+      std::cerr << "validateResolvedConfig accepted a preDelaySamples "
+                   "inconsistent with its preDelayMs\n";
       return 1;
     }
   }

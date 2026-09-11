@@ -567,6 +567,105 @@ def main():
             f"unexpected provenance-mismatch failure: {mismatched_provenance.stderr}"
         )
 
+    # A nonzero Pre-delay (issue #133) extends the render's own total
+    # drain past what the Diffuser's own totalSamples alone authorises;
+    # the analyzer's own expected-frames check must include
+    # preDelayFrames rather than rejecting the renderer's own valid,
+    # longer output.
+    pre_delay_request = workspace / "pre-delay-request.json"
+    pre_delay_request.write_text(
+        json.dumps(
+            {
+                "formatVersion": 2,
+                "seed": 42,
+                "composition": {
+                    "stages": [
+                        {
+                            "type": "split",
+                            "channels": 8,
+                            "strategy": "duplicate",
+                            "normalisation": "energy",
+                        },
+                        {
+                            "type": "diffuser",
+                            "steps": 1,
+                            "totalMs": 1,
+                            "distribution": "even",
+                            "step": {
+                                "delayStrategy": "segmented-random",
+                                "mix": "hadamard",
+                                "shuffle": True,
+                                "polarity": "seeded-random",
+                            },
+                        },
+                        {"type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1},
+                    ],
+                    "preDelayMs": 10.0,
+                },
+            }
+        )
+    )
+    pre_delay_render_result = workspace / "pre-delay-render-result"
+    pre_delay_rendered = subprocess.run(
+        [
+            str(renderer),
+            "render",
+            "--input",
+            str(fixture),
+            "--config",
+            str(pre_delay_request),
+            "--capture-stages",
+            "all",
+            "--output",
+            str(pre_delay_render_result),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if pre_delay_rendered.returncode != 0:
+        raise AssertionError(pre_delay_rendered.stderr)
+    pre_delay_metadata = json.loads(
+        (pre_delay_render_result / "render.json").read_text()
+    )
+    if pre_delay_metadata["preDelayFrames"] != 480:  # 10ms @ 48kHz, exact
+        raise AssertionError(f"unexpected preDelayFrames: {pre_delay_metadata}")
+    pre_delay_analyzed = subprocess.run(
+        [
+            sys.executable,
+            str(analyzer),
+            str(pre_delay_render_result),
+            "--source",
+            str(fixture),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if pre_delay_analyzed.returncode != 0:
+        raise AssertionError(
+            f"diffusion analyzer rejected a valid nonzero Pre-delay "
+            f"render: {pre_delay_analyzed.stderr}"
+        )
+    pre_delay_analysis = json.loads(
+        (pre_delay_render_result / "analysis" / "diffusion-v1.json").read_text()
+    )
+    expected_pre_delay_frames = (
+        pre_delay_metadata["inputFrames"]
+        + pre_delay_metadata["preDelayFrames"]
+        + pre_delay_analysis["completeResponse"]["resolvedDiffuserTotalSamples"]
+    )
+    if (
+        pre_delay_analysis["completeResponse"]["expectedFrames"]
+        != expected_pre_delay_frames
+        or pre_delay_analysis["completeResponse"]["outputFrames"]
+        != expected_pre_delay_frames
+    ):
+        raise AssertionError(
+            f"diffusion-v1's own expectedFrames did not include "
+            f"preDelayFrames: {pre_delay_analysis['completeResponse']}"
+        )
+
 
 if __name__ == "__main__":
     main()

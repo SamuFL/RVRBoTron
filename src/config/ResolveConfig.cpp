@@ -1601,6 +1601,33 @@ void validateFloatRepresentableGain(
   }
 }
 
+// Pre-delay's own ms-to-samples resolution (issue #133): the established
+// nearest-frame rule (`floor(exactSamples + 0.5)`) already used by the
+// Diffuser's own sample-budget derivation (deriveSampleBudget above) and
+// the Feedback Loop's own delay resolution -- written once here so
+// resolveConfig's derivation and validateResolvedConfig's independent
+// re-derivation cannot drift from each other. Returns 0 for a
+// non-finite preDelayMs or one whose exact-samples value would not fit
+// in a std::uint64_t, rather than converting either directly (undefined
+// behavior for NaN or an out-of-range value): both are already invalid
+// on their own terms and rejected by validateResolvedConfig's own
+// finite-range check, so an exact 0 here is immaterial rather than
+// silently wrong.
+std::uint64_t resolvePreDelaySamples(
+    const double preDelayMs, const std::uint32_t sampleRate) noexcept {
+  if (!std::isfinite(preDelayMs) || preDelayMs < 0.0) {
+    return 0;
+  }
+  const auto exactSamples =
+      static_cast<long double>(preDelayMs) * sampleRate / 1000.0L;
+  if (!std::isfinite(exactSamples) ||
+      exactSamples >=
+          static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
+    return 0;
+  }
+  return static_cast<std::uint64_t>(std::floor(exactSamples + 0.5L));
+}
+
 // Early's own `select` Downmix default (issue #111, docs/design/reverb/
 // stages/09-composition.md's "A present Early Reflections branch defaults
 // to ... select Channels 0/1 (or Channel 0 duplicated at N=1)"), unlike
@@ -1820,6 +1847,11 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           "/composition/wetOnly",
           "not applicable to the empty identity Composition");
     }
+    if (requestedComposition->preDelayMs.has_value()) {
+      fail(
+          "/composition/preDelayMs",
+          "not applicable to the empty identity Composition");
+    }
   }
   if (requestedComposition != nullptr &&
       !requestedComposition->stages.empty()) {
@@ -1841,6 +1873,14 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         resolveLinearGainFromDb(resolved.composition.wetDb);
     resolved.composition.wetOnly =
         requestedComposition->wetOnly.value_or(true);
+    // Pre-delay (issue #133): defaults to 0 (no delay), completing the
+    // Composition envelope. resolvePreDelaySamples above recorded
+    // explicitly as `preDelaySamples` so rerendering never repeats the
+    // floating-point conversion.
+    resolved.composition.preDelayMs =
+        requestedComposition->preDelayMs.value_or(0.0);
+    resolved.composition.preDelaySamples = resolvePreDelaySamples(
+        resolved.composition.preDelayMs, sampleRate);
     const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
         std::holds_alternative<SplitConfig>(
@@ -3398,6 +3438,18 @@ void validateResolvedConfig(
           "/composition/wetOnly",
           "not applicable to the empty identity Composition");
     }
+    // Pre-delay (issue #133) completes the envelope set above; the same
+    // reasoning applies.
+    if (resolved.composition.preDelayMs != 0.0) {
+      fail(
+          "/composition/preDelayMs",
+          "not applicable to the empty identity Composition");
+    }
+    if (resolved.composition.preDelaySamples != 0) {
+      fail(
+          "/composition/preDelaySamples",
+          "not applicable to the empty identity Composition");
+    }
     return;
   }
 
@@ -3436,6 +3488,28 @@ void validateResolvedConfig(
   if (resolved.composition.wetGain !=
       resolveLinearGainFromDb(resolved.composition.wetDb)) {
     fail("/composition/wetGain", "expected gain derived from wetDb");
+  }
+
+  // Pre-delay (issue #133): finite, inclusive within 0-200 ms; the same
+  // range documented by docs/design/reverb/stages/09-composition.md's
+  // "Pre-delay and dry/wet" and by ADR-0007's envelope-completion note.
+  if (!std::isfinite(resolved.composition.preDelayMs) ||
+      resolved.composition.preDelayMs < 0.0 ||
+      resolved.composition.preDelayMs > 200.0) {
+    fail(
+        "/composition/preDelayMs",
+        "expected a finite value within 0-200 ms");
+  }
+  // preDelaySamples must be derived from preDelayMs by resolvePreDelaySamples
+  // above -- the same helper resolveConfig itself uses, so the two
+  // cannot drift.
+  const auto expectedPreDelaySamples = resolvePreDelaySamples(
+      resolved.composition.preDelayMs, resolved.sampleRate);
+  if (resolved.composition.preDelaySamples != expectedPreDelaySamples) {
+    fail(
+        "/composition/preDelaySamples",
+        "expected samples derived from preDelayMs by the nearest-frame "
+        "rule");
   }
 
   const auto& split =

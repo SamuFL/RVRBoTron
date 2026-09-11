@@ -45,6 +45,7 @@ void writeRenderMetadata(const std::filesystem::path& path,
       {"channels", metadata.outputChannels},
       {"frames", metadata.renderedFrames},
       {"inputFrames", metadata.inputFrames},
+      {"preDelayFrames", metadata.preDelayFrames},
       {"tailBudgetFrames", metadata.tailBudgetFrames},
   };
   if (metadata.stageCaptureProfile.has_value()) {

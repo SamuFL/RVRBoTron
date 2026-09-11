@@ -41,10 +41,18 @@ struct RenderMetadata {
   std::uint32_t outputChannels;
   std::uint64_t inputFrames;
   std::uint64_t renderedFrames;
+  // The resolved Pre-delay (issue #133), in frames: the single delay
+  // before Split, kept separate from tailBudgetFrames below so onset
+  // delay is never confused with decay duration. Zero for the empty
+  // identity Composition and for a non-empty Composition with zero (the
+  // default) Pre-delay.
+  std::uint64_t preDelayFrames;
   // The resolved Tail budget authorised for draining past input EOF (see
   // CONTEXT.md); 0 for a Composition with no Diffuser or Feedback Loop.
-  // The renderer currently always drains the complete budget, so
-  // renderedFrames - inputFrames equals this exactly.
+  // Retains this decay-only meaning regardless of Pre-delay. The
+  // renderer currently always drains preDelayFrames plus the complete
+  // Tail budget, so renderedFrames - inputFrames equals their sum
+  // exactly.
   std::uint64_t tailBudgetFrames;
   std::size_t blockSize;
   std::optional<std::string> stageCaptureProfile;

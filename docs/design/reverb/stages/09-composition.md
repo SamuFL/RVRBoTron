@@ -18,12 +18,12 @@ Three things no individual stage can own:
 
 ## Pre-delay and dry/wet
 
-**Pre-delay** shifts the entire wet path later, including early reflections. It models distance from every surface at once and is the strongest cue for separating a source from its space — the reason a vocal with 30ms pre-delay sits in front of the reverb rather than inside it. A single delay before Split. Range 0–200ms.
+**Pre-delay** shifts the entire wet path later, including early reflections. It models distance from every surface at once and is the strongest cue for separating a source from its space — the reason a vocal with 30ms pre-delay sits in front of the reverb rather than inside it. A single delay before Split, applied to the wet path only; dry stays sample-aligned from frame zero. Range 0–200ms, defaulting to 0 (no delay). `preDelayMs` resolves to an explicit integer `preDelaySamples` by the established nearest-frame rule (`floor(exactSamples + 0.5)`), recorded so rerendering never repeats the floating-point conversion. Because Pre-delay sits before Split, Modulation keeps advancing while its initial silence traverses the wet path — a modulated Pre-delay render is deterministic and repeatable, not a byte-shifted copy of the zero-Pre-delay configuration.
 
 **Dry/wet** is a mix, not a crossfade. Constant-power crossfading is wrong here: the wet signal is largely decorrelated from the dry, so their energies add rather than interfere. Independent gains, both expressed in dB and defaulting to 0dB. `wetOnly` defaults to `true` — the wet-only rendering every Composition has always produced — and is an exact gate rather than a very negative `dryDb`: `false` maps dry into the mix (stereo input channel-for-channel, mono duplicated to both channels without energy compensation) at `dryDb`, while `true` mutes it exactly regardless of `dryDb`, which stays legal and recorded so toggling the gate back on does not lose a configured level. Main and Early Reflections keep summing into one Wet sum first, exactly as before; `wetDb` then scales that complete sum exactly once, and final output is the dry contribution plus the scaled Wet sum, added in that fixed order — no hidden normalization, limiting, or loudness matching.
 
 ```json
-"predelayMs": 20,
+"preDelayMs": 20,
 "dryDb": 0,
 "wetDb": -6,
 "wetOnly": false
@@ -227,7 +227,7 @@ otherwise a disabled branch produces no capture file.
 - **Round trip.** Rendering from a `resolved.json` reproduces the original output bit-identically.
 - **Validation completeness.** Every rejection names a parameter and a reason.
 - **Bypass identity.** `wetOnly: false` with `dryDb: 0`, every wet branch disabled (`mainEnabled: false` and no Early Reflections configured), returns the dry input unchanged, sample-aligned. There is no `wetDb` value that mutes wet instead: JSON infinities are invalid, so exact wet silence uses Main/Early's own enablement, not an extreme `wetDb`.
-- **Pre-delay accuracy.** Wet onset is delayed by exactly `predelayMs`, within one sample.
+- **Pre-delay accuracy.** Wet onset is delayed by exactly the resolved `preDelaySamples`, and the render's total timeline is displaced by exactly that many frames — not a byte-shifted copy of another render when Modulation is active, which keeps advancing through Pre-delay's initial silence.
 - **Identity remains explicit.** `formatVersion: 2` with
   `composition.stages: []` is a valid exact-identity render.
 - **Order independence.** Key order in the input JSON does not affect the resolved output.
@@ -240,5 +240,5 @@ otherwise a disabled branch produces no capture file.
 
 ## Worth sweeping early
 
-- `predelayMs` 0–80ms on a dry vocal — the source/space separation cue, and the single most useful parameter for making the reverb usable in a mix.
+- `preDelayMs` 0–80ms on a dry vocal — the source/space separation cue, and the single most useful parameter for making the reverb usable in a mix.
 - `wetDb` at fixed everything else — establishes the reference level for every later comparison.

@@ -242,6 +242,12 @@ struct CompositionConfig {
   std::optional<double> dryDb;
   std::optional<double> wetDb;
   std::optional<bool> wetOnly;
+  // Pre-delay (issue #133): the single delay before Split that shifts
+  // the entire wet path later while dry stays sample-aligned from frame
+  // zero -- not applicable, and rejected, on the empty identity
+  // Composition, exactly like dryDb/wetDb/wetOnly above. Defaults to 0
+  // (no delay). Finite and inclusive within 0-200 ms.
+  std::optional<double> preDelayMs;
 };
 
 struct ReverbConfig {

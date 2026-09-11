@@ -246,12 +246,17 @@ def analyze(render_result, source_path):
         raise ValueError("source audio facts do not match render metadata")
     output_wav = analyze_render.inspect_wav(render_result / "output.wav")
     # The renderer always drains its complete resolved Tail budget (see
-    # RenderMetadata.h), so inputFrames + tailBudgetFrames equals the
-    # complete-response frame count regardless of whether the Composition
-    # contains a Diffuser, a Feedback Loop, or both -- unlike
-    # analyze_diffusion.py, which is scoped to the Diffuser-only shape and
-    # so derives it from diffuser.totalSamples instead.
-    expected_frames = metadata["inputFrames"] + metadata["tailBudgetFrames"]
+    # RenderMetadata.h), so inputFrames + preDelayFrames + tailBudgetFrames
+    # equals the complete-response frame count regardless of whether the
+    # Composition contains a Diffuser, a Feedback Loop, or both, and
+    # regardless of Pre-delay (issue #133) -- unlike analyze_diffusion.py,
+    # which is scoped to the Diffuser-only shape and so derives it from
+    # diffuser.totalSamples instead.
+    expected_frames = (
+        metadata["inputFrames"]
+        + metadata.get("preDelayFrames", 0)
+        + metadata["tailBudgetFrames"]
+    )
     if (
         metadata["frames"] != expected_frames
         or output_wav["sampleRate"] != metadata["sampleRate"]

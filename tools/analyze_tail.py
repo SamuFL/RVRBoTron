@@ -343,11 +343,17 @@ def analyze(render_result, source_path):
             f'{output["frameCount"]}'
         )
 
-    # Total drain is inputFrames + tailBudgetFrames (stage 09's automatic
-    # drain, which already sums a Diffuser's finite response with the
-    # Feedback Loop's Tail budget when both are present), so this analyzer
-    # never needs to inspect a Diffuser stage itself.
-    expected_frames = metadata["inputFrames"] + metadata["tailBudgetFrames"]
+    # Total drain is inputFrames + preDelayFrames + tailBudgetFrames
+    # (stage 09's automatic drain, which already sums a Diffuser's finite
+    # response with the Feedback Loop's Tail budget when both are
+    # present, plus Pre-delay's own additional drain, issue #133), so
+    # this analyzer never needs to inspect a Diffuser stage itself.
+    # preDelayFrames defaults to 0 for a render.json predating Pre-delay.
+    expected_frames = (
+        metadata["inputFrames"]
+        + metadata.get("preDelayFrames", 0)
+        + metadata["tailBudgetFrames"]
+    )
     silence_floor_enabled = loop.get("silenceFloorDb") is not None
     if silence_floor_enabled:
         # Dormant in this milestone (docs/design/reverb/stages/
@@ -373,8 +379,17 @@ def analyze(render_result, source_path):
     sample_rate = metadata["sampleRate"]
 
     decay = decay_evidence(frames, sample_rate, loop["rt60Sec"])
+    # The decay envelope's own "post-input" window must start once real
+    # source material has finished arriving at the wet path, not at
+    # inputFrames itself: Pre-delay (issue #133) keeps delayed source
+    # samples entering Split until inputFrames + preDelayFrames, and a
+    # window starting earlier would span still-arriving signal and
+    # already-decaying tail together, which is not the render's own
+    # decay evidence this check exists to verify.
     decay_envelope = decay_envelope_evidence(
-        frames, sample_rate, metadata["inputFrames"]
+        frames,
+        sample_rate,
+        metadata["inputFrames"] + metadata.get("preDelayFrames", 0),
     )
 
     peak, floor = analyze_diffusion.activity_floor(frames)
