@@ -424,5 +424,5 @@ your requested values plus everything derived from them (per-Channel delays,
 gains, matrices, shelf coefficients, Modulation trajectories, the Tail budget).
 Rendering it back with `--resolved` reproduces the output bit-identically.
 
-See [Analyze the Render Result](../../README.md#analyze-the-render-result) for
-what a Render Result contains and how to measure it.
+See [Render and analyze evidence](render-and-analyze-evidence.md) for what a
+Render Result contains and how to measure it.
