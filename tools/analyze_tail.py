@@ -343,11 +343,17 @@ def analyze(render_result, source_path):
             f'{output["frameCount"]}'
         )
 
-    # Total drain is inputFrames + tailBudgetFrames (stage 09's automatic
-    # drain, which already sums a Diffuser's finite response with the
-    # Feedback Loop's Tail budget when both are present), so this analyzer
-    # never needs to inspect a Diffuser stage itself.
-    expected_frames = metadata["inputFrames"] + metadata["tailBudgetFrames"]
+    # Total drain is inputFrames + preDelayFrames + tailBudgetFrames
+    # (stage 09's automatic drain, which already sums a Diffuser's finite
+    # response with the Feedback Loop's Tail budget when both are
+    # present, plus Pre-delay's own additional drain, issue #133), so
+    # this analyzer never needs to inspect a Diffuser stage itself.
+    # preDelayFrames defaults to 0 for a render.json predating Pre-delay.
+    expected_frames = (
+        metadata["inputFrames"]
+        + metadata.get("preDelayFrames", 0)
+        + metadata["tailBudgetFrames"]
+    )
     silence_floor_enabled = loop.get("silenceFloorDb") is not None
     if silence_floor_enabled:
         # Dormant in this milestone (docs/design/reverb/stages/

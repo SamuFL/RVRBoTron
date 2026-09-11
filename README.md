@@ -94,10 +94,13 @@ The immutable Render Result contains:
 `render.json` records the input filename and SHA-256, renderer version,
 platform, architecture, sample precision, block size, configuration input
 mode, sample rate, output channel count, input frame count, output frame
-count, and the resolved Tail budget authorised for draining past input EOF
-(0 for a Composition with no Diffuser or Feedback Loop). It intentionally
-contains no timestamp, host or user identity, full input path, or
-source-tree fingerprint.
+count, the resolved Pre-delay authorised before Split (`preDelayFrames`,
+0 for the empty identity Composition or zero Pre-delay, issue #133), and
+the resolved Tail budget authorised for draining past input EOF
+(`tailBudgetFrames`, 0 for a Composition with no Diffuser or Feedback
+Loop -- kept separate from `preDelayFrames` so onset delay is never
+confused with decay duration). It intentionally contains no timestamp,
+host or user identity, full input path, or source-tree fingerprint.
 
 Rendering builds the evidence in a temporary sibling and publishes it
 atomically. Choose a fresh output path for every render because an existing
@@ -717,10 +720,11 @@ elsewhere in this document.
 `[split, feedback-loop, downmix]` or `[split, diffuser, feedback-loop,
 downmix]`; any other shape is rejected. It verifies source provenance from
 `render.json` and checks the output frame count against
-`inputFrames + tailBudgetFrames` -- exactly, while the dormant
-`silenceFloorDb` seam is disabled, relaxing to an upper bound once it is
-enabled, keyed off the Resolved Configuration rather than a schema change.
-Measurement reads only `output.wav`; no Stage captures are required.
+`inputFrames + preDelayFrames + tailBudgetFrames` -- exactly, while the
+dormant `silenceFloorDb` seam is disabled, relaxing to an upper bound
+once it is enabled, keyed off the Resolved Configuration rather than a
+schema change. Measurement reads only `output.wav`; no Stage captures
+are required.
 
 RT60 is measured per octave band from 63 Hz to 16 kHz by Schroeder backward
 integration of the band-limited stereo output's energy (a raised-cosine
