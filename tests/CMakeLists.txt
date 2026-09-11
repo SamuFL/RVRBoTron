@@ -376,3 +376,20 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/allpass-evaluation-contract
 )
+
+add_test(
+  NAME research_bench_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_research_bench_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/serve.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/research-bench-contract
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
+)
+
+# The test drives a live server it starts itself. If the launcher ever hangs
+# before printing its banner, bound the wait here rather than at CTest's
+# 25-minute default.
+set_tests_properties(research_bench_contract PROPERTIES TIMEOUT 180)

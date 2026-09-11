@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RVRBoTron Research Bench</title>
+<!-- The script and style are same-origin files, not inline: the bench
+     serves a Content-Security-Policy of script-src 'self' with no inline
+     exception. __BENCH_TOKEN__ is replaced at startup. -->
+<link rel="stylesheet" href="bench.css?token=__BENCH_TOKEN__">
+</head>
+<body>
+
+<h1>RVRBoTron Research Bench</h1>
+<p class="sub">Pick a source, edit the request, render, listen. Local and disposable.</p>
+
+<section>
+  <label for="source">Audition source</label>
+  <div class="row">
+    <input type="file" id="source" accept=".wav,audio/wav,audio/x-wav">
+    <span id="source-name"></span>
+  </div>
+</section>
+
+<section>
+  <label for="request">Requested configuration</label>
+  <textarea id="request" spellcheck="false"></textarea>
+</section>
+
+<section>
+  <div class="row">
+    <button id="render" type="button">Render</button>
+    <a id="download" hidden download="output.wav">Download output.wav</a>
+  </div>
+</section>
+
+<section>
+  <div id="status" role="status" aria-live="polite"></div>
+  <p id="facts"></p>
+  <audio id="player" controls preload="none" hidden></audio>
+</section>
+
+<script src="bench.js?token=__BENCH_TOKEN__"></script>
+
+</body>
+</html>
