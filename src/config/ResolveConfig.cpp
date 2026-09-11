@@ -3365,6 +3365,39 @@ void validateResolvedConfig(
           "/composition/early",
           "not applicable to the empty identity Composition");
     }
+    // The Composition's own dry/wet envelope (issue #131) is a plain,
+    // always-present scalar set on dsp::ResolvedComposition, unlike
+    // `early`'s std::optional -- so a hand-built empty Composition
+    // cannot omit it, only set it to something other than ADR-0007's
+    // legacy neutral reading. Reject exactly that, mirroring `early`
+    // above, so this direct entry point cannot silently accept a
+    // non-neutral envelope Reverb would never read once stages are
+    // empty (PR review on #131, echoing the same finding on #111).
+    if (resolved.composition.dryDb != 0.0) {
+      fail(
+          "/composition/dryDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (resolved.composition.dryGain != 1.0) {
+      fail(
+          "/composition/dryGain",
+          "not applicable to the empty identity Composition");
+    }
+    if (resolved.composition.wetDb != 0.0) {
+      fail(
+          "/composition/wetDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (resolved.composition.wetGain != 1.0) {
+      fail(
+          "/composition/wetGain",
+          "not applicable to the empty identity Composition");
+    }
+    if (!resolved.composition.wetOnly) {
+      fail(
+          "/composition/wetOnly",
+          "not applicable to the empty identity Composition");
+    }
     return;
   }
 

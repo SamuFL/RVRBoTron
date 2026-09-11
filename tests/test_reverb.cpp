@@ -2218,6 +2218,48 @@ int main() {
     }
   }
 
+  // The same rejection holds for validateResolvedConfig called directly
+  // on a hand-built ResolvedConfig, not only through resolveConfig: it
+  // is a public, non-JSON entry point too (PR review on #131, echoing
+  // the same finding raised on #111 for `early`, tested further below).
+  // Unlike `early`, the envelope fields are plain scalars rather than
+  // std::optional, so a hand-built empty Composition cannot omit them --
+  // only set them to something other than ADR-0007's legacy neutral
+  // reading, which is exactly what must be rejected.
+  for (const auto& nonNeutralField :
+       {std::string("dryDb"),
+        std::string("dryGain"),
+        std::string("wetDb"),
+        std::string("wetGain"),
+        std::string("wetOnly")}) {
+    rvrbotron::dsp::ResolvedConfig handBuiltEmptyWithEnvelope;
+    handBuiltEmptyWithEnvelope.formatVersion = 2;
+    handBuiltEmptyWithEnvelope.sampleRate = 48000;
+    if (nonNeutralField == "dryDb") {
+      handBuiltEmptyWithEnvelope.composition.dryDb = -6.0;
+    } else if (nonNeutralField == "dryGain") {
+      handBuiltEmptyWithEnvelope.composition.dryGain = 0.5;
+    } else if (nonNeutralField == "wetDb") {
+      handBuiltEmptyWithEnvelope.composition.wetDb = -6.0;
+    } else if (nonNeutralField == "wetGain") {
+      handBuiltEmptyWithEnvelope.composition.wetGain = 0.5;
+    } else {
+      handBuiltEmptyWithEnvelope.composition.wetOnly = false;
+    }
+    bool rejected = false;
+    try {
+      rvrbotron::config::validateResolvedConfig(handBuiltEmptyWithEnvelope);
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "validateResolvedConfig accepted a non-neutral "
+                << nonNeutralField
+                << " on a hand-built empty identity Composition\n";
+      return 1;
+    }
+  }
+
   {
     // A minimal Diffuser-only Main wet path (mirroring the Main wet
     // path block above): its own Diffusion Step delay line is long

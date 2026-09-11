@@ -144,6 +144,9 @@ def main():
     analyzer = Path(sys.argv[1])
     renderer = Path(sys.argv[2])
     fixture = Path(sys.argv[3])
+    stereo_fixture = (
+        fixture.parent / "matrix" / "identity-stereo-48000-float32.wav"
+    )
     workspace = Path(sys.argv[4])
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
@@ -442,6 +445,85 @@ def main():
             f"expected to move the branch energy ratio: reference="
             f"{reference_ratio}, width/level={width_level_ratio}"
         )
+
+    # The Composition's own dry/wet envelope (issue #131): output.wav is
+    # no longer always the raw Main-stereo/Early-stereo capture sum once
+    # a non-neutral wetGain or an enabled dry path is configured, so the
+    # reconstruction the analyzer checks output.wav against must itself
+    # account for the envelope, not merely the branch captures.
+    wet_gain_document = aligned_document("select", 4)
+    wet_gain_document["composition"]["wetDb"] = -3.0
+    _, wet_gain_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-envelope-wet-gain",
+        wet_gain_document,
+    )
+    check_finite_tree(wet_gain_analysis)
+    check_branch_reconciliation(wet_gain_analysis)
+
+    insert_document = aligned_document("select", 4)
+    insert_document["composition"]["wetOnly"] = False
+    insert_document["composition"]["dryDb"] = -6.0
+    insert_document["composition"]["wetDb"] = -3.0
+    _, insert_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-envelope-insert",
+        insert_document,
+    )
+    check_finite_tree(insert_analysis)
+    check_branch_reconciliation(insert_analysis)
+
+    # wetOnly: true (the default) preserves a configured dryDb without
+    # letting it affect output.wav -- the analyzer's own reconstruction
+    # must gate dry exactly like Reverb.cpp does, not merely because
+    # dryGain happens to be neutral.
+    gated_document = aligned_document("select", 4)
+    gated_document["composition"]["dryDb"] = -6.0
+    _, gated_analysis = render_and_analyze(
+        renderer,
+        analyzer,
+        fixture,
+        workspace,
+        "select-envelope-gated-dry",
+        gated_document,
+    )
+    check_finite_tree(gated_analysis)
+    check_branch_reconciliation(gated_analysis)
+
+    # A stereo dry source through insert-style dry+wet: the reconstructed
+    # dry contribution must map channel-for-channel, not merely survive
+    # the mono case above.
+    stereo_insert_document = aligned_document("select", 4)
+    stereo_insert_document["composition"]["wetOnly"] = False
+    stereo_insert_document["composition"]["dryDb"] = -6.0
+    stereo_insert_document["composition"]["wetDb"] = -3.0
+    stereo_insert_request = workspace / "select-envelope-insert-stereo-request.json"
+    stereo_insert_request.write_text(json.dumps(stereo_insert_document))
+    stereo_insert_result = workspace / "select-envelope-insert-stereo-result"
+    stereo_insert_rendered = run_renderer(
+        renderer, stereo_fixture, stereo_insert_request, stereo_insert_result
+    )
+    if stereo_insert_rendered.returncode != 0:
+        raise AssertionError(stereo_insert_rendered.stderr)
+    stereo_insert_analyzed = run_analyzer(
+        analyzer, stereo_insert_result, stereo_fixture
+    )
+    if stereo_insert_analyzed.returncode != 0:
+        raise AssertionError(
+            f"stereo insert-style dry+wet analysis failed: "
+            f"{stereo_insert_analyzed.stderr}"
+        )
+    check_finite_tree(
+        json.loads(
+            (stereo_insert_result / "analysis" / "downmix-v1.json").read_text()
+        )
+    )
 
     # --capture-stages all is required: the analyzer needs Main-stereo
     # (and, when configured, Early-stereo and Diffusion Step) captures.
