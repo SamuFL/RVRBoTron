@@ -431,6 +431,20 @@ struct ResolvedComposition {
   // mainEnabled/mainLevelDb above. Omitted (nullopt) when no branch is
   // configured.
   std::optional<ResolvedEarlyReflections> early;
+  // The Composition's own dry/wet envelope (issue #114): moot and
+  // unserialized for the empty identity Composition, exactly like
+  // mainEnabled/mainLevelDb/early above. `dryGain`/`wetGain` are
+  // `dryDb`/`wetDb` converted to linear multipliers, resolved once
+  // before construction like `mainGain` above. `wetOnly` gates the dry
+  // path to exact zero at render time while `dryDb`/`dryGain` remain
+  // recorded (ADR-0007's legacy neutral reading is `wetOnly` true,
+  // `dryDb`/`wetDb` 0, `dryGain`/`wetGain` 1.0 -- the same values as
+  // these defaults).
+  double dryDb = 0.0;
+  double dryGain = 1.0;
+  double wetDb = 0.0;
+  double wetGain = 1.0;
+  bool wetOnly = true;
 };
 
 // The Main wet path's own resolved Diffuser stage, if any -- absent for a

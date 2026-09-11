@@ -297,26 +297,81 @@ def analyze(render_result, source_path):
     )
     output_frames = analyze_diffusion.numpy_frames(output_wav)
     sample_dtype = sample_precision_dtype(metadata["samplePrecision"])
-    # Reverb.cpp computes `outputs[frame] = mainLeft + earlyLeft` in
-    # `Sample` precision -- a single correctly-rounded addition, not the
-    # exact float64 sum plain arithmetic on numpy_frames' own
-    # already-promoted arrays would give. Replaying that addition at
+    # Reverb.cpp computes the Wet sum, the Composition's own dry/wet
+    # envelope (issue #131), and the final summation entirely in `Sample`
+    # precision -- a sequence of correctly-rounded operations, not the
+    # exact float64 arithmetic plain numpy on numpy_frames' own
+    # already-promoted arrays would give. Replaying that same sequence at
     # `sample_dtype` before promoting back to float64 reproduces the
-    # renderer's own rounding (float32's round-to-nearest, then an exact
-    # upcast) rather than a second, different rounding of the exact sum.
-    reconstructed_output = (
+    # renderer's own rounding (float32's round-to-nearest at each step,
+    # then an exact upcast) rather than a second, different rounding of
+    # the exact result.
+    #
+    # A resolved.json predating the envelope (issue #131) carries none of
+    # these fields; ADR-0007's legacy neutral reading -- wet-only, unity
+    # wet gain -- reproduces this check's own pre-envelope behavior
+    # exactly, so an old Render Result remains analyzable unchanged.
+    composition = resolved["composition"]
+    wet_only = composition.get("wetOnly", True)
+    wet_gain = sample_dtype(composition.get("wetGain", 1.0))
+    # The Wet sum itself (issue #131's canonical term): Main plus Early,
+    # before the global wet gain -- kept separate from `wet_sum` below
+    # because the branch-energy reconciliation a few lines down checks
+    # the superposition identity `|a+b|^2 = |a|^2 + |b|^2 + 2*a.b` on the
+    # two *branches*, an invariant of how they combine that the envelope
+    # (applied afterward, uniformly, to the whole sum) cannot affect --
+    # scaling it by wetGain here would make every one of those four
+    # energies wrong by the same factor for no reason connected to what
+    # this reconciliation actually checks.
+    raw_wet_sum = (
         main_frames.astype(sample_dtype) + early_frames.astype(sample_dtype)
-    ).astype(np.float64)
+    )
+    wet_sum = raw_wet_sum * wet_gain
+    if wet_only:
+        reconstructed_output = wet_sum.astype(np.float64)
+    else:
+        # Dry contribution (issue #131): the exact source samples the
+        # renderer itself decoded, channel-for-channel in stereo or
+        # duplicated without energy compensation in mono, zero past
+        # source EOF through the Tail-budget drain -- mirroring
+        # Reverb.cpp's own dry mapping exactly rather than reusing
+        # `source`'s facts-only inspection for anything but format
+        # validation above.
+        dry_gain = sample_dtype(composition.get("dryGain", 1.0))
+        dry_source = np.fromiter(
+            analyze_render.decoded_samples(source),
+            dtype=np.float64,
+            count=source["frameCount"] * source["channels"],
+        ).reshape(source["frameCount"], source["channels"])
+        dry_stereo = (
+            dry_source[:, :2]
+            if source["channels"] >= 2
+            else np.repeat(dry_source[:, :1], 2, axis=1)
+        )
+        if dry_stereo.shape[0] < expected_frames:
+            dry_stereo = np.pad(
+                dry_stereo,
+                ((0, expected_frames - dry_stereo.shape[0]), (0, 0)),
+            )
+        dry_contribution = dry_stereo.astype(sample_dtype) * dry_gain
+        reconstructed_output = (dry_contribution + wet_sum).astype(np.float64)
     if not np.array_equal(output_frames, reconstructed_output):
         raise ValueError(
-            "output.wav did not equal the sample-wise sum of the captured "
-            "Main-stereo and Early-stereo branches"
+            "output.wav did not equal the dry contribution plus the "
+            "wet-gain-scaled sample-wise sum of the captured Main-stereo "
+            "and Early-stereo branches"
         )
 
     main_energy = float(np.sum(main_frames * main_frames))
     early_energy = float(np.sum(early_frames * early_frames))
     cross_term = float(np.sum(main_frames * early_frames))
-    combined_energy = float(np.sum(output_frames * output_frames))
+    # The Wet sum's own energy (issue #131): output.wav's energy once a
+    # non-neutral envelope is configured, not before, so
+    # branchEnergyReconciliation stays about Main/Early superposition
+    # specifically. See raw_wet_sum's own comment above.
+    combined_energy = float(
+        np.sum(raw_wet_sum.astype(np.float64) * raw_wet_sum.astype(np.float64))
+    )
     expected_combined_energy = main_energy + early_energy + 2.0 * cross_term
 
     sample_rate = metadata["sampleRate"]

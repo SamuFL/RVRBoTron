@@ -31,6 +31,18 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   // contributing exact stereo zero rather than a zero-multiplied value.
   bool mainEnabled = true;
   Sample mainGain{1};
+  // The Composition's own dry/wet envelope (issue #114). Moot while
+  // `identity` is true. `dryEnabled` is the exact-gate reading of the
+  // Resolved `wetOnly` flag (issue #114's "wetOnly is an exact dry-path
+  // gate"): false skips dry mapping and dry summation entirely below,
+  // rather than multiplying by a zero gain, mirroring how a disabled
+  // Main wet path skips its own Downmix above. Unity `wetGain` still
+  // multiplies (issue #114 requires no *hidden* bypass beyond neutral
+  // dry-path gating; the multiply itself is cheap and always exact for
+  // 1.0).
+  bool dryEnabled = false;
+  Sample dryGain{1};
+  Sample wetGain{1};
 
   std::unique_ptr<Split> split;
   std::unique_ptr<Diffuser> diffuser;
@@ -85,6 +97,9 @@ Reverb::Reverb(const ResolvedConfig& config,
   state.channels = split.channels;
   state.mainEnabled = config.composition.mainEnabled;
   state.mainGain = static_cast<Sample>(config.composition.mainGain);
+  state.dryEnabled = !config.composition.wetOnly;
+  state.dryGain = static_cast<Sample>(config.composition.dryGain);
+  state.wetGain = static_cast<Sample>(config.composition.wetGain);
   state.split = std::make_unique<Split>(split);
 
   // Middle stages: none, a Diffuser alone, a Feedback Loop alone, or a
@@ -228,6 +243,8 @@ void Reverb::process(const Sample* const* inputs,
     // contributes exact zero, matching Main's own convention above.
     // Only computed/captured at all when an Early branch is configured;
     // there is nothing to capture otherwise.
+    Sample wetLeft{0};
+    Sample wetRight{0};
     if (state.early != nullptr) {
       Sample earlyLeft{0};
       Sample earlyRight{0};
@@ -239,13 +256,60 @@ void Reverb::process(const Sample* const* inputs,
         state.captureSink->captureFrame(
             StageCaptureBoundary::earlyStereo, 0, earlyStereoFrame, 2);
       }
-      // Superposition (issue #111): combined output equals the two
-      // branches' own captured signals sample-for-sample.
-      outputs[0][frame] = mainLeft + earlyLeft;
-      outputs[1][frame] = mainRight + earlyRight;
+      // Superposition (issue #111): the Wet sum equals the two
+      // branches' own captured signals summed sample-for-sample, before
+      // the Composition's own global wet gain below (issue #114).
+      wetLeft = mainLeft + earlyLeft;
+      wetRight = mainRight + earlyRight;
     } else {
-      outputs[0][frame] = mainLeft;
-      outputs[1][frame] = mainRight;
+      wetLeft = mainLeft;
+      wetRight = mainRight;
+    }
+
+    // The Composition's own global wet gain (issue #114), applied
+    // exactly once to the complete Wet sum. Unity gain bypasses the
+    // multiply entirely, so a Requested Composition that omits the
+    // envelope renders output exact by construction rather than merely
+    // approximately equal to the pre-envelope wet-only behavior
+    // (docs/design/reverb/stages/09-composition.md's Composition
+    // envelope).
+    if (state.wetGain != Sample{1}) {
+      wetLeft *= state.wetGain;
+      wetRight *= state.wetGain;
+    }
+
+    // Dry contribution (issue #114): stereo input maps channel-for-
+    // channel; mono input duplicates to both output channels at the
+    // same gain, without energy compensation. `wetOnly` (state.
+    // dryEnabled false) is an exact gate -- it bypasses dry mapping and
+    // summation entirely below, mirroring how a disabled Main wet path
+    // skips its own Downmix above, rather than multiplying by zero.
+    // Whatever `inputs` holds at EOF and during Tail-budget drain is the
+    // CLI's responsibility (main.cpp feeds zeroed input past source
+    // EOF), so dry contribution is exact zero there without Reverb
+    // itself tracking source position.
+    Sample dryLeft{0};
+    Sample dryRight{0};
+    if (state.dryEnabled) {
+      dryLeft = inputs[0][frame];
+      dryRight = inputChannelCount >= 2 ? inputs[1][frame] : inputs[0][frame];
+      dryLeft *= state.dryGain;
+      dryRight *= state.dryGain;
+    }
+
+    // Fixed-order final addition (issue #114): the dry contribution
+    // first, then the scaled Wet sum -- so final output remains
+    // reconstructable from the dry input, the Main/Early stereo
+    // captures, and the Resolved envelope values. `wetOnly` skips the
+    // addition itself rather than relying on dryLeft/dryRight already
+    // being exact zero, so summation is genuinely bypassed rather than
+    // merely a neutral no-op operand.
+    if (state.dryEnabled) {
+      outputs[0][frame] = dryLeft + wetLeft;
+      outputs[1][frame] = dryRight + wetRight;
+    } else {
+      outputs[0][frame] = wetLeft;
+      outputs[1][frame] = wetRight;
     }
   }
 }

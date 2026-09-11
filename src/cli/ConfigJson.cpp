@@ -785,7 +785,13 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
   rejectUnknownFields(
       value,
       "/composition",
-      {"stages", "mainEnabled", "mainLevelDb", "early"});
+      {"stages",
+       "mainEnabled",
+       "mainLevelDb",
+       "early",
+       "dryDb",
+       "wetDb",
+       "wetOnly"});
 
   config::CompositionConfig composition;
   if (value.contains("stages")) {
@@ -838,6 +844,21 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
           "/composition/early",
           "not applicable to the empty identity Composition");
     }
+    if (value.contains("dryDb")) {
+      fail(
+          "/composition/dryDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (value.contains("wetDb")) {
+      fail(
+          "/composition/wetDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (value.contains("wetOnly")) {
+      fail(
+          "/composition/wetOnly",
+          "not applicable to the empty identity Composition");
+    }
     return composition;
   }
 
@@ -852,6 +873,20 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
   if (value.contains("early")) {
     composition.early =
         parseRequestedEarly(value.at("early"), "/composition/early");
+  }
+  // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb/
+  // wetOnly, mirroring mainEnabled/mainLevelDb above.
+  if (value.contains("dryDb")) {
+    composition.dryDb =
+        parseNumber(value.at("dryDb"), "/composition/dryDb");
+  }
+  if (value.contains("wetDb")) {
+    composition.wetDb =
+        parseNumber(value.at("wetDb"), "/composition/wetDb");
+  }
+  if (value.contains("wetOnly")) {
+    composition.wetOnly =
+        parseBoolean(value.at("wetOnly"), "/composition/wetOnly");
   }
   return composition;
 }
@@ -1510,7 +1545,16 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
   rejectUnknownFields(
       value,
       "/composition",
-      {"stages", "mainEnabled", "mainLevelDb", "mainGain", "early"});
+      {"stages",
+       "mainEnabled",
+       "mainLevelDb",
+       "mainGain",
+       "early",
+       "dryDb",
+       "wetDb",
+       "wetOnly",
+       "dryGain",
+       "wetGain"});
   requireField(value, "stages", "/composition");
   const auto& stages = value.at("stages");
   requireArray(stages, "/composition/stages");
@@ -1559,6 +1603,14 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
           "/composition/early",
           "not applicable to the empty identity Composition");
     }
+    for (const char* field :
+         {"dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"}) {
+      if (value.contains(field)) {
+        fail(
+            std::string("/composition/") + field,
+            "not applicable to the empty identity Composition");
+      }
+    }
     return composition;
   }
 
@@ -1574,6 +1626,47 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
   if (value.contains("early")) {
     composition.early =
         parseResolvedEarly(value.at("early"), "/composition/early");
+  }
+
+  // The Composition's own dry/wet envelope (issue #114, ADR-0007): a
+  // non-empty format-v2 Resolved Composition may omit the complete
+  // envelope set entirely as legacy neutral behavior (the defaults
+  // dsp::ResolvedComposition already carries: wetOnly true, dryDb/wetDb
+  // 0, dryGain/wetGain 1.0) -- so accumulated evidence predating this
+  // envelope needs no migration. A partial set is hand-corrupted or
+  // truncated evidence, never a legitimate complete artifact, and is
+  // rejected outright rather than guessed at.
+  const char* const envelopeFields[]{
+      "dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"};
+  constexpr std::size_t envelopeFieldCount = 5;
+  std::size_t presentEnvelopeFields = 0;
+  for (const char* field : envelopeFields) {
+    if (value.contains(field)) {
+      ++presentEnvelopeFields;
+    }
+  }
+  if (presentEnvelopeFields != 0 &&
+      presentEnvelopeFields != envelopeFieldCount) {
+    for (const char* field : envelopeFields) {
+      if (!value.contains(field)) {
+        fail(
+            std::string("/composition/") + field,
+            "expected the complete envelope set (dryDb/wetDb/wetOnly/"
+            "dryGain/wetGain) when any envelope field is present");
+      }
+    }
+  }
+  if (presentEnvelopeFields == envelopeFieldCount) {
+    composition.dryDb =
+        parseNumber(value.at("dryDb"), "/composition/dryDb");
+    composition.wetDb =
+        parseNumber(value.at("wetDb"), "/composition/wetDb");
+    composition.wetOnly =
+        parseBoolean(value.at("wetOnly"), "/composition/wetOnly");
+    composition.dryGain =
+        parseNumber(value.at("dryGain"), "/composition/dryGain");
+    composition.wetGain =
+        parseNumber(value.at("wetGain"), "/composition/wetGain");
   }
   return composition;
 }

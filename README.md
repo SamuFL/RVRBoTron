@@ -204,6 +204,9 @@ build/default/rvrbotron render \
 | `composition.mainEnabled` | boolean | `true` | The Main wet path's enablement. Not applicable, and rejected, when `composition.stages` is empty (issue #109). `false` skips Downmix/Width processing and contributes exact stereo zero. |
 | `composition.mainLevelDb` | finite number (dB) | `0` | The Main wet path's level, applied once after its Downmix (including Width). Not applicable, and rejected, when `composition.stages` is empty (issue #109). Resolved Configuration additionally records the derived linear `mainGain`. |
 | `composition.early` | object, or omitted | omitted (no branch) | The parallel Early Reflections branch, tapped from the Main wet path's own Diffuser (issues #111/#112). Valid only when `composition.stages` includes exactly one Diffuser; not applicable, and rejected, when `composition.stages` is empty. See [`early` branch](#early-branch) below. |
+| `composition.dryDb` | finite number (dB) | `0` | The Composition's own dry level (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Stays legal and preserved while `wetOnly` gates it off; Resolved Configuration additionally records the derived linear `dryGain`. |
+| `composition.wetDb` | finite number (dB) | `0` | The Composition's own global wet level, applied once to the complete Wet sum (Main plus Early) before dry is mixed in (issue #131). Not applicable, and rejected, when `composition.stages` is empty. Resolved Configuration additionally records the derived linear `wetGain`. |
+| `composition.wetOnly` | boolean | `true` | An exact gate on the dry path (issue #131): `true` (the default, reproducing every pre-envelope render) mutes dry regardless of `dryDb`; `false` maps dry into the mix, stereo input channel-for-channel and mono duplicated to both channels without energy compensation. Not applicable, and rejected, when `composition.stages` is empty. |
 
 #### `split` stage
 

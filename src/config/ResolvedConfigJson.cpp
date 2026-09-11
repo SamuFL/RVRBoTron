@@ -386,6 +386,15 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
     document["mainEnabled"] = composition.mainEnabled;
     document["mainLevelDb"] = composition.mainLevelDb;
     document["mainGain"] = composition.mainGain;
+    // The Composition's own dry/wet envelope (issue #114, ADR-0007):
+    // newly emitted Resolved configurations always record the complete
+    // set, never a subset -- a partial set on load is hand-corrupted or
+    // truncated evidence (see parseResolvedComposition in ConfigJson.cpp).
+    document["dryDb"] = composition.dryDb;
+    document["wetDb"] = composition.wetDb;
+    document["wetOnly"] = composition.wetOnly;
+    document["dryGain"] = composition.dryGain;
+    document["wetGain"] = composition.wetGain;
   }
   // Omitted entirely (rather than emitted as null) when no branch is
   // configured (issue #111), mirroring mainEnabled/mainLevelDb/mainGain

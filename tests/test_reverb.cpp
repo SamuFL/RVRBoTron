@@ -24,6 +24,7 @@
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -2180,6 +2181,457 @@ int main() {
                    << " whose gain is not representable at float "
                       "precision\n";
         return 1;
+      }
+    }
+  }
+
+  // The Composition's own dry/wet envelope (issue #114, docs/design/
+  // reverb/stages/09-composition.md's "Pre-delay and dry/wet").
+  // resolveConfig is a public non-JSON entry point too, mirroring the
+  // Main wet path's own direct-construction checks above: dryDb/wetDb/
+  // wetOnly set on the empty identity Composition must be rejected
+  // there directly.
+  for (const auto& emptyField :
+       {std::string("dryDb"), std::string("wetDb"), std::string("wetOnly")}) {
+    rvrbotron::config::CompositionConfig emptyWithEnvelopeField;
+    if (emptyField == "dryDb") {
+      emptyWithEnvelopeField.dryDb = -6.0;
+    } else if (emptyField == "wetDb") {
+      emptyWithEnvelopeField.wetDb = -6.0;
+    } else {
+      emptyWithEnvelopeField.wetOnly = false;
+    }
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.composition = emptyWithEnvelopeField;
+    bool rejected = false;
+    try {
+      static_cast<void>(
+          rvrbotron::config::resolveConfig(requested, 48000, 1));
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "resolveConfig accepted " << emptyField
+                << " on the empty identity Composition\n";
+      return 1;
+    }
+  }
+
+  // The same rejection holds for validateResolvedConfig called directly
+  // on a hand-built ResolvedConfig, not only through resolveConfig: it
+  // is a public, non-JSON entry point too (PR review on #131, echoing
+  // the same finding raised on #111 for `early`, tested further below).
+  // Unlike `early`, the envelope fields are plain scalars rather than
+  // std::optional, so a hand-built empty Composition cannot omit them --
+  // only set them to something other than ADR-0007's legacy neutral
+  // reading, which is exactly what must be rejected.
+  for (const auto& nonNeutralField :
+       {std::string("dryDb"),
+        std::string("dryGain"),
+        std::string("wetDb"),
+        std::string("wetGain"),
+        std::string("wetOnly")}) {
+    rvrbotron::dsp::ResolvedConfig handBuiltEmptyWithEnvelope;
+    handBuiltEmptyWithEnvelope.formatVersion = 2;
+    handBuiltEmptyWithEnvelope.sampleRate = 48000;
+    if (nonNeutralField == "dryDb") {
+      handBuiltEmptyWithEnvelope.composition.dryDb = -6.0;
+    } else if (nonNeutralField == "dryGain") {
+      handBuiltEmptyWithEnvelope.composition.dryGain = 0.5;
+    } else if (nonNeutralField == "wetDb") {
+      handBuiltEmptyWithEnvelope.composition.wetDb = -6.0;
+    } else if (nonNeutralField == "wetGain") {
+      handBuiltEmptyWithEnvelope.composition.wetGain = 0.5;
+    } else {
+      handBuiltEmptyWithEnvelope.composition.wetOnly = false;
+    }
+    bool rejected = false;
+    try {
+      rvrbotron::config::validateResolvedConfig(handBuiltEmptyWithEnvelope);
+    } catch (const rvrbotron::HarnessError&) {
+      rejected = true;
+    }
+    if (!rejected) {
+      std::cerr << "validateResolvedConfig accepted a non-neutral "
+                << nonNeutralField
+                << " on a hand-built empty identity Composition\n";
+      return 1;
+    }
+  }
+
+  {
+    // A minimal Diffuser-only Main wet path (mirroring the Main wet
+    // path block above): its own Diffusion Step delay line is long
+    // enough that frame 0 of its output is still exact silence, so
+    // frame 0 isolates the dry contribution completely regardless of
+    // what the wet path eventually produces.
+    rvrbotron::config::SplitConfig split;
+    split.channels = 2;
+    split.strategy = rvrbotron::dsp::SplitStrategyType::duplicate;
+    split.normalisation = rvrbotron::dsp::EnergyNormalisation::energy;
+    rvrbotron::config::DiffuserConfig diffuser;
+    diffuser.steps = 1;
+    diffuser.totalMs = 1.0;
+    auto downmix = referenceSelectDownmixConfig(2);
+    rvrbotron::config::CompositionConfig composition;
+    composition.stagesSpecified = true;
+    composition.stages.emplace_back(split);
+    composition.stages.emplace_back(diffuser);
+    composition.stages.emplace_back(downmix);
+    rvrbotron::config::ReverbConfig requested;
+    requested.formatVersion = 2;
+    requested.seed = 7;
+    requested.composition = composition;
+
+    // A non-empty Composition exposes documented dryDb/wetDb/wetOnly
+    // defaults: 0 dB, 0 dB, and wet-only -- reproducing every existing
+    // non-empty format-v2 request's wet-only rendering exactly.
+    const auto defaultResolved =
+        rvrbotron::config::resolveConfig(requested, 48000, 2);
+    if (defaultResolved.composition.dryDb != 0.0 ||
+        defaultResolved.composition.dryGain != 1.0 ||
+        defaultResolved.composition.wetDb != 0.0 ||
+        defaultResolved.composition.wetGain != 1.0 ||
+        !defaultResolved.composition.wetOnly) {
+      std::cerr << "a non-empty Composition did not default to 0 dB dry/"
+                   "wet, 1.0 dry/wet gain, and wet-only\n";
+      return 1;
+    }
+
+    // Explicit neutral fields resolve identically to complete omission
+    // (docs/design/reverb/stages/09-composition.md's Composition
+    // envelope): the same construction/render below is exercised twice.
+    auto explicitNeutralComposition = composition;
+    explicitNeutralComposition.dryDb = 0.0;
+    explicitNeutralComposition.wetDb = 0.0;
+    explicitNeutralComposition.wetOnly = true;
+    rvrbotron::config::ReverbConfig explicitNeutralRequested;
+    explicitNeutralRequested.formatVersion = 2;
+    explicitNeutralRequested.seed = 7;
+    explicitNeutralRequested.composition =
+        std::move(explicitNeutralComposition);
+    const auto explicitNeutralResolved = rvrbotron::config::resolveConfig(
+        explicitNeutralRequested, 48000, 2);
+
+    std::array<rvrbotron::dsp::Sample, 1> stereoLeftInput{
+        rvrbotron::dsp::Sample{1}};
+    std::array<rvrbotron::dsp::Sample, 1> stereoRightInput{
+        rvrbotron::dsp::Sample{2}};
+    const rvrbotron::dsp::Sample* stereoInputs[]{
+        stereoLeftInput.data(), stereoRightInput.data()};
+
+    rvrbotron::dsp::Reverb defaultReverb(defaultResolved);
+    rvrbotron::dsp::Reverb explicitNeutralReverb(explicitNeutralResolved);
+    std::array<rvrbotron::dsp::Sample, 1> defaultLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> defaultRight{};
+    std::array<rvrbotron::dsp::Sample, 1> explicitNeutralLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> explicitNeutralRight{};
+    rvrbotron::dsp::Sample* defaultOutputs[]{
+        defaultLeft.data(), defaultRight.data()};
+    rvrbotron::dsp::Sample* explicitNeutralOutputs[]{
+        explicitNeutralLeft.data(), explicitNeutralRight.data()};
+    beginAllocationCount();
+    defaultReverb.process(stereoInputs, 2, defaultOutputs, 2, 1);
+    explicitNeutralReverb.process(
+        stereoInputs, 2, explicitNeutralOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "the dry/wet envelope allocated while processing\n";
+      return 1;
+    }
+    // wetOnly (default and explicit) gates dry to exact zero; frame 0's
+    // Diffuser output is exact silence, so exact zero here proves dry
+    // never leaked in, not merely that the wet path happened to be
+    // silent.
+    if (defaultLeft[0] != rvrbotron::dsp::Sample{0} ||
+        defaultRight[0] != rvrbotron::dsp::Sample{0} ||
+        defaultLeft[0] != explicitNeutralLeft[0] ||
+        defaultRight[0] != explicitNeutralRight[0]) {
+      std::cerr << "omitted and explicit neutral dry/wet fields did not "
+                   "both render exact wet-only silence at frame 0\n";
+      return 1;
+    }
+
+    // wetOnly: false maps stereo dry input channel-for-channel and
+    // applies dryGain, with no hidden crossfade, normalization, or
+    // energy compensation -- frame 0 isolates this completely.
+    auto insertComposition = composition;
+    insertComposition.wetOnly = false;
+    insertComposition.dryDb = -6.0;
+    rvrbotron::config::ReverbConfig insertRequested;
+    insertRequested.formatVersion = 2;
+    insertRequested.seed = 7;
+    insertRequested.composition = std::move(insertComposition);
+    const auto insertResolved =
+        rvrbotron::config::resolveConfig(insertRequested, 48000, 2);
+    const auto expectedDryGain = std::pow(10.0, -6.0 / 20.0);
+    if (std::abs(insertResolved.composition.dryGain - expectedDryGain) >
+        1e-9) {
+      std::cerr << "dryDb: -6 did not resolve the expected linear gain\n";
+      return 1;
+    }
+    rvrbotron::dsp::Reverb insertReverb(insertResolved);
+    std::array<rvrbotron::dsp::Sample, 1> insertLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> insertRight{};
+    rvrbotron::dsp::Sample* insertOutputs[]{
+        insertLeft.data(), insertRight.data()};
+    beginAllocationCount();
+    insertReverb.process(stereoInputs, 2, insertOutputs, 2, 1);
+    if (endAllocationCount() != 0) {
+      std::cerr << "wetOnly: false dry mapping allocated while "
+                   "processing\n";
+      return 1;
+    }
+    if (!close(insertLeft[0], 1.0 * expectedDryGain) ||
+        !close(insertRight[0], 2.0 * expectedDryGain)) {
+      std::cerr << "wetOnly: false did not map stereo dry input "
+                   "channel-for-channel scaled by dryGain\n";
+      return 1;
+    }
+
+    // Mono dry input duplicates to both output channels at the same
+    // gain, without energy compensation (i.e. not divided by sqrt(2)).
+    // Resolved separately against a mono input-channel count: Reverb's
+    // own inputChannelCount is a construction-time contract (Split's
+    // resolved inputChannels), not something process() renegotiates per
+    // call.
+    auto monoInsertRequested = insertRequested;
+    const auto monoInsertResolved =
+        rvrbotron::config::resolveConfig(monoInsertRequested, 48000, 1);
+    std::array<rvrbotron::dsp::Sample, 1> monoInput{
+        rvrbotron::dsp::Sample{3}};
+    const rvrbotron::dsp::Sample* monoInputs[]{monoInput.data()};
+    rvrbotron::dsp::Reverb monoInsertReverb(monoInsertResolved);
+    std::array<rvrbotron::dsp::Sample, 1> monoLeft{};
+    std::array<rvrbotron::dsp::Sample, 1> monoRight{};
+    rvrbotron::dsp::Sample* monoOutputs[]{
+        monoLeft.data(), monoRight.data()};
+    monoInsertReverb.process(monoInputs, 1, monoOutputs, 2, 1);
+    if (!close(monoLeft[0], 3.0 * expectedDryGain) ||
+        !close(monoRight[0], 3.0 * expectedDryGain)) {
+      std::cerr << "mono dry input was not duplicated to both output "
+                   "channels at dryGain without energy compensation\n";
+      return 1;
+    }
+
+    // The global wetGain multiplies the complete Wet sum exactly once:
+    // rendered with dry disabled (wetOnly true) so the comparison
+    // isolates the Wet sum, over enough frames that the Diffuser's own
+    // delay line has produced genuinely nonzero output.
+    constexpr std::size_t kWetGainTestFrames = 256;
+    auto wetReferenceComposition = composition;
+    wetReferenceComposition.wetOnly = true;
+    rvrbotron::config::ReverbConfig wetReferenceRequested;
+    wetReferenceRequested.formatVersion = 2;
+    wetReferenceRequested.seed = 7;
+    wetReferenceRequested.composition = std::move(wetReferenceComposition);
+    const auto wetReferenceResolved = rvrbotron::config::resolveConfig(
+        wetReferenceRequested, 48000, 2);
+
+    auto wetLeveledComposition = composition;
+    wetLeveledComposition.wetOnly = true;
+    wetLeveledComposition.wetDb = -6.0;
+    rvrbotron::config::ReverbConfig wetLeveledRequested;
+    wetLeveledRequested.formatVersion = 2;
+    wetLeveledRequested.seed = 7;
+    wetLeveledRequested.composition = std::move(wetLeveledComposition);
+    const auto wetLeveledResolved = rvrbotron::config::resolveConfig(
+        wetLeveledRequested, 48000, 2);
+    const auto expectedWetGain = std::pow(10.0, -6.0 / 20.0);
+    if (std::abs(wetLeveledResolved.composition.wetGain - expectedWetGain) >
+        1e-9) {
+      std::cerr << "wetDb: -6 did not resolve the expected linear gain\n";
+      return 1;
+    }
+
+    std::vector<rvrbotron::dsp::Sample> steadyLeftIn(
+        kWetGainTestFrames, rvrbotron::dsp::Sample{1});
+    std::vector<rvrbotron::dsp::Sample> steadyRightIn(
+        kWetGainTestFrames, rvrbotron::dsp::Sample{1});
+    const rvrbotron::dsp::Sample* steadyInputs[]{
+        steadyLeftIn.data(), steadyRightIn.data()};
+    std::vector<rvrbotron::dsp::Sample> wetReferenceLeft(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> wetReferenceRight(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> wetLeveledLeft(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> wetLeveledRight(kWetGainTestFrames);
+    rvrbotron::dsp::Reverb wetReferenceReverb(wetReferenceResolved);
+    rvrbotron::dsp::Reverb wetLeveledReverb(wetLeveledResolved);
+    rvrbotron::dsp::Sample* wetReferenceOutputs[]{
+        wetReferenceLeft.data(), wetReferenceRight.data()};
+    rvrbotron::dsp::Sample* wetLeveledOutputs[]{
+        wetLeveledLeft.data(), wetLeveledRight.data()};
+    wetReferenceReverb.process(
+        steadyInputs, 2, wetReferenceOutputs, 2, kWetGainTestFrames);
+    wetLeveledReverb.process(
+        steadyInputs, 2, wetLeveledOutputs, 2, kWetGainTestFrames);
+
+    bool sawNonzeroWet = false;
+    for (std::size_t frame = 0; frame < kWetGainTestFrames; ++frame) {
+      if (wetReferenceLeft[frame] != rvrbotron::dsp::Sample{0} ||
+          wetReferenceRight[frame] != rvrbotron::dsp::Sample{0}) {
+        sawNonzeroWet = true;
+      }
+      const auto expectedLeft =
+          static_cast<double>(wetReferenceLeft[frame]) * expectedWetGain;
+      const auto expectedRight =
+          static_cast<double>(wetReferenceRight[frame]) * expectedWetGain;
+      if (!close(wetLeveledLeft[frame], expectedLeft) ||
+          !close(wetLeveledRight[frame], expectedRight)) {
+        std::cerr << "wetDb: -6 did not scale the Wet sum by its "
+                     "resolved gain at frame "
+                  << frame << '\n';
+        return 1;
+      }
+    }
+    if (!sawNonzeroWet) {
+      std::cerr << "the Diffuser produced no nonzero output within "
+                << kWetGainTestFrames
+                << " frames -- the wetGain scaling comparison above did "
+                   "not exercise genuinely nonzero Wet sum values\n";
+      return 1;
+    }
+
+    // Final output is reconstructable from the dry input, the Wet sum
+    // (here, the wet-only reference render above), and the Resolved
+    // envelope values: dry contribution plus the scaled Wet sum, fixed
+    // order (docs/design/reverb/stages/09-composition.md).
+    auto combinedComposition = composition;
+    combinedComposition.wetOnly = false;
+    combinedComposition.dryDb = -6.0;
+    combinedComposition.wetDb = -3.0;
+    rvrbotron::config::ReverbConfig combinedRequested;
+    combinedRequested.formatVersion = 2;
+    combinedRequested.seed = 7;
+    combinedRequested.composition = std::move(combinedComposition);
+    const auto combinedResolved =
+        rvrbotron::config::resolveConfig(combinedRequested, 48000, 2);
+
+    auto combinedWetReferenceComposition = composition;
+    combinedWetReferenceComposition.wetOnly = true;
+    combinedWetReferenceComposition.wetDb = -3.0;
+    rvrbotron::config::ReverbConfig combinedWetReferenceRequested;
+    combinedWetReferenceRequested.formatVersion = 2;
+    combinedWetReferenceRequested.seed = 7;
+    combinedWetReferenceRequested.composition =
+        std::move(combinedWetReferenceComposition);
+    const auto combinedWetReferenceResolved =
+        rvrbotron::config::resolveConfig(
+            combinedWetReferenceRequested, 48000, 2);
+
+    rvrbotron::dsp::Reverb combinedReverb(combinedResolved);
+    rvrbotron::dsp::Reverb combinedWetReferenceReverb(
+        combinedWetReferenceResolved);
+    std::vector<rvrbotron::dsp::Sample> combinedLeft(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> combinedRight(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> combinedWetReferenceLeft(
+        kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> combinedWetReferenceRight(
+        kWetGainTestFrames);
+    rvrbotron::dsp::Sample* combinedOutputs[]{
+        combinedLeft.data(), combinedRight.data()};
+    rvrbotron::dsp::Sample* combinedWetReferenceOutputs[]{
+        combinedWetReferenceLeft.data(), combinedWetReferenceRight.data()};
+    combinedReverb.process(
+        steadyInputs, 2, combinedOutputs, 2, kWetGainTestFrames);
+    combinedWetReferenceReverb.process(
+        steadyInputs,
+        2,
+        combinedWetReferenceOutputs,
+        2,
+        kWetGainTestFrames);
+    const auto expectedCombinedDryGain = std::pow(10.0, -6.0 / 20.0);
+    for (std::size_t frame = 0; frame < kWetGainTestFrames; ++frame) {
+      const auto expectedLeft =
+          1.0 * expectedCombinedDryGain +
+          static_cast<double>(combinedWetReferenceLeft[frame]);
+      const auto expectedRight =
+          1.0 * expectedCombinedDryGain +
+          static_cast<double>(combinedWetReferenceRight[frame]);
+      if (!close(combinedLeft[frame], expectedLeft) ||
+          !close(combinedRight[frame], expectedRight)) {
+        std::cerr << "final output was not the fixed-order sum of the "
+                     "dry contribution and the scaled Wet sum at frame "
+                  << frame << '\n';
+        return 1;
+      }
+    }
+
+    // Dry contribution is exact zero for every frame after source EOF:
+    // the CLI feeds zeroed input during Tail-budget drain (see
+    // main.cpp), so a Reverb fed zero input must contribute exact dry
+    // zero regardless of wetOnly, leaving only the continuing Wet sum.
+    std::vector<rvrbotron::dsp::Sample> silentInput(
+        kWetGainTestFrames, rvrbotron::dsp::Sample{0});
+    const rvrbotron::dsp::Sample* silentInputs[]{
+        silentInput.data(), silentInput.data()};
+    auto postEofComposition = composition;
+    postEofComposition.wetOnly = false;
+    postEofComposition.dryDb = -6.0;
+    rvrbotron::config::ReverbConfig postEofRequested;
+    postEofRequested.formatVersion = 2;
+    postEofRequested.seed = 7;
+    postEofRequested.composition = std::move(postEofComposition);
+    const auto postEofResolved =
+        rvrbotron::config::resolveConfig(postEofRequested, 48000, 2);
+    rvrbotron::dsp::Reverb postEofReverb(postEofResolved);
+    rvrbotron::dsp::Reverb postEofWetReferenceReverb(wetReferenceResolved);
+    std::vector<rvrbotron::dsp::Sample> postEofLeft(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> postEofRight(kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> postEofWetReferenceLeft(
+        kWetGainTestFrames);
+    std::vector<rvrbotron::dsp::Sample> postEofWetReferenceRight(
+        kWetGainTestFrames);
+    rvrbotron::dsp::Sample* postEofOutputs[]{
+        postEofLeft.data(), postEofRight.data()};
+    rvrbotron::dsp::Sample* postEofWetReferenceOutputs[]{
+        postEofWetReferenceLeft.data(), postEofWetReferenceRight.data()};
+    postEofReverb.process(
+        silentInputs, 2, postEofOutputs, 2, kWetGainTestFrames);
+    postEofWetReferenceReverb.process(
+        silentInputs,
+        2,
+        postEofWetReferenceOutputs,
+        2,
+        kWetGainTestFrames);
+    for (std::size_t frame = 0; frame < kWetGainTestFrames; ++frame) {
+      if (postEofLeft[frame] != postEofWetReferenceLeft[frame] ||
+          postEofRight[frame] != postEofWetReferenceRight[frame]) {
+        std::cerr << "an enabled dry path with zero (post-EOF) input did "
+                     "not contribute exact dry zero at frame " << frame
+                  << '\n';
+        return 1;
+      }
+    }
+
+    // An extreme dryDb/wetDb resolves a gain that is a valid finite
+    // positive double but is not representable at float precision,
+    // mirroring mainLevelDb's own extreme-value check above.
+    for (const auto extremeField : {"dryDb", "wetDb"}) {
+      for (const auto extremeLevel : {1000.0, -1000.0}) {
+        auto extremeComposition = composition;
+        if (std::string(extremeField) == "dryDb") {
+          extremeComposition.dryDb = extremeLevel;
+        } else {
+          extremeComposition.wetDb = extremeLevel;
+        }
+        rvrbotron::config::ReverbConfig extremeRequested;
+        extremeRequested.formatVersion = 2;
+        extremeRequested.seed = 7;
+        extremeRequested.composition = std::move(extremeComposition);
+        bool extremeRejected = false;
+        try {
+          static_cast<void>(
+              rvrbotron::config::resolveConfig(extremeRequested, 48000, 2));
+        } catch (const rvrbotron::HarnessError&) {
+          extremeRejected = true;
+        }
+        if (!extremeRejected) {
+          std::cerr << "resolveConfig accepted a " << extremeField << " of "
+                     << extremeLevel
+                     << " whose gain is not representable at float "
+                        "precision\n";
+          return 1;
+        }
       }
     }
   }

@@ -20,7 +20,7 @@ Three things no individual stage can own:
 
 **Pre-delay** shifts the entire wet path later, including early reflections. It models distance from every surface at once and is the strongest cue for separating a source from its space — the reason a vocal with 30ms pre-delay sits in front of the reverb rather than inside it. A single delay before Split. Range 0–200ms.
 
-**Dry/wet** is a mix, not a crossfade. Constant-power crossfading is wrong here: the wet signal is largely decorrelated from the dry, so their energies add rather than interfere. Independent gains, both expressed in dB, with a `wet-only` flag for send-style use.
+**Dry/wet** is a mix, not a crossfade. Constant-power crossfading is wrong here: the wet signal is largely decorrelated from the dry, so their energies add rather than interfere. Independent gains, both expressed in dB and defaulting to 0dB. `wetOnly` defaults to `true` — the wet-only rendering every Composition has always produced — and is an exact gate rather than a very negative `dryDb`: `false` maps dry into the mix (stereo input channel-for-channel, mono duplicated to both channels without energy compensation) at `dryDb`, while `true` mutes it exactly regardless of `dryDb`, which stays legal and recorded so toggling the gate back on does not lose a configured level. Main and Early Reflections keep summing into one Wet sum first, exactly as before; `wetDb` then scales that complete sum exactly once, and final output is the dry contribution plus the scaled Wet sum, added in that fixed order — no hidden normalization, limiting, or loudness matching.
 
 ```json
 "predelayMs": 20,
@@ -226,7 +226,7 @@ otherwise a disabled branch produces no capture file.
 
 - **Round trip.** Rendering from a `resolved.json` reproduces the original output bit-identically.
 - **Validation completeness.** Every rejection names a parameter and a reason.
-- **Bypass identity.** `wetOnly: false, wetDb: −∞` returns the dry input unchanged, sample-aligned.
+- **Bypass identity.** `wetOnly: false` with `dryDb: 0`, every wet branch disabled (`mainEnabled: false` and no Early Reflections configured), returns the dry input unchanged, sample-aligned. There is no `wetDb` value that mutes wet instead: JSON infinities are invalid, so exact wet silence uses Main/Early's own enablement, not an extreme `wetDb`.
 - **Pre-delay accuracy.** Wet onset is delayed by exactly `predelayMs`, within one sample.
 - **Identity remains explicit.** `formatVersion: 2` with
   `composition.stages: []` is a valid exact-identity render.
