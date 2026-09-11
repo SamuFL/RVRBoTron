@@ -50,7 +50,7 @@ so learning one teaches the rest.
 
 **One axis at a time.** Every point changes exactly one thing from the
 Reference. Nothing is combinatorial — a sweep of 5 axes with 2 values each is
-11 renders, not 32.
+11 points (Reference plus 10), not 32 combinations.
 
 **Sample plus impulse.** Each point renders both your chosen listening sample
 *and* a deterministic impulse, under an identical Resolved Configuration (the
@@ -112,15 +112,24 @@ impulse basis with `--capture-stages all` and publish
 and pair each to its quantitative counterpart. Add `--skip-listening` for the
 quantitative cases only.
 
-Every case is benchmarked at 128 frames; the Reference also at
-32/64/128/256/512. You get `<output>/benchmark-summary.json` (plus a terminal
-table ranked slowest-to-fastest with deltas from Reference) and
-`<output>/catalog-report.json` with each case's completed/resumed/skipped/
-failed status.
+Every *quantitative* case is benchmarked at 128 frames (1 s warm-up, 5 s
+measured); the Reference also at 32/64/128/256/512. Listening cases are not
+benchmarked.
+
+```text
+<output>/cases/<name>/            # impulse renders, analysis, benchmark-128.json
+<output>/listening/<name>/        # curated-sample renders
+<output>/benchmark-summary.json   # ranked slowest-to-fastest, deltas from Reference
+<output>/catalog-report.json      # per-case completed/resumed/skipped/failed
+```
+
+This catalog has no `listening-report.html` — that is a sweep feature.
 
 ## The tail sweep
 
-Decay behaviour: delay range, RT60, matrix, delay strategy, gain mode.
+Decay behaviour: `delay-range`, `rt60`, `mix`, `delay-strategy`, `gain-mode`,
+against a Reference Feedback Loop of 100-200 ms delays, RT60 2.4 s, Householder
+mixing, per-Channel gain.
 
 ```bash
 python3 tools/run_tail_sweep.py \
@@ -142,9 +151,11 @@ and output.
 
 ## The damping sweep
 
-Two-shelf Damping: `high-ratio`, `low-ratio`, `high-corner`, `low-corner`.
-Ratios above 1.0 (boost) are deliberately excluded from listening material;
-`tests/test_feedback_loop_cli.py` covers them as configuration.
+Two-shelf Damping: `high-ratio`, `low-ratio`, `high-corner`, `low-corner`,
+against the tail Reference plus the Damping baseline (`highRatio` 0.5 at
+4000 Hz, `lowRatio` 1.0 at 200 Hz). Ratios above 1.0 (boost) are deliberately
+excluded from listening material; `tests/test_feedback_loop_cli.py` covers them
+as configuration.
 
 ```bash
 python3 tools/run_damping_sweep.py \
@@ -189,7 +200,11 @@ rather than hidden — it is evidence of a regression.
 
 Stereo image: tap index, Early level, Early-envelope slope, aligned `select`
 versus `sum-all`, Main strategy, selected Channel pair, Early width, Main
-width, and N.
+width, and N — against an explicit Reference of N=8 with the established
+Diffuser and Feedback Loop, taps at Diffusion Steps 0 and 1, -6 dB Early level,
+Early `select` Channels 0/1 at 90 degrees, and 0 dB `orthogonal-rows` Main
+output at 90 degrees. See
+[stage 08, Downmix](../design/reverb/stages/08-downmix.md) for why these axes.
 
 ```bash
 python3 tools/run_spatial_sweep.py \
@@ -210,8 +225,8 @@ needs Stage captures. Three things are unique to this sweep:
   outside that scope fails the point by name — a catalog mistake that would
   silently confound the sweep is caught instead.
 - **Determinism.** Each impulse render is repeated into a scratch directory and
-  byte-compared against the original, per point (`determinism.json` inside each
-  point's directory).
+  byte-compared against the original; a mismatch fails that point. Published
+  per point as `determinism.json`.
 - **No benchmarks.** This sweep measures spatial behaviour, not cost.
 
 The `coherent-downmix` axis's `sum-all` point is compared against the
@@ -278,9 +293,12 @@ The diffusion catalog differs: it has `cases` (each `name`, `source`,
 `pairedQuantitativeCase` tying curated material to its quantitative
 counterpart).
 
-After editing, run the matching tracer test (for example
-`ctest -R tail_sweep_contract`) before the full sweep — it materializes every
-point in milliseconds and fails fast on a malformed axis.
+After editing, run the matching tracer test before the full sweep — it
+materializes every point in milliseconds and fails fast on a malformed axis:
+
+```bash
+ctest --preset default -R tail_sweep_contract
+```
 
 ## Add a listening sample
 
