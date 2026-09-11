@@ -63,6 +63,10 @@ WAV_FORMAT_IEEE_FLOAT = 3
 MAX_REQUEST_BYTES = 1 * 1024 * 1024
 MAX_SOURCE_BYTES = 1 * 1024 * 1024 * 1024
 
+# Long enough for a cold start, short enough that a binary which never
+# answers is reported rather than waited on.
+PROBE_TIMEOUT_SECONDS = 30
+
 
 class BenchError(Exception):
     """A failure to report to the page as text, never as markup."""
@@ -86,6 +90,28 @@ def default_renderer_path(repository_root):
     return repository_root / "build" / "default" / name
 
 
+def probe_renderer(path, arguments):
+    """Run one startup probe, reporting every way it can fail actionably.
+
+    A binary that cannot be started, or that never answers, must produce a
+    message the researcher can act on rather than a traceback.
+    """
+    try:
+        return subprocess.run(
+            [str(path)] + list(arguments),
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise BenchError(
+            f"{path} did not answer within {PROBE_TIMEOUT_SECONDS} seconds, so it "
+            f"is not a usable renderer. Pass --renderer <path> to the real binary."
+        )
+    except OSError as error:
+        raise BenchError(f"could not run {path}: {error}")
+
+
 def verify_renderer(path):
     """Fail at startup, actionably, rather than at the first render.
 
@@ -103,22 +129,14 @@ def verify_renderer(path):
         )
     if not path.is_file() or not os.access(str(path), os.X_OK):
         raise BenchError(f"{path} is not an executable file.")
-    try:
-        probe = subprocess.run([str(path)], capture_output=True, text=True, timeout=30)
-    except OSError as error:
-        raise BenchError(f"could not run {path}: {error}")
+    probe = probe_renderer(path, [])
     usage = probe.stderr + probe.stdout
     if "usage: rvrbotron" not in usage:
         raise BenchError(
             f"{path} does not look like the rvrbotron renderer (no usage line). "
             f"Pass --renderer <path> to the real binary."
         )
-    diagnostic = subprocess.run(
-        [str(path), "render", "--error-format", "json"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    diagnostic = probe_renderer(path, ["render", "--error-format", "json"])
     if renderer_failure(diagnostic.stderr).category != "invalid_arguments":
         raise BenchError(
             f"{path} does not report errors as JSON, which the bench needs to "
@@ -304,11 +322,17 @@ class Session:
             "durationSeconds": round(frames / sample_rate, 3),
         }
 
-    def output_path(self):
-        if self.result_dir is None:
-            return None
-        path = self.resolve_within(self.result_dir / "output.wav")
-        return path if path.exists() else None
+    def read_output(self):
+        """The newest result's bytes, read while the lock is held.
+
+        A render completing between finding the file and opening it would
+        otherwise delete the previous result underneath this reader.
+        """
+        with self.lock:
+            if self.result_dir is None:
+                return None
+            path = self.resolve_within(self.result_dir / "output.wav")
+            return path.read_bytes() if path.exists() else None
 
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -403,6 +427,10 @@ def build_handler(session, token, port, static_files):
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 raise BenchError("missing or invalid Content-Length")
+            # A negative length would slip past the limit below and turn
+            # rfile.read into a read-to-EOF that blocks this handler.
+            if length < 0:
+                raise BenchError("Content-Length cannot be negative")
             if length > limit:
                 raise BenchError(
                     f"{description} is larger than the "
@@ -421,13 +449,13 @@ def build_handler(session, token, port, static_files):
                 body, content_type = static_files[route]
                 self._send(HTTPStatus.OK, body, content_type)
             elif route == "/api/output.wav":
-                path = session.output_path()
-                if path is None:
+                audio = session.read_output()
+                if audio is None:
                     self._reject(HTTPStatus.NOT_FOUND, "nothing rendered yet")
                     return
                 self._send(
                     HTTPStatus.OK,
-                    path.read_bytes(),
+                    audio,
                     "audio/wav",
                     {"Content-Disposition": 'attachment; filename="output.wav"'},
                 )

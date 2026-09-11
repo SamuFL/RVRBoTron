@@ -386,4 +386,10 @@ add_test(
     $<TARGET_FILE:rvrbotron>
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-contract
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
 )
+
+# The test drives a live server it starts itself. If the launcher ever hangs
+# before printing its banner, bound the wait here rather than at CTest's
+# 25-minute default.
+set_tests_properties(research_bench_contract PROPERTIES TIMEOUT 180)
