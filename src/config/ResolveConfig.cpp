@@ -1615,7 +1615,7 @@ void validateFloatRepresentableGain(
 // silently wrong.
 std::uint64_t resolvePreDelaySamples(
     const double preDelayMs, const std::uint32_t sampleRate) noexcept {
-  if (!std::isfinite(preDelayMs)) {
+  if (!std::isfinite(preDelayMs) || preDelayMs < 0.0) {
     return 0;
   }
   const auto exactSamples =
