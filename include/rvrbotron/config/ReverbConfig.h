@@ -231,6 +231,17 @@ struct CompositionConfig {
   // and rejected, on the empty identity Composition, exactly like
   // mainEnabled/mainLevelDb above.
   std::optional<EarlyConfig> early;
+  // The Composition's own dry/wet envelope (issue #114/ADR-0007): not
+  // applicable, and rejected, on the empty identity Composition, exactly
+  // like mainEnabled/mainLevelDb/early above. dryDb/wetDb default to
+  // 0 dB; wetOnly defaults to true (send-style, the current wet-only
+  // rendering every existing non-empty format-v2 request already
+  // produces). wetOnly gates the dry path to exact zero while leaving
+  // dryDb legal and preserved, so toggling wetOnly off does not erase a
+  // previously configured dry level.
+  std::optional<double> dryDb;
+  std::optional<double> wetDb;
+  std::optional<bool> wetOnly;
 };
 
 struct ReverbConfig {

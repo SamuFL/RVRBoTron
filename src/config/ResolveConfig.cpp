@@ -1576,6 +1576,31 @@ double resolveLinearGainFromDb(const double levelDb) noexcept {
   return std::pow(10.0, levelDb / 20.0);
 }
 
+// A resolved gain must be finite, strictly positive, and representable as
+// a non-zero finite float regardless of this build's own Sample type
+// (issue #109's mainGain, #111's early/tap gain, #114's dryGain/wetGain):
+// a resolved.json is meant to give float and double DSP the same
+// structure, and float has the narrower range -- an extreme but finite
+// double gain (e.g. 1e50 from a +1000 dB level) silently becomes infinity
+// when narrowed to float, and a tiny one silently becomes exact zero,
+// either way diverging from the resolved value DSP construction actually
+// reads (see Downmix's own effectiveLeftRow/effectiveRightRow for the
+// same double-resolved/Sample-applied split). Shared so every gain field
+// fails with identical wording rather than a fourth (or fifth) copy of
+// this check drifting from the others.
+void validateFloatRepresentableGain(
+    const std::string_view path, const double gain) {
+  const auto gainAtFloatPrecision = static_cast<float>(gain);
+  if (!(gain > 0.0) || !std::isfinite(gain) ||
+      !std::isfinite(gainAtFloatPrecision) ||
+      !(gainAtFloatPrecision > 0.0f)) {
+    fail(
+        path,
+        "expected finite positive gain representable at float "
+        "precision");
+  }
+}
+
 // Early's own `select` Downmix default (issue #111, docs/design/reverb/
 // stages/09-composition.md's "A present Early Reflections branch defaults
 // to ... select Channels 0/1 (or Channel 0 duplicated at N=1)"), unlike
@@ -1780,6 +1805,21 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           "/composition/early",
           "not applicable to the empty identity Composition");
     }
+    if (requestedComposition->dryDb.has_value()) {
+      fail(
+          "/composition/dryDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (requestedComposition->wetDb.has_value()) {
+      fail(
+          "/composition/wetDb",
+          "not applicable to the empty identity Composition");
+    }
+    if (requestedComposition->wetOnly.has_value()) {
+      fail(
+          "/composition/wetOnly",
+          "not applicable to the empty identity Composition");
+    }
   }
   if (requestedComposition != nullptr &&
       !requestedComposition->stages.empty()) {
@@ -1789,6 +1829,18 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         requestedComposition->mainLevelDb.value_or(0.0);
     resolved.composition.mainGain =
         resolveLinearGainFromDb(resolved.composition.mainLevelDb);
+    // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb
+    // default to 0 dB and wetOnly defaults to true, reproducing every
+    // existing non-empty format-v2 request's wet-only output exactly
+    // when all three are omitted.
+    resolved.composition.dryDb = requestedComposition->dryDb.value_or(0.0);
+    resolved.composition.dryGain =
+        resolveLinearGainFromDb(resolved.composition.dryDb);
+    resolved.composition.wetDb = requestedComposition->wetDb.value_or(0.0);
+    resolved.composition.wetGain =
+        resolveLinearGainFromDb(resolved.composition.wetDb);
+    resolved.composition.wetOnly =
+        requestedComposition->wetOnly.value_or(true);
     const auto requestedStageCount = requestedComposition->stages.size();
     const auto canonicalShape =
         std::holds_alternative<SplitConfig>(
@@ -3322,31 +3374,35 @@ void validateResolvedConfig(
   if (!std::isfinite(resolved.composition.mainLevelDb)) {
     fail("/composition/mainLevelDb", "expected a finite value");
   }
-  // Checked at float precision regardless of this build's own Sample
-  // type -- a resolved.json is meant to give float and double DSP the
-  // same structure (docs/design/reverb/stages/09-composition.md), and
-  // float has the narrower range: an extreme but finite double mainGain
-  // (e.g. 1e50 from a +1000 dB mainLevelDb) silently becomes infinity
-  // when narrowed to float, and a tiny one silently becomes exact zero,
-  // either way diverging from the resolved value DSP construction
-  // actually reads (see Downmix's own effectiveLeftRow/effectiveRightRow
-  // for the same double-resolved/Sample-applied split).
-  const auto mainGainAtFloatPrecision =
-      static_cast<float>(resolved.composition.mainGain);
-  if (!(resolved.composition.mainGain > 0.0) ||
-      !std::isfinite(resolved.composition.mainGain) ||
-      !std::isfinite(mainGainAtFloatPrecision) ||
-      !(mainGainAtFloatPrecision > 0.0f)) {
-    fail(
-        "/composition/mainGain",
-        "expected finite positive gain representable at float "
-        "precision");
-  }
+  validateFloatRepresentableGain(
+      "/composition/mainGain", resolved.composition.mainGain);
   if (resolved.composition.mainGain !=
       resolveLinearGainFromDb(resolved.composition.mainLevelDb)) {
     fail(
         "/composition/mainGain",
         "expected gain derived from mainLevelDb");
+  }
+
+  // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb
+  // must be finite, and dryGain/wetGain must be derived and float-
+  // representable, exactly like mainLevelDb/mainGain above.
+  if (!std::isfinite(resolved.composition.dryDb)) {
+    fail("/composition/dryDb", "expected a finite value");
+  }
+  validateFloatRepresentableGain(
+      "/composition/dryGain", resolved.composition.dryGain);
+  if (resolved.composition.dryGain !=
+      resolveLinearGainFromDb(resolved.composition.dryDb)) {
+    fail("/composition/dryGain", "expected gain derived from dryDb");
+  }
+  if (!std::isfinite(resolved.composition.wetDb)) {
+    fail("/composition/wetDb", "expected a finite value");
+  }
+  validateFloatRepresentableGain(
+      "/composition/wetGain", resolved.composition.wetGain);
+  if (resolved.composition.wetGain !=
+      resolveLinearGainFromDb(resolved.composition.wetDb)) {
+    fail("/composition/wetGain", "expected gain derived from wetDb");
   }
 
   const auto& split =
@@ -3557,15 +3613,7 @@ void validateResolvedConfig(
             "expected gainDb minus decayDbPerSec times the nominal "
             "support end");
       }
-      const auto tapGainAtFloatPrecision = static_cast<float>(tap.gain);
-      if (!(tap.gain > 0.0) || !std::isfinite(tap.gain) ||
-          !std::isfinite(tapGainAtFloatPrecision) ||
-          !(tapGainAtFloatPrecision > 0.0f)) {
-        fail(
-            tapPath + "/gain",
-            "expected finite positive gain representable at float "
-            "precision");
-      }
+      validateFloatRepresentableGain(tapPath + "/gain", tap.gain);
       if (tap.gain != expectedTap.gain) {
         fail(tapPath + "/gain", "expected gain derived from shapingGainDb");
       }
@@ -3573,17 +3621,7 @@ void validateResolvedConfig(
     if (!std::isfinite(early.levelDb)) {
       fail("/composition/early/levelDb", "expected a finite value");
     }
-    // Checked at float precision regardless of this build's own Sample
-    // type, mirroring mainGain's own check above (issue #109).
-    const auto earlyGainAtFloatPrecision = static_cast<float>(early.gain);
-    if (!(early.gain > 0.0) || !std::isfinite(early.gain) ||
-        !std::isfinite(earlyGainAtFloatPrecision) ||
-        !(earlyGainAtFloatPrecision > 0.0f)) {
-      fail(
-          "/composition/early/gain",
-          "expected finite positive gain representable at float "
-          "precision");
-    }
+    validateFloatRepresentableGain("/composition/early/gain", early.gain);
     if (early.gain != resolveLinearGainFromDb(early.levelDb)) {
       fail("/composition/early/gain", "expected gain derived from levelDb");
     }

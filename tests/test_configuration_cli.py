@@ -3032,6 +3032,9 @@ def main():
     for main_field, main_field_value in (
         ("mainEnabled", True),
         ("mainLevelDb", -6.0),
+        ("dryDb", -6.0),
+        ("wetDb", -6.0),
+        ("wetOnly", False),
     ):
         empty_with_field_document = {
             "formatVersion": 2,
@@ -3085,6 +3088,20 @@ def main():
         raise AssertionError(
             f"unexpected default Main wet path controls: "
             f"{main_default_composition}"
+        )
+    # The Composition's own dry/wet envelope (#114) exposes documented
+    # defaults on the same non-empty Composition: 0 dB dry/wet, 1.0
+    # dry/wet gain, and wet-only -- reproducing every existing non-empty
+    # format-v2 request's wet-only rendering exactly.
+    if (
+        main_default_composition["dryDb"] != 0.0
+        or main_default_composition["dryGain"] != 1.0
+        or main_default_composition["wetDb"] != 0.0
+        or main_default_composition["wetGain"] != 1.0
+        or main_default_composition["wetOnly"] is not True
+    ):
+        raise AssertionError(
+            f"unexpected default dry/wet envelope: {main_default_composition}"
         )
     _, main_default_output_samples = read_float_wav(
         main_default_result / "output.wav"
@@ -3160,6 +3177,222 @@ def main():
             raise AssertionError(
                 "mainLevelDb: -6 did not scale the Main wet path output "
                 "by its resolved gain"
+            )
+
+    # The Composition's own dry/wet envelope (#114, ADR-0007): command-
+    # level cases for wetOnly send-style gating, insert-style dry+wet,
+    # stereo channel-for-channel mapping, mono duplication, legacy
+    # resolved.json omission, and partial-envelope rejection.
+    envelope_tolerance = 2e-6
+
+    def render_envelope_document(document, input_fixture, name):
+        request_path = workspace / f"envelope-{name}-request.json"
+        request_path.write_text(json.dumps(document))
+        result_path = workspace / f"envelope-{name}-result"
+        require_success(
+            run_renderer(
+                renderer,
+                "--input",
+                input_fixture,
+                "--config",
+                request_path,
+                "--output",
+                result_path,
+            )
+        )
+        return result_path
+
+    def envelope_document(overrides):
+        document = json.loads(json.dumps(main_base_document))
+        document["composition"].update(overrides)
+        return document
+
+    # Insert-style dry+wet: final output is the fixed-order sum of the
+    # dry contribution and the scaled Wet sum. Proven by rendering dry
+    # and wet in isolation (Main disabled for the dry-only reference, so
+    # its Wet sum is exact zero) and comparing their sample-wise sum
+    # against the combined render, on both mono and stereo dry input.
+    for input_fixture, input_name in (
+        (fixture, "mono"),
+        (stereo_fixture, "stereo"),
+    ):
+        combined_result = render_envelope_document(
+            envelope_document(
+                {"wetOnly": False, "dryDb": -6.0, "wetDb": -3.0}
+            ),
+            input_fixture,
+            f"combined-{input_name}",
+        )
+        dry_only_result = render_envelope_document(
+            envelope_document(
+                {
+                    "mainEnabled": False,
+                    "wetOnly": False,
+                    "dryDb": -6.0,
+                }
+            ),
+            input_fixture,
+            f"dry-only-{input_name}",
+        )
+        wet_only_result = render_envelope_document(
+            envelope_document({"wetOnly": True, "wetDb": -3.0}),
+            input_fixture,
+            f"wet-only-{input_name}",
+        )
+        _, combined_samples = read_float_wav(combined_result / "output.wav")
+        _, dry_only_samples = read_float_wav(dry_only_result / "output.wav")
+        _, wet_only_samples = read_float_wav(wet_only_result / "output.wav")
+        if (
+            len(combined_samples) != len(dry_only_samples)
+            or len(combined_samples) != len(wet_only_samples)
+        ):
+            raise AssertionError(
+                f"dry/wet envelope renders ({input_name}) did not share "
+                f"the same rendered frame count"
+            )
+        for combined_value, dry_value, wet_value in zip(
+            combined_samples, dry_only_samples, wet_only_samples
+        ):
+            if abs(combined_value - (dry_value + wet_value)) > envelope_tolerance:
+                raise AssertionError(
+                    f"combined dry+wet output ({input_name}) was not the "
+                    f"fixed-order sum of its dry-only and wet-only "
+                    f"references"
+                )
+
+    # wetOnly (the default) gates dry to exact zero while preserving
+    # dryDb: a non-default dryDb with wetOnly omitted (still true)
+    # renders byte-identical to the plain wet-only default above.
+    wet_only_preserved_dry_result = render_envelope_document(
+        envelope_document({"dryDb": -6.0}), fixture, "wet-only-preserved-dry"
+    )
+    wet_only_preserved_dry_composition = json.loads(
+        (wet_only_preserved_dry_result / "resolved.json").read_text()
+    )["composition"]
+    if wet_only_preserved_dry_composition["dryDb"] != -6.0:
+        raise AssertionError("wetOnly: true (default) did not preserve dryDb")
+    if (
+        wet_only_preserved_dry_result / "output.wav"
+    ).read_bytes() != (main_default_result / "output.wav").read_bytes():
+        raise AssertionError(
+            "a preserved but gated dryDb changed wet-only output"
+        )
+
+    # Newly emitted Resolved configurations record the complete envelope
+    # set, and rerendering from them is bit-identical.
+    envelope_requested_result = render_envelope_document(
+        envelope_document(
+            {"wetOnly": False, "dryDb": -6.0, "wetDb": -3.0}
+        ),
+        stereo_fixture,
+        "round-trip-requested",
+    )
+    envelope_resolved_composition = json.loads(
+        (envelope_requested_result / "resolved.json").read_text()
+    )["composition"]
+    for envelope_field in ("dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"):
+        if envelope_field not in envelope_resolved_composition:
+            raise AssertionError(
+                f"newly emitted resolved.json omitted {envelope_field}"
+            )
+    envelope_resolved_result = workspace / "envelope-round-trip-resolved-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            stereo_fixture,
+            "--resolved",
+            envelope_requested_result / "resolved.json",
+            "--output",
+            envelope_resolved_result,
+        )
+    )
+    if (envelope_resolved_result / "output.wav").read_bytes() != (
+        envelope_requested_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "rerendering the complete dry/wet envelope from resolved.json "
+            "was not bit-identical"
+        )
+
+    # A non-empty format-v2 Resolved Composition carrying no envelope
+    # fields at all loads as the ADR-0007 legacy neutral reading (wet-
+    # only, 0 dB dry/wet, 1.0 dry/wet gain) -- byte-identical to an
+    # explicit neutral Resolved Composition.
+    legacy_resolved_document = json.loads(
+        (main_default_result / "resolved.json").read_text()
+    )
+    for envelope_field in ("dryDb", "wetDb", "wetOnly", "dryGain", "wetGain"):
+        del legacy_resolved_document["composition"][envelope_field]
+    legacy_resolved_path = workspace / "legacy-resolved.json"
+    legacy_resolved_path.write_text(json.dumps(legacy_resolved_document))
+    legacy_resolved_result = workspace / "legacy-resolved-result"
+    require_success(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            legacy_resolved_path,
+            "--output",
+            legacy_resolved_result,
+        )
+    )
+    if (legacy_resolved_result / "output.wav").read_bytes() != (
+        main_default_result / "output.wav"
+    ).read_bytes():
+        raise AssertionError(
+            "a legacy resolved.json without envelope fields did not "
+            "render the neutral (wet-only) reading"
+        )
+
+    # A partial envelope set -- hand-corrupted or truncated evidence, not
+    # a legitimate complete artifact -- is rejected at the Composition
+    # path rather than guessed at.
+    partial_resolved_document = json.loads(json.dumps(legacy_resolved_document))
+    partial_resolved_document["composition"]["dryDb"] = -6.0
+    partial_resolved_path = workspace / "partial-envelope-resolved.json"
+    partial_resolved_path.write_text(json.dumps(partial_resolved_document))
+    require_failure(
+        run_renderer(
+            renderer,
+            "--input",
+            fixture,
+            "--resolved",
+            partial_resolved_path,
+            "--output",
+            workspace / "partial-envelope-result",
+        ),
+        "expected the complete envelope set",
+        workspace / "partial-envelope-result",
+    )
+
+    # An extreme dryDb/wetDb resolves a gain that is a valid finite
+    # positive double but not representable at float precision, mirroring
+    # mainLevelDb's own extreme-value check.
+    for extreme_field in ("dryDb", "wetDb"):
+        for extreme_level in (1000.0, -1000.0):
+            extreme_document = envelope_document({extreme_field: extreme_level})
+            extreme_request = workspace / (
+                f"envelope-extreme-{extreme_field}-{extreme_level}-request.json"
+            )
+            extreme_request.write_text(json.dumps(extreme_document))
+            require_failure(
+                run_renderer(
+                    renderer,
+                    "--input",
+                    fixture,
+                    "--config",
+                    extreme_request,
+                    "--output",
+                    workspace
+                    / f"envelope-extreme-{extreme_field}-{extreme_level}-result",
+                ),
+                f"/composition/{'dryGain' if extreme_field == 'dryDb' else 'wetGain'}: "
+                f"expected finite positive gain representable at float "
+                f"precision",
+                workspace
+                / f"envelope-extreme-{extreme_field}-{extreme_level}-result",
             )
 
     # Width (#109): endpoint identity (0/90/180) and an intermediate
