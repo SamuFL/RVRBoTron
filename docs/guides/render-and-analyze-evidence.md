@@ -50,6 +50,7 @@ existing output path is never overwritten; pick a fresh one each time.
 
 | Field | Meaning |
 | --- | --- |
+| `formatVersion` | Schema version of `render.json` itself (currently `1`) |
 | `inputFilename`, `inputSha256` | Source provenance — the filename only, never a full path |
 | `rendererVersion`, `platform`, `architecture` | Build provenance |
 | `samplePrecision` | `float32` or `float64` |
@@ -60,7 +61,8 @@ existing output path is never overwritten; pick a fresh one each time.
 | `preDelayFrames` | Resolved Pre-delay, before Split |
 | `tailBudgetFrames` | Resolved Tail budget, drained past input EOF |
 | `frames` | Total frames written |
-| `stageCaptureProfile`, `stageCaptures` | Capture manifest, only with `--capture-stages all` |
+| `stageCaptureProfile` | Capture profile used (`all-v2`), only with `--capture-stages all` |
+| `stageCaptures` | Per-capture manifest, only with `--capture-stages all` |
 
 **`preDelayFrames` and `tailBudgetFrames` are separate on purpose** — onset
 delay is not decay duration. Both are authorised by the Resolved
@@ -129,6 +131,18 @@ Captures share the output timeline, so they are `inputFrames +
 preDelayFrames + tailBudgetFrames` long too, and begin with the Pre-delay
 interval where one is configured.
 
+`render.json` manifests every capture under the `all-v2` profile, so evidence
+can be verified without opening the WAVs:
+
+| Manifest field | Meaning |
+| --- | --- |
+| `path` | Stable path within the Render Result |
+| `boundary` | `split`, `diffusion-step`, `main-stereo`, or `early-stereo` |
+| `index` | Step index for `diffusion-step`; `0` otherwise |
+| `sha256` | Capture contents |
+| `sampleRate`, `channels`, `frames` | Capture audio facts |
+| `disabled` | `true` only for a configured-but-switched-off branch |
+
 ## Analyze
 
 Analysis is a separate Python step, never required for rendering. It reads
@@ -195,24 +209,31 @@ mode prints a report and publishes nothing.
 
 Schroeder integration assumes an impulse response, so measure a deterministic
 impulse render of the same Resolved configuration rather than musical
-material:
+material. Replay the configuration you listened to, against an impulse:
 
 ```bash
 build/default/rvrbotron render \
-  --input tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --input tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
   --resolved build/tail-result/resolved.json \
   --output build/tail-impulse
 
 python3 tools/analyze_tail.py build/tail-impulse \
-  --source tests/fixtures/audio/impulse-mono-pcm16-48000.wav
+  --source tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav
 ```
+
+The impulse must match the Channel count the configuration resolved, per the
+[replay rule](#replay-a-resolved-configuration) above — so a tail rendered
+from a stereo sample needs the **stereo** impulse fixture shown here, and one
+rendered from mono needs `impulse-mono-pcm16-48000.wav` instead. Mismatching
+them is rejected at `/composition/stages/0/inputChannels`.
 
 Requires a Feedback Loop in the Composition; any other shape is rejected.
 RT60 is measured per octave band from 63 Hz to 16 kHz. T30 is the primary fit
 with T20 reported beside it — the two agree on a single-rate decay and
 diverge under `gainMode: "uniform"` at a wide delay spread, which is the
-point of reporting both. The Reference band (1 kHz) is compared against the
-requested `rt60Sec`.
+point of reporting both. The Reference band (1 kHz) is compared against the requested `rt60Sec`, with
+the relative error and whether it sits inside the ±5% Decay accuracy
+invariant.
 
 It also reports a decay-envelope check: raw, non-Schroeder-integrated
 broadband energy from the end of the source onward, verified non-increasing.
@@ -238,8 +259,9 @@ rather than re-derived; Output correlation, inter-channel level difference,
 peak factor, and equal-power mono fold-down on the stereo output; and branch
 energies reconciled with their cross term against the Wet sum.
 
-A measured Alignment score and branch energy ratio are reported only when the
-Downmix's immediate source is a Diffusion Step. An unaligned source — a
+A measured Alignment score is reported only when the Downmix's immediate
+source is a Diffusion Step, and the branch energy ratio additionally requires
+that branch to have been enabled. An unaligned source — a
 Feedback Loop between Diffuser and Downmix, or no Diffuser at all — has no
 equivalent capture, so those are reported unavailable rather than measured
 against the wrong signal ([ADR-0005](../adr/0005-measure-movement-at-the-output.md)).
@@ -273,8 +295,14 @@ python3 tools/compare_diffusion_equivalence.py \
   --tolerances tools/diffusion_tolerances_v1.json
 ```
 
-The tail workflow is identical with `extract_tail_equivalence.py`,
-`compare_tail_equivalence.py`, and `tools/tail_tolerances_v1.json`.
+The same extract-then-compare pair exists for every analyzer that measures:
+
+| Artifact | Extract / compare | Tolerances |
+| --- | --- | --- |
+| `diffusion-v1.json` | `*_diffusion_equivalence.py` | `diffusion_tolerances_v1.json` |
+| `tail-v1.json` | `*_tail_equivalence.py` | `tail_tolerances_v1.json` |
+| `tail-v2.json` | `*_tail_v2_equivalence.py` | `tail_tolerances_v2.json` |
+| `modulation-v1.json` | `*_modulation_equivalence.py` | `modulation_tolerances_v1.json` |
 
 Both comparators group summaries by sample precision, pick one baseline per
 group (macOS arm64 when present), and split their checks in two:
@@ -362,5 +390,7 @@ what the sweeps and catalogs parse:
 }
 ```
 
-`location` is present only for configuration errors — it is the JSON Pointer
-into your request, so it points at the field to fix.
+`location` is a JSON Pointer into the file that was rejected, so it points at
+what to fix. Configuration errors carry the offending field's path; a
+`malformed_json` failure carries `/`, since nothing could be parsed. Errors
+with no file position — `io_failure`, `invalid_arguments` — omit it.

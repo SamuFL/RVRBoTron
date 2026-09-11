@@ -149,10 +149,6 @@ build/default/rvrbotron render \
   --output build/diffusion-result
 ```
 
-The versioned `all-v2` capture profile writes canonical WAVs under
-`captures/`. `render.json` manifests each boundary with its stable path,
-SHA-256, sample rate, Channel count, and complete output-timeline frame count.
-
 ### Configure the Composition
 
 Every request field, its accepted values, defaults, the valid stage shapes, and
