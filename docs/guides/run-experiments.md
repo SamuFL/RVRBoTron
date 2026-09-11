@@ -259,46 +259,138 @@ in [`samples/listening/README.md`](../../samples/listening/README.md).
 
 ## Add an experiment
 
-Add an axis to an existing sweep catalog rather than writing a new runner. A
-sweep catalog is `formatVersion`, one `reference` configuration, and `axes`:
+You add an **axis** to an existing catalog file. You do not write a new runner,
+and you do not write a new `request.json` per point — the runner builds each
+point for you by applying your overrides to the catalog's Reference.
+
+Worked example: add a Channel-count axis to the tail sweep, which currently
+sweeps `delay-range`, `rt60`, `mix`, `delay-strategy`, and `gain-mode` but
+never varies N.
+
+### 1. Open the catalog
+
+Edit the file you passed to `--catalog`. One per experiment:
+
+| Experiment | Catalog file |
+| --- | --- |
+| Diffusion | `tools/diffusion_catalog_v1.json` |
+| Tail | `tools/tail_sweep_v1.json` |
+| Damping | `tools/damping_sweep_v1.json` |
+| Modulation | `tools/modulation_sweep_v1.json` |
+| Spatial | `tools/spatial_sweep_v1.json` |
+
+Each has three top-level keys: `formatVersion`, `reference`, and `axes`.
+
+### 2. Find your key in `reference`
+
+`reference` is an ordinary Requested configuration — the same shape as a
+`request.json` you would hand the renderer. This is where override paths come
+from. The tail Reference is:
+
+```json
+"reference": {
+  "formatVersion": 2,
+  "seed": 42,
+  "composition": {
+    "stages": [
+      { "type": "split", "channels": 8, "strategy": "duplicate", "normalisation": "energy" },
+      { "type": "feedback-loop", "delayMinMs": 100, "delayMaxMs": 200,
+        "delayStrategy": "segmented-random", "rt60Sec": 2.4,
+        "mix": "householder", "gainMode": "per-channel" },
+      { "type": "downmix", "strategy": "select", "leftChannel": 0, "rightChannel": 1,
+        "normalisation": "energy" }
+    ]
+  }
+}
+```
+
+Read the path off that tree. `stages` is an array, so the Split is `stages/0`,
+the Feedback Loop `stages/1`, the Downmix `stages/2`. The Split's `channels`
+(N, here 8) therefore lives at:
+
+```text
+/composition/stages/0/channels
+```
+
+Any field in the [request-field
+reference](../../README.md#render-a-requested-configuration) can be addressed
+this way — `/composition/stages/1/rt60Sec` for the loop's RT60,
+`/composition/stages/2/widthDeg` for Main Width, and so on.
+
+### 3. Add your axis to `axes`
+
+Append one object to the catalog's existing `axes` array:
 
 ```json
 {
-  "name": "delay-range",
-  "hypothesis": "Delay range reads as room size, independent of decay.",
+  "name": "channels",
+  "hypothesis": "More Channels read as a denser, smoother tail at the same decay time.",
   "values": [
-    {
-      "label": "small",
+    { "label": "n-4",
       "overrides": [
-        { "op": "replace", "path": "/composition/stages/1/delayMinMs", "value": 20 },
-        { "op": "replace", "path": "/composition/stages/1/delayMaxMs", "value": 60 }
-      ]
-    }
+        { "op": "replace", "path": "/composition/stages/0/channels", "value": 4 }
+      ] },
+    { "label": "n-16",
+      "overrides": [
+        { "op": "replace", "path": "/composition/stages/0/channels", "value": 16 }
+      ] }
   ]
 }
 ```
 
-Rules that keep a sweep readable:
+`name` and `label` become directory names — appended after the catalog's five
+existing axes, this one renders into `06-channels/01-n-4/` and
+`06-channels/02-n-16/` — so keep them short and filename-safe. `overrides` are JSON-Pointer `add`, `remove`, and
+`replace` operations — state only what differs from the Reference, never the
+whole configuration.
 
-- `overrides` are JSON-Pointer `add`/`remove`/`replace` operations against the
-  Reference. State only what differs.
-- One axis changes one thing. Two knobs at once cannot be attributed.
-- Write the `hypothesis` first. If you can't say what you expect to hear, the
-  axis isn't ready.
-- The spatial catalog also needs `scope` — the JSON-Pointer prefix the axis is
-  allowed to touch.
+Three rules keep a sweep worth running:
 
-The diffusion catalog differs: it has `cases` (each `name`, `source`,
-`overrides`) and `listeningCases` (each `name`, `sample`, `hypothesis`,
-`pairedQuantitativeCase` tying curated material to its quantitative
-counterpart).
+- **One axis changes one thing.** Two knobs at once cannot be attributed to
+  either.
+- **Write the `hypothesis` first.** If you cannot say what you expect to hear,
+  the axis is not ready.
+- **The spatial catalog also needs `scope`** — the JSON-Pointer prefix your
+  axis is allowed to touch (for the axis above that would be
+  `/composition/stages/0`). The runner diffs every point against the Reference
+  and fails any change falling outside it.
 
-After editing, run the matching tracer test before the full sweep — it
-materializes every point in milliseconds and fails fast on a malformed axis:
+### 4. Check it cheaply
+
+The tracer test materializes every point in milliseconds and fails fast on a
+malformed axis or a bad pointer:
 
 ```bash
 ctest --preset default -R tail_sweep_contract
 ```
+
+### 5. Run it
+
+Nothing new — the same command from [the tail sweep](#the-tail-sweep) above.
+The runner picks up your axis from the catalog:
+
+```bash
+python3 tools/run_tail_sweep.py \
+  --catalog tools/tail_sweep_v1.json \
+  --renderer build/release/rvrbotron \
+  --analyzer tools/analyze_tail.py \
+  --sample samples/listening/PianoDry.wav \
+  --mono-impulse tests/fixtures/audio/impulse-mono-pcm16-48000.wav \
+  --stereo-impulse tests/fixtures/audio/impulse-stereo-left-pcm16-48000.wav \
+  --output manual_UATs/tail-sweep
+```
+
+Your new points appear as `<output>/PianoDry/06-channels/01-n-4/` and
+`02-n-16/`, and in the listening report alongside every existing point.
+Existing points are not re-rendered — resumability means only the new ones
+cost anything.
+
+### The diffusion catalog is shaped differently
+
+It has no `axes`. Instead `cases` (each `name`, `source`, `overrides` — same
+JSON-Pointer overrides against `reference`) and `listeningCases` (each `name`,
+`sample`, `hypothesis`, and `pairedQuantitativeCase` naming the case whose
+numbers back the listening claim).
 
 ## Add a listening sample
 
