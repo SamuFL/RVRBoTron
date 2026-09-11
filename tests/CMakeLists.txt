@@ -376,3 +376,14 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_CURRENT_BINARY_DIR}/allpass-evaluation-contract
 )
+
+add_test(
+  NAME research_bench_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_research_bench_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/serve.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/research-bench-contract
+)

@@ -86,6 +86,21 @@ build/default/rvrbotron render \
 
 Play `build/first-reverb-music/output.wav`.
 
+## Or try it in the browser
+
+The Research bench is the same renderer behind a local page: pick a source,
+edit the request, press Render, listen.
+
+```bash
+python3 tools/research_bench/serve.py
+```
+
+It opens a loopback URL carrying a token for that session only, drives the
+renderer you just built, and plays its exact `output.wav` — no mixing, gain, or
+normalization in between. Everything it writes lives in a temporary session that
+is deleted when you stop the server with Ctrl-C. Pass `--renderer <path>` to
+point it at a different build.
+
 ## Measure what you rendered
 
 Rendering is only half of it. Every Render Result can be analyzed, and the
