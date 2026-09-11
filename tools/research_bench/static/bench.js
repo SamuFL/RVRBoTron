@@ -48,6 +48,12 @@
     return text;
   }
 
+  // One action at a time, so what is on screen is what the server holds.
+  function setBusy(busy) {
+    renderButton.disabled = busy;
+    sourceInput.disabled = busy;
+  }
+
   // Both endpoints answer JSON, and report failure the same way.
   function send(path, options) {
     return fetch(api(path), options).then(function (response) {
@@ -61,6 +67,10 @@
   sourceInput.addEventListener("change", function () {
     var file = sourceInput.files && sourceInput.files[0];
     if (!file) { return; }
+    // Selecting is asynchronous. Until the server has accepted the bytes,
+    // Render would run against whatever source is still active, and a
+    // second selection could land out of order and win. Hold both shut.
+    setBusy(true);
     say("Reading " + file.name + "…");
     // The browser sends the selected bytes. The server is never given a
     // filesystem path -- the name travels only as a display label.
@@ -79,13 +89,21 @@
         facts.sampleRate + " Hz, " + facts.durationSeconds + " s";
       say("Source ready. Press Render.", "ok");
     }).catch(function (error) {
-      sourceName.textContent = "";
-      say(String(error.message || error), "error");
+      // A refused selection never replaced the source on the server, so
+      // the label must keep naming the one Render will actually use.
+      var active = sourceName.textContent;
+      say(
+        String(error.message || error) +
+          (active ? "\nStill using " + active : ""),
+        "error"
+      );
+    }).then(function () {
+      setBusy(false);
     });
   });
 
   renderButton.addEventListener("click", function () {
-    renderButton.disabled = true;
+    setBusy(true);
     say("Rendering…");
     // The textarea's current string is the request, sent through as-is.
     send("/api/render", {
@@ -107,7 +125,7 @@
       // A failed render leaves the previous playable result in place.
       say(String(error.message || error), "error");
     }).then(function () {
-      renderButton.disabled = false;
+      setBusy(false);
     });
   });
 })();

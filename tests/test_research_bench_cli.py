@@ -230,6 +230,45 @@ def main():
                 f"{refusal} vs {renderer_reason}"
             )
 
+        # The bench parses WAV headers independently of the renderer, so
+        # every encoding the renderer supports must survive selection with
+        # the facts the committed matrix records -- otherwise the two
+        # contracts drift apart silently.
+        matrix = Path(sys.argv[5])
+        manifest = json.loads((matrix / "manifest.json").read_text())
+        if len(manifest) < 30:
+            raise AssertionError(f"matrix manifest looks short: {len(manifest)}")
+        for name, expected in sorted(manifest.items()):
+            status, body, _ = call(
+                api("source"),
+                data=(matrix / name).read_bytes(),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Source-Filename": name,
+                },
+            )
+            if status != 200:
+                raise AssertionError(f"the bench refused {name}: {body}")
+            got = json_body(body)
+            for key in ("channels", "sampleRate", "frames"):
+                if got[key] != expected[key]:
+                    raise AssertionError(
+                        f"{name}: bench read {key}={got[key]}, "
+                        f"matrix records {expected[key]}"
+                    )
+
+        # Restore the fixture as the active source for the renders below.
+        status, _, _ = call(
+            api("source"),
+            data=source_bytes,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Source-Filename": fixture.name,
+            },
+        )
+        if status != 200:
+            raise AssertionError("could not reselect the fixture source")
+
         # -- a rejected request reports the renderer's own diagnostic ------
 
         status, body, _ = call(
