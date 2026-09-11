@@ -8,6 +8,8 @@ and fetch the served audio -- rather than testing handler internals.
 """
 
 import json
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -37,9 +39,7 @@ def wait_for_banner(process, timeout=60.0):
 
 
 def call(url, data=None, headers=None, method=None):
-    request = urllib.request.Request(
-        url, data=data, headers=headers or {}, method=method
-    )
+    request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(request) as response:
             return response.status, response.read(), dict(response.headers)
@@ -77,15 +77,10 @@ def main():
     serve = Path(sys.argv[1])
     renderer = Path(sys.argv[2])
     fixture = Path(sys.argv[3])
+    workspace = Path(sys.argv[4])
 
     process = subprocess.Popen(
-        [
-            sys.executable,
-            str(serve),
-            "--renderer",
-            str(renderer),
-            "--no-browser",
-        ],
+        [sys.executable, str(serve), "--renderer", str(renderer), "--no-browser"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -96,45 +91,68 @@ def main():
         token = query.split("token=", 1)[1]
 
         def api(route):
-            return "{}api/{}?token={}".format(base, route, token)
+            return f"{base}api/{route}?token={token}"
 
         # -- authorization ------------------------------------------------
 
-        status, _, _ = call("{}api/output.wav?token=wrong".format(base))
+        status, _, _ = call(f"{base}api/output.wav?token=wrong")
         if status != 403:
-            raise AssertionError("a wrong token was not rejected: {}".format(status))
+            raise AssertionError(f"a wrong token was not rejected: {status}")
 
-        status, _, _ = call("{}api/output.wav".format(base))
+        status, _, _ = call(f"{base}api/output.wav")
         if status != 403:
-            raise AssertionError("a missing token was not rejected: {}".format(status))
+            raise AssertionError(f"a missing token was not rejected: {status}")
 
-        status, _, _ = call(
-            api("output.wav"), headers={"Origin": "http://evil.example"}
-        )
+        status, _, _ = call(api("output.wav"), headers={"Origin": "http://evil.example"})
         if status != 403:
-            raise AssertionError("a foreign Origin was not rejected: {}".format(status))
+            raise AssertionError(f"a foreign Origin was not rejected: {status}")
 
         # Nothing has been rendered yet.
         status, _, _ = call(api("output.wav"))
         if status != 404:
-            raise AssertionError(
-                "output was served before any render: {}".format(status)
-            )
+            raise AssertionError(f"output was served before any render: {status}")
 
         # -- the page -----------------------------------------------------
 
         status, page, headers = call(url)
         if status != 200:
-            raise AssertionError("page did not load: {}".format(status))
+            raise AssertionError(f"page did not load: {status}")
         text = page.decode("utf-8")
         if "<title>RVRBoTron Research Bench</title>" not in text:
             raise AssertionError("page is not titled RVRBoTron Research Bench")
         if headers.get("X-Content-Type-Options") != "nosniff":
             raise AssertionError("missing nosniff header")
-        if "Content-Security-Policy" not in headers:
-            raise AssertionError("missing content security policy")
         if any(key.lower().startswith("access-control-allow") for key in headers):
             raise AssertionError("bench granted a CORS permission")
+
+        # The policy must permit what the page actually does -- load its own
+        # script and style, and call its own API -- without ever allowing
+        # inline script. A page whose script the policy forbids is inert.
+        policy = headers.get("Content-Security-Policy", "")
+        for directive in ("script-src 'self'", "style-src 'self'", "connect-src 'self'"):
+            if directive not in policy:
+                raise AssertionError(f"policy is missing {directive}: {policy}")
+        if "unsafe-inline" in policy or "unsafe-eval" in policy:
+            raise AssertionError(f"policy relaxes inline execution: {policy}")
+        if re.search(r"<script(?![^>]*\ssrc=)[^>]*>\s*\S", text) or "<style" in text:
+            raise AssertionError("page carries inline script or style the policy forbids")
+
+        # Every asset the page references must actually be served.
+        assets = re.findall(r'(?:src|href)="([^"]+)"', text)
+        if not any(asset.startswith("bench.js") for asset in assets):
+            raise AssertionError(f"page does not load its script: {assets}")
+        for asset in assets:
+            status, body, asset_headers = call(base + asset)
+            if status != 200 or not body:
+                raise AssertionError(f"asset {asset} was not served: {status}")
+            if asset.startswith("bench.js"):
+                if "javascript" not in asset_headers.get("Content-Type", ""):
+                    raise AssertionError(f"script served as {asset_headers}")
+
+        # An asset without the capability token is refused like any other read.
+        status, _, _ = call(f"{base}bench.js")
+        if status != 403:
+            raise AssertionError(f"an untokened asset was served: {status}")
 
         # -- rendering needs a source first --------------------------------
 
@@ -144,9 +162,7 @@ def main():
             headers={"Content-Type": "application/json"},
         )
         if status != 400 or "Audition source" not in json_body(body)["reason"]:
-            raise AssertionError(
-                "rendering without a source was not refused: {}".format(body)
-            )
+            raise AssertionError(f"rendering without a source was not refused: {body}")
 
         # -- select the Audition source ------------------------------------
 
@@ -160,10 +176,10 @@ def main():
             },
         )
         if status != 200:
-            raise AssertionError("source was refused: {}".format(body))
+            raise AssertionError(f"source was refused: {body}")
         facts = json_body(body)
         if facts["filename"] != fixture.name or facts["sampleRate"] != 48000:
-            raise AssertionError("unexpected source facts: {}".format(facts))
+            raise AssertionError(f"unexpected source facts: {facts}")
 
         # A file the renderer's WAV contract does not accept is refused
         # with its own vocabulary, not converted.
@@ -173,7 +189,46 @@ def main():
             headers={"Content-Type": "application/octet-stream"},
         )
         if status != 400 or json_body(body)["category"] != "unsupported_audio":
-            raise AssertionError("a non-WAV source was not refused: {}".format(body))
+            raise AssertionError(f"a non-WAV source was not refused: {body}")
+
+        # Selection accepts exactly what the renderer accepts: a WAV the
+        # bench refuses must be one the renderer refuses too, for the same
+        # stated reason, rather than one that fails later at Render.
+        workspace.mkdir(parents=True, exist_ok=True)
+        truncated_path = workspace / "truncated.wav"
+        truncated_path.write_bytes(source_bytes[: len(source_bytes) - 64])
+        status, body, _ = call(
+            api("source"),
+            data=truncated_path.read_bytes(),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if status != 400:
+            raise AssertionError("a truncated WAV was accepted at selection")
+        refusal = json_body(body)
+        direct = subprocess.run(
+            [
+                str(renderer),
+                "render",
+                "--input",
+                str(truncated_path),
+                "--config",
+                str(write_request(workspace, IDENTITY_REQUEST)),
+                "--output",
+                str(workspace / "truncated-out"),
+                "--error-format",
+                "json",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if direct.returncode == 0:
+            raise AssertionError("the renderer accepted a WAV the bench refused")
+        renderer_reason = json.loads(direct.stderr.strip().splitlines()[-1])
+        if refusal["reason"] != renderer_reason["reason"]:
+            raise AssertionError(
+                "bench and renderer disagree on the WAV contract: "
+                f"{refusal} vs {renderer_reason}"
+            )
 
         # -- a rejected request reports the renderer's own diagnostic ------
 
@@ -183,12 +238,10 @@ def main():
             headers={"Content-Type": "application/json"},
         )
         if status != 400:
-            raise AssertionError("an invalid request rendered: {}".format(status))
+            raise AssertionError(f"an invalid request rendered: {status}")
         failure = json_body(body)
         if failure["category"] != "invalid_configuration" or "location" not in failure:
-            raise AssertionError(
-                "renderer diagnostic was not surfaced: {}".format(failure)
-            )
+            raise AssertionError(f"renderer diagnostic was not surfaced: {failure}")
 
         # -- render, and read the exact audio back -------------------------
 
@@ -198,32 +251,26 @@ def main():
             headers={"Content-Type": "application/json"},
         )
         if status != 200:
-            raise AssertionError("render failed: {}".format(body))
+            raise AssertionError(f"render failed: {body}")
         result = json_body(body)
         for key in ("sourceFilename", "sampleRate", "channels", "durationSeconds"):
             if key not in result:
-                raise AssertionError("result facts missing {}: {}".format(key, result))
+                raise AssertionError(f"result facts missing {key}: {result}")
         if result["sourceFilename"] != fixture.name:
-            raise AssertionError("wrong source reported: {}".format(result))
+            raise AssertionError(f"wrong source reported: {result}")
 
         status, served, headers = call(api("output.wav"))
         if status != 200:
-            raise AssertionError("output.wav was not served: {}".format(status))
+            raise AssertionError(f"output.wav was not served: {status}")
         if headers.get("Content-Type") != "audio/wav":
-            raise AssertionError("output.wav served as {}".format(headers))
+            raise AssertionError(f"output.wav served as {headers}")
         if served[:4] != b"RIFF" or served[8:12] != b"WAVE":
             raise AssertionError("served output is not a RIFF/WAVE file")
 
         # The served bytes must be the renderer's own output, unmodified.
         # Reproduce the same render directly and compare.
-        reference = Path(sys.argv[4])
-        reference.mkdir(parents=True, exist_ok=True)
-        request_path = reference / "request.json"
-        request_path.write_bytes(REVERB_REQUEST)
-        result_dir = reference / "direct"
+        result_dir = workspace / "direct"
         if result_dir.exists():
-            import shutil
-
             shutil.rmtree(result_dir)
         completed = subprocess.run(
             [
@@ -232,7 +279,7 @@ def main():
                 "--input",
                 str(fixture),
                 "--config",
-                str(request_path),
+                str(write_request(workspace, REVERB_REQUEST)),
                 "--output",
                 str(result_dir),
             ],
@@ -240,7 +287,7 @@ def main():
             text=True,
         )
         if completed.returncode != 0:
-            raise AssertionError("reference render failed: {}".format(completed.stderr))
+            raise AssertionError(f"reference render failed: {completed.stderr}")
         if served != (result_dir / "output.wav").read_bytes():
             raise AssertionError(
                 "served audio is not byte-identical to the renderer's own output"
@@ -254,7 +301,7 @@ def main():
             headers={"Content-Type": "application/json"},
         )
         if status != 200:
-            raise AssertionError("second render failed: {}".format(body))
+            raise AssertionError(f"second render failed: {body}")
         if json_body(body)["sourceFilename"] != fixture.name:
             raise AssertionError("source was not reused across renders")
 
@@ -281,7 +328,11 @@ def main():
 
         status, _, _ = call(api("render"), data=b"{}", method="PUT")
         if status != 405:
-            raise AssertionError("PUT was not refused: {}".format(status))
+            raise AssertionError(f"PUT was not refused: {status}")
+
+        status, _, _ = call(f"{base}api/render", data=b"{}", method="PUT")
+        if status != 403:
+            raise AssertionError(f"an untokened PUT was not rejected: {status}")
 
         if not session_root.exists():
             raise AssertionError("session root vanished while serving")
@@ -296,9 +347,13 @@ def main():
     # -- the session is removed on shutdown --------------------------------
 
     if session_root.exists():
-        raise AssertionError(
-            "session root survived shutdown: {}".format(session_root)
-        )
+        raise AssertionError(f"session root survived shutdown: {session_root}")
+
+
+def write_request(workspace, request_bytes):
+    path = workspace / "request.json"
+    path.write_bytes(request_bytes)
+    return path
 
 
 if __name__ == "__main__":

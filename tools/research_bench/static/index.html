@@ -3,29 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>RVRBoTron Research Bench</title>
-<style>
-  :root { color-scheme: light dark; }
-  body {
-    font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
-    margin: 0 auto; padding: 24px 16px; max-width: 860px;
-  }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { opacity: .7; margin: 0 0 24px; }
-  section { margin-bottom: 20px; }
-  label { display: block; font-weight: 600; margin-bottom: 6px; }
-  textarea {
-    width: 100%; min-height: 320px; box-sizing: border-box; padding: 10px;
-    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  button { font: inherit; padding: 8px 16px; cursor: pointer; }
-  button[disabled] { cursor: default; opacity: .5; }
-  #status { white-space: pre-wrap; padding: 10px 12px; border-left: 3px solid transparent; }
-  #status.error { border-color: #c0392b; }
-  #status.ok { border-color: #2d8a4e; }
-  #facts { opacity: .8; margin: 8px 0 0; }
-  audio { width: 100%; margin-top: 12px; }
-  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-</style>
+<!-- The script and style are same-origin files, not inline: the bench
+     serves a Content-Security-Policy of script-src 'self' with no inline
+     exception. __BENCH_TOKEN__ is replaced at startup. -->
+<link rel="stylesheet" href="bench.css?token=__BENCH_TOKEN__">
 </head>
 <body>
 
@@ -58,119 +39,7 @@
   <audio id="player" controls preload="none" hidden></audio>
 </section>
 
-<script>
-(function () {
-  "use strict";
-
-  var token = new URLSearchParams(window.location.search).get("token") || "";
-  var sourceInput = document.getElementById("source");
-  var sourceName = document.getElementById("source-name");
-  var requestBox = document.getElementById("request");
-  var renderButton = document.getElementById("render");
-  var statusBox = document.getElementById("status");
-  var factsBox = document.getElementById("facts");
-  var player = document.getElementById("player");
-  var download = document.getElementById("download");
-
-  requestBox.value = JSON.stringify({
-    formatVersion: 2,
-    seed: 42,
-    composition: {
-      stages: [
-        { type: "split", channels: 8 },
-        { type: "diffuser", steps: 4, totalMs: 80 },
-        { type: "feedback-loop", delayMinMs: 60, delayMaxMs: 120, rt60Sec: 2.0 },
-        { type: "downmix", strategy: "orthogonal-rows" }
-      ],
-      preDelayMs: 20,
-      dryDb: 0,
-      wetDb: -3,
-      wetOnly: false
-    }
-  }, null, 2);
-
-  function api(path) {
-    return path + "?token=" + encodeURIComponent(token);
-  }
-
-  // Every message is assigned as text, never as markup: filenames,
-  // requests, and renderer diagnostics are all untrusted content.
-  function say(message, kind) {
-    statusBox.textContent = message;
-    statusBox.className = kind || "";
-  }
-
-  function describe(body) {
-    var text = (body && body.reason) || "request failed";
-    if (body && body.category) { text = body.category + ": " + text; }
-    if (body && body.location) { text += "\nat " + body.location; }
-    return text;
-  }
-
-  sourceInput.addEventListener("change", function () {
-    var file = sourceInput.files && sourceInput.files[0];
-    if (!file) { return; }
-    say("Reading " + file.name + "…");
-    // The browser sends the selected bytes. The server is never given a
-    // filesystem path -- the name travels only as a display label.
-    file.arrayBuffer().then(function (bytes) {
-      return fetch(api("/api/source"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "X-Source-Filename": file.name.replace(/[^\x20-\x7E]/g, "")
-        },
-        body: bytes
-      });
-    }).then(function (response) {
-      return response.json().then(function (body) {
-        if (!response.ok) { throw new Error(describe(body)); }
-        return body;
-      });
-    }).then(function (facts) {
-      sourceName.textContent =
-        facts.filename + " — " + facts.channels + " ch, " +
-        facts.sampleRate + " Hz, " + facts.durationSeconds + " s";
-      say("Source ready. Press Render.", "ok");
-    }).catch(function (error) {
-      sourceName.textContent = "";
-      say(String(error.message || error), "error");
-    });
-  });
-
-  renderButton.addEventListener("click", function () {
-    renderButton.disabled = true;
-    say("Rendering…");
-    // The textarea's current string is the request, sent through as-is.
-    fetch(api("/api/render"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: requestBox.value
-    }).then(function (response) {
-      return response.json().then(function (body) {
-        if (!response.ok) { throw new Error(describe(body)); }
-        return body;
-      });
-    }).then(function (facts) {
-      factsBox.textContent =
-        facts.sourceFilename + " — " + facts.durationSeconds + " s, " +
-        facts.sampleRate + " Hz, " + facts.channels + " ch";
-      // Cache-busted so a new render replaces the previous audio.
-      var url = api("/api/output.wav") + "&n=" + Date.now();
-      player.src = url;
-      player.hidden = false;
-      download.href = url;
-      download.hidden = false;
-      say("Rendered. Press play.", "ok");
-    }).catch(function (error) {
-      // A failed render leaves the previous playable result in place.
-      say(String(error.message || error), "error");
-    }).then(function () {
-      renderButton.disabled = false;
-    });
-  });
-})();
-</script>
+<script src="bench.js?token=__BENCH_TOKEN__"></script>
 
 </body>
 </html>

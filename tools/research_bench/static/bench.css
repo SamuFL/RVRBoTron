@@ -1,0 +1,21 @@
+:root { color-scheme: light dark; }
+body {
+  font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+  margin: 0 auto; padding: 24px 16px; max-width: 860px;
+}
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { opacity: .7; margin: 0 0 24px; }
+section { margin-bottom: 20px; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+textarea {
+  width: 100%; min-height: 320px; box-sizing: border-box; padding: 10px;
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+button { font: inherit; padding: 8px 16px; cursor: pointer; }
+button[disabled] { cursor: default; opacity: .5; }
+#status { white-space: pre-wrap; padding: 10px 12px; border-left: 3px solid transparent; }
+#status.error { border-color: #c0392b; }
+#status.ok { border-color: #2d8a4e; }
+#facts { opacity: .8; margin: 8px 0 0; }
+audio { width: 100%; margin-top: 12px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }

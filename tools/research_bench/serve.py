@@ -22,6 +22,7 @@ import re
 import secrets
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -30,10 +31,26 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 HOST = "127.0.0.1"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# The page's own script and style are served as same-origin files so the
+# Content-Security-Policy below can stay at 'self' with no inline exception.
+# Each carries the capability token, like every other request.
+TOKEN_PLACEHOLDER = "__BENCH_TOKEN__"
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/bench.css": ("bench.css", "text/css; charset=utf-8"),
+    "/bench.js": ("bench.js", "text/javascript; charset=utf-8"),
+}
+
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; "
+    "connect-src 'self'; media-src 'self'; img-src 'self'; "
+    "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
 
 # The renderer's own WAV contract (src/io/WavStream.cpp): mono or stereo
 # RIFF/WAVE, PCM16/24/32 or IEEE float32/64. The bench converts nothing, so
@@ -41,9 +58,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WAV_FORMAT_PCM = 1
 WAV_FORMAT_IEEE_FLOAT = 3
 
-# Deliberately bounded so a stray selection cannot fill the session root.
-# Issue #139 owns the researcher-facing limit contract; these are the same
-# numbers, enforced here from the start rather than retrofitted.
+# A crude guard so one stray selection cannot exhaust memory or fill the
+# session root. Issue #139 owns the researcher-facing limit contract.
 MAX_REQUEST_BYTES = 1 * 1024 * 1024
 MAX_SOURCE_BYTES = 1 * 1024 * 1024 * 1024
 
@@ -74,74 +90,117 @@ def verify_renderer(path):
     """Fail at startup, actionably, rather than at the first render.
 
     Probes the binary with no arguments: the real CLI answers with its own
-    usage line and the invalid_arguments category, which distinguishes a
-    working renderer from a missing file, a non-executable one, or some
-    unrelated binary at that path.
+    usage line, which distinguishes a working renderer from a missing file,
+    a non-executable one, or some unrelated binary at that path. A second
+    probe exercises `--error-format json`, which the bench depends on to
+    report configuration errors, so an older build fails here rather than
+    at the researcher's first Render.
     """
     if not path.exists():
         raise BenchError(
-            "no renderer at {}. Build it with `cmake --preset default && "
-            "cmake --build --preset default`, or pass --renderer <path>.".format(path)
+            f"no renderer at {path}. Build it with `cmake --preset default && "
+            f"cmake --build --preset default`, or pass --renderer <path>."
         )
     if not path.is_file() or not os.access(str(path), os.X_OK):
-        raise BenchError("{} is not an executable file.".format(path))
+        raise BenchError(f"{path} is not an executable file.")
     try:
-        probe = subprocess.run(
-            [str(path)], capture_output=True, text=True, timeout=30
-        )
+        probe = subprocess.run([str(path)], capture_output=True, text=True, timeout=30)
     except OSError as error:
-        raise BenchError("could not run {}: {}".format(path, error))
-    if "usage: rvrbotron" not in (probe.stderr + probe.stdout):
+        raise BenchError(f"could not run {path}: {error}")
+    usage = probe.stderr + probe.stdout
+    if "usage: rvrbotron" not in usage:
         raise BenchError(
-            "{} does not look like the rvrbotron renderer (no usage line). "
-            "Pass --renderer <path> to the real binary.".format(path)
+            f"{path} does not look like the rvrbotron renderer (no usage line). "
+            f"Pass --renderer <path> to the real binary."
+        )
+    diagnostic = subprocess.run(
+        [str(path), "render", "--error-format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if renderer_failure(diagnostic.stderr).category != "invalid_arguments":
+        raise BenchError(
+            f"{path} does not report errors as JSON, which the bench needs to "
+            f"show configuration failures. Rebuild it, or pass --renderer "
+            f"<path> to a current build."
         )
 
 
 def inspect_wav(data):
-    """Read a WAV header from bytes the browser supplied.
+    """Read a WAV header from the bytes the browser supplied.
 
-    Returns (channels, sample_rate, frame_count) or raises BenchError. The
-    bench never converts audio, so anything outside the renderer's own
-    contract is refused here with a reason the page can show.
+    Mirrors the renderer's own header contract (src/io/WavStream.cpp) so a
+    file accepted here is a file the renderer will accept, rather than one
+    that is refused later with a different message. Returns the Audition
+    source facts, or raises BenchError with the renderer's own vocabulary.
     """
-    if len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
-        raise BenchError("not a RIFF/WAVE file", category="unsupported_audio")
+    file_size = len(data)
+    if file_size < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise BenchError("malformed input WAV", category="unsupported_audio")
 
-    import struct
+    truncated = BenchError("truncated input WAV", category="unsupported_audio")
+    malformed = BenchError("malformed input WAV", category="unsupported_audio")
 
-    channels = sample_rate = bits = format_tag = None
-    data_size = None
+    (riff_size,) = struct.unpack_from("<I", data, 4)
+    riff_end = riff_size + 8
+    if riff_end > file_size:
+        raise truncated
+    if riff_end < 12:
+        raise malformed
+
+    format_tag = channels = sample_rate = byte_rate = None
+    block_align = bits = data_size = None
     offset = 12
-    while offset + 8 <= len(data):
+    while offset + 8 <= riff_end:
         chunk_id = data[offset : offset + 4]
         (chunk_size,) = struct.unpack_from("<I", data, offset + 4)
-        body = offset + 8
-        if chunk_id == b"fmt " and chunk_size >= 16:
-            format_tag, channels, sample_rate = struct.unpack_from("<HHI", data, body)
-            (bits,) = struct.unpack_from("<H", data, body + 14)
+        chunk_data = offset + 8
+        chunk_end = chunk_data + chunk_size
+        padded_end = chunk_end + (chunk_size % 2)
+        if chunk_end > riff_end:
+            raise malformed
+        if padded_end > file_size:
+            raise truncated
+        if chunk_id == b"fmt ":
+            if chunk_size < 16:
+                raise malformed
+            format_tag, channels, sample_rate, byte_rate, block_align, bits = (
+                struct.unpack_from("<HHIIHH", data, chunk_data)
+            )
         elif chunk_id == b"data":
             data_size = chunk_size
-        offset = body + chunk_size + (chunk_size % 2)
+        offset = padded_end
 
-    if format_tag is None or data_size is None:
-        raise BenchError("WAV is missing its fmt or data chunk", category="unsupported_audio")
+    if format_tag is None or data_size is None or offset != riff_end:
+        raise malformed
     if channels not in (1, 2):
         raise BenchError(
-            "the renderer accepts mono or stereo only; this file has {} channels".format(channels),
+            "WAV channel count must be mono or stereo",
             category="unsupported_audio",
         )
     supported = (format_tag == WAV_FORMAT_PCM and bits in (16, 24, 32)) or (
         format_tag == WAV_FORMAT_IEEE_FLOAT and bits in (32, 64)
     )
     if not supported:
-        raise BenchError(
-            "unsupported WAV encoding (format {}, {} bits). The renderer accepts "
-            "PCM16/24/32 and IEEE float32/64.".format(format_tag, bits),
-            category="unsupported_audio",
-        )
-    frame_count = data_size // max(1, channels * (bits // 8))
-    return channels, sample_rate, frame_count
+        raise BenchError("unsupported WAV encoding", category="unsupported_audio")
+
+    expected_block_align = channels * (bits // 8)
+    if (
+        sample_rate == 0
+        or block_align != expected_block_align
+        or byte_rate != sample_rate * expected_block_align
+        or data_size % expected_block_align != 0
+    ):
+        raise malformed
+
+    frames = data_size // expected_block_align
+    return {
+        "channels": channels,
+        "sampleRate": sample_rate,
+        "frames": frames,
+        "durationSeconds": round(frames / sample_rate, 3),
+    }
 
 
 def safe_display_name(raw):
@@ -183,7 +242,7 @@ class Session:
         return candidate
 
     def store_source(self, data, display_name):
-        channels, sample_rate, frames = inspect_wav(data)
+        facts = inspect_wav(data)
         name = safe_display_name(display_name)
         source_dir = self.resolve_within(self.root / "source")
         if source_dir.exists():
@@ -193,22 +252,14 @@ class Session:
         path.write_bytes(data)
         self.source_path = path
         self.source_name = name
-        return {
-            "filename": name,
-            "channels": channels,
-            "sampleRate": sample_rate,
-            "frames": frames,
-            "durationSeconds": round(frames / sample_rate, 3) if sample_rate else None,
-        }
+        return dict(facts, filename=name)
 
     def render(self, request_text):
         if self.source_path is None:
             raise BenchError("choose an Audition source first")
 
         self.render_count += 1
-        render_dir = self.resolve_within(
-            self.root / "renders" / str(self.render_count)
-        )
+        render_dir = self.resolve_within(self.root / "renders" / str(self.render_count))
         render_dir.parent.mkdir(parents=True, exist_ok=True)
 
         # The editor's text is the request. It is written through byte for
@@ -243,12 +294,14 @@ class Session:
         self.result_dir = render_dir
         if previous is not None and previous != render_dir:
             shutil.rmtree(previous, ignore_errors=True)
+        frames = metadata["frames"]
+        sample_rate = metadata["sampleRate"]
         return {
             "sourceFilename": self.source_name,
-            "sampleRate": metadata["sampleRate"],
+            "sampleRate": sample_rate,
             "channels": metadata["channels"],
-            "frames": metadata["frames"],
-            "durationSeconds": round(metadata["frames"] / metadata["sampleRate"], 3),
+            "frames": frames,
+            "durationSeconds": round(frames / sample_rate, 3),
         }
 
     def output_path(self):
@@ -283,13 +336,19 @@ def renderer_failure(stderr_text):
     return BenchError(text or "render failed", category="render_failed")
 
 
-def build_handler(session, token, port, index_html):
-    origin = "http://{}:{}".format(HOST, port)
-    allowed_hosts = {
-        "{}:{}".format(HOST, port),
-        "localhost:{}".format(port),
-    }
-    allowed_origins = {origin, "http://localhost:{}".format(port)}
+def load_static_files(token):
+    """Read the page once, with the token woven into its asset links."""
+    served = {}
+    for route, (name, content_type) in STATIC_FILES.items():
+        text = (STATIC_DIR / name).read_text(encoding="utf-8")
+        text = text.replace(TOKEN_PLACEHOLDER, quote(token, safe=""))
+        served[route] = (text.encode("utf-8"), content_type)
+    return served
+
+
+def build_handler(session, token, port, static_files):
+    allowed_hosts = {f"{HOST}:{port}", f"localhost:{port}"}
+    allowed_origins = {f"http://{HOST}:{port}", f"http://localhost:{port}"}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "RVRBoTronBench"
@@ -312,12 +371,7 @@ def build_handler(session, token, port, index_html):
             self.send_header("Cache-Control", "no-store")
             # No Access-Control-Allow-* header is ever sent: another origin
             # must not be able to read this server's responses.
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'none'; script-src 'self'; style-src 'self'; "
-                "media-src 'self'; img-src 'self'; form-action 'none'; "
-                "base-uri 'none'; frame-ancestors 'none'",
-            )
+            self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
             for key, value in (extra or {}).items():
                 self.send_header(key, value)
             self.end_headers()
@@ -326,6 +380,9 @@ def build_handler(session, token, port, index_html):
 
         def _send_json(self, status, payload):
             self._send(status, json.dumps(payload), "application/json")
+
+        def _reject(self, status, reason):
+            self._send_json(status, {"reason": reason})
 
         def _authorized(self):
             """Loopback, same-origin, and capability-token checks.
@@ -341,16 +398,15 @@ def build_handler(session, token, port, index_html):
             supplied = parse_qs(urlparse(self.path).query).get("token", [""])[0]
             return secrets.compare_digest(supplied, token)
 
-        def _body(self, limit, what):
+        def _body(self, limit, description):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 raise BenchError("missing or invalid Content-Length")
             if length > limit:
                 raise BenchError(
-                    "{} is larger than the {} MiB limit".format(
-                        what, limit // (1024 * 1024)
-                    )
+                    f"{description} is larger than the "
+                    f"{limit // (1024 * 1024)} MiB limit"
                 )
             return self.rfile.read(length) if length else b""
 
@@ -358,17 +414,16 @@ def build_handler(session, token, port, index_html):
 
         def do_GET(self):
             if not self._authorized():
-                self._send_json(HTTPStatus.FORBIDDEN, {"reason": "not authorized"})
+                self._reject(HTTPStatus.FORBIDDEN, "not authorized")
                 return
             route = urlparse(self.path).path
-            if route == "/":
-                self._send(HTTPStatus.OK, index_html, "text/html; charset=utf-8")
+            if route in static_files:
+                body, content_type = static_files[route]
+                self._send(HTTPStatus.OK, body, content_type)
             elif route == "/api/output.wav":
                 path = session.output_path()
                 if path is None:
-                    self._send_json(
-                        HTTPStatus.NOT_FOUND, {"reason": "nothing rendered yet"}
-                    )
+                    self._reject(HTTPStatus.NOT_FOUND, "nothing rendered yet")
                     return
                 self._send(
                     HTTPStatus.OK,
@@ -377,11 +432,11 @@ def build_handler(session, token, port, index_html):
                     {"Content-Disposition": 'attachment; filename="output.wav"'},
                 )
             else:
-                self._send_json(HTTPStatus.NOT_FOUND, {"reason": "no such route"})
+                self._reject(HTTPStatus.NOT_FOUND, "no such route")
 
         def do_POST(self):
             if not self._authorized():
-                self._send_json(HTTPStatus.FORBIDDEN, {"reason": "not authorized"})
+                self._reject(HTTPStatus.FORBIDDEN, "not authorized")
                 return
             route = urlparse(self.path).path
             try:
@@ -400,19 +455,24 @@ def build_handler(session, token, port, index_html):
                         facts = session.render(text)
                     self._send_json(HTTPStatus.OK, facts)
                 else:
-                    self._send_json(
-                        HTTPStatus.NOT_FOUND, {"reason": "no such route"}
-                    )
+                    self._reject(HTTPStatus.NOT_FOUND, "no such route")
             except BenchError as error:
                 self._send_json(HTTPStatus.BAD_REQUEST, error.payload())
 
-        def do_PUT(self):
-            self._send_json(
-                HTTPStatus.METHOD_NOT_ALLOWED, {"reason": "method not allowed"}
-            )
+        def _reject_method(self):
+            """The bench has no route that answers PUT, DELETE, or PATCH.
 
-        do_DELETE = do_PUT
-        do_PATCH = do_PUT
+            Authorization is still checked first, so an unauthenticated
+            caller learns nothing the other routes would not tell it.
+            """
+            if not self._authorized():
+                self._reject(HTTPStatus.FORBIDDEN, "not authorized")
+                return
+            self._reject(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
+
+        do_PUT = _reject_method
+        do_DELETE = _reject_method
+        do_PATCH = _reject_method
 
     return Handler
 
@@ -426,12 +486,6 @@ def parse_arguments(argv):
         type=Path,
         default=None,
         help="path to the rvrbotron renderer (default: build/default/rvrbotron)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=0,
-        help="loopback port (default: an unused one chosen by the OS)",
     )
     parser.add_argument(
         "--no-browser",
@@ -449,25 +503,25 @@ def main(argv=None):
     try:
         verify_renderer(renderer)
     except BenchError as error:
-        sys.stderr.write("research bench: {}\n".format(error.reason))
+        sys.stderr.write(f"research bench: {error.reason}\n")
         return 1
 
     token = secrets.token_urlsafe(32)
     session = Session(renderer)
     atexit.register(session.close)
 
-    index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    static_files = load_static_files(token)
     # Bind first: the handler validates Host and Origin against the actual
-    # port, which the OS only assigns once bound (--port 0 by default).
-    server = ThreadingHTTPServer((HOST, arguments.port), BaseHTTPRequestHandler)
+    # port, which the OS only assigns once bound.
+    server = ThreadingHTTPServer((HOST, 0), BaseHTTPRequestHandler)
     port = server.server_address[1]
-    server.RequestHandlerClass = build_handler(session, token, port, index_html)
+    server.RequestHandlerClass = build_handler(session, token, port, static_files)
 
-    url = "http://{}:{}/?token={}".format(HOST, port, token)
+    url = f"http://{HOST}:{port}/?token={token}"
     sys.stdout.write("RVRBoTron Research Bench\n")
-    sys.stdout.write("  renderer: {}\n".format(renderer))
-    sys.stdout.write("  session:  {}\n".format(session.root))
-    sys.stdout.write("  open:     {}\n".format(url))
+    sys.stdout.write(f"  renderer: {renderer}\n")
+    sys.stdout.write(f"  session:  {session.root}\n")
+    sys.stdout.write(f"  open:     {url}\n")
     sys.stdout.write("Press Ctrl+C to stop; the session is removed on exit.\n")
     sys.stdout.flush()
 
