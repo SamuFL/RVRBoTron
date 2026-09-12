@@ -326,18 +326,6 @@ the bench holds a copy but does not tell you where it came from.
 
 ## What the bench will not do
 
-Deliberate omissions, so the bench is not mistaken for the eventual plugin or
-product GUI:
-
-**No audio processing of its own.** No browser-side dry/wet mixing, gain,
-normalization, limiting, clipping prevention, or loudness matching. What you
-hear is the renderer's output or nothing.
-
-**No durable state.** No accounts, cookies, local storage, autosave, named
-projects, configuration library, render history, or session restoration. One
-temporary session per launch, removed on exit; a crash leaves it to the
-operating system's temporary-directory cleanup.
-
 **No float64 playback or transcoding.** Point `--renderer` at a `double`
 build and the first render is refused rather than converted:
 
