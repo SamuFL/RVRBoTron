@@ -40,6 +40,28 @@ That builds the renderer at `build/default/rvrbotron` and runs the full suite.
 Other presets: `double` for float64 DSP samples, and `release` /
 `release-double` for optimized builds.
 
+## Hear a reverb in one command
+
+The quickest way in is the **Research bench** — a local page where you pick a
+source, edit a request, press Render, and listen. Same renderer you just
+built, nothing to write to disk first:
+
+```bash
+python3 tools/research_bench/serve.py
+```
+
+It opens a loopback URL good for that run alone, starts you on a working
+request template, and plays the renderer's exact `output.wav` — nothing
+mixed, gained, or normalized in between. Everything it writes lives in one
+temporary session, removed when you stop it with Ctrl+C.
+
+The full walkthrough — templates, diagnostics, limits, and how to turn an
+audition into a result you can keep — is in [Run the Research
+bench](docs/guides/run-the-research-bench.md).
+
+Prefer the command line, or want evidence you can hand to someone else? Carry
+on below.
+
 ## Render your first reverb
 
 Still in the repository root, save this as `build/hall.json` — a diffuser
@@ -86,21 +108,6 @@ build/default/rvrbotron render \
 
 Play `build/first-reverb-music/output.wav`.
 
-## Or try it in the browser
-
-The Research bench is the same renderer behind a local page: pick a source,
-edit the request, press Render, listen.
-
-```bash
-python3 tools/research_bench/serve.py
-```
-
-It opens a loopback URL carrying a token for that session only, drives the
-renderer you just built, and plays its exact `output.wav` — no mixing, gain, or
-normalization in between. Everything it writes lives in a temporary session that
-is deleted when you stop the server with Ctrl-C. Pass `--renderer <path>` to
-point it at a different build.
-
 ## Measure what you rendered
 
 Rendering is only half of it. Every Render Result can be analyzed, and the
@@ -143,6 +150,7 @@ someone else.
 
 | Guide | Read it when |
 | --- | --- |
+| [Run the Research bench](docs/guides/run-the-research-bench.md) | You want to hear a Composition now — launch, audition, render, listen |
 | [Configure the Composition](docs/guides/configure-the-composition.md) | You are writing a request — every field, default, and shape, with examples |
 | [Render and analyze evidence](docs/guides/render-and-analyze-evidence.md) | You have a Render Result — captures, the analyzers, benchmarks, diagnostics |
 | [Run experiments](docs/guides/run-experiments.md) | You want to sweep an axis — catalogs, sweeps, and listening material |
