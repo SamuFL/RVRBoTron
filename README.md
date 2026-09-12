@@ -59,8 +59,8 @@ The full walkthrough — templates, diagnostics, limits, and how to turn an
 audition into a result you can keep — is in [Run the Research
 bench](docs/guides/run-the-research-bench.md).
 
-Prefer the command line, or want evidence you can hand to someone else? Carry
-on below.
+The walkthrough below is the same renderer from the command line, where a
+result is written to disk and kept.
 
 ## Render your first reverb
 

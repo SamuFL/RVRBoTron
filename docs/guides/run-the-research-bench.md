@@ -66,12 +66,13 @@ The launcher checks the renderer before it binds a port, so a setup problem
 arrives as one `research bench:` line on stderr and a non-zero exit, rather
 than as a page that loads and then cannot render.
 
-**No renderer at that path.**
+**No renderer at that path.** The path is always reported absolute, whatever
+you typed:
 
 ```text
-research bench: no renderer at build/default/rvrbotron. Build it with
-`cmake --preset default && cmake --build --preset default`, or pass
---renderer <path>.
+research bench: no renderer at /Users/you/RVRBoTron/build/default/rvrbotron.
+Build it with `cmake --preset default && cmake --build --preset default`, or
+pass --renderer <path>.
 ```
 
 Build it, or point `--renderer` at the build you already have.
@@ -99,15 +100,27 @@ to show configuration failures. Rebuild it, or pass --renderer <path> to a
 current build.
 ```
 
-The bench shows configuration failures by parsing `--error-format json`.
-Rebuild, or point at a current build.
+The bench surfaces configuration failures by parsing `--error-format json`,
+so a build without it could only ever report that something went wrong.
 
-**The operating system refused to start it** — permissions, architecture, a
-truncated build:
+**It is there, but it never answers.** The startup probe gives up rather than
+hanging the launch:
+
+```text
+research bench: <path> did not answer within 30 seconds, so it is not a
+usable renderer. Pass --renderer <path> to the real binary.
+```
+
+**The operating system refused to start it** — wrong architecture, missing
+execute permission, a truncated build:
 
 ```text
 research bench: could not run <path>: <error>
 ```
+
+The `<error>` is the operating system's own. Run the binary by itself from
+the same shell — it should print its `usage: rvrbotron` line, which is
+exactly what the launcher probes for — and rebuild if it does not.
 
 ---
 
@@ -118,16 +131,17 @@ server is never given a filesystem path. The label beside the picker names
 what the server actually holds:
 
 ```text
-PianoDry.wav — 2 ch, 48000 Hz, 20.0 s
+PianoDry.wav — 2 ch, 48000 Hz, 20 s
 ```
 
 `samples/listening/` holds curated dry material once you have pulled LFS.
 
-**The bench accepts exactly what the renderer accepts.** It reads the WAV
-header itself so a bad file is refused at selection rather than at Render,
-but the contract is the renderer's own — the formats listed under [platform
-support](../../README.md#platform-support), rejected with the renderer's own
-`unsupported_audio` vocabulary. There is no second contract to learn.
+The bench accepts exactly what the renderer accepts. It reads the WAV header
+itself, so a file the renderer would refuse is refused here at selection
+rather than later at Render — but the contract is the renderer's own, and so
+is the `unsupported_audio` vocabulary it is refused in (see
+[diagnostics](render-and-analyze-evidence.md#diagnostics)). There is no second
+contract to learn: if `--input` takes it, the bench takes it.
 
 Refusals name the reason:
 
@@ -162,10 +176,15 @@ product preset or a recommended sound.
 
 | Template | What it shows |
 | --- | --- |
-| **Simple** | A Diffuser feeding a Feedback Loop and Downmix — the smallest representative reverb. Loaded at startup |
-| **Full** | The richest valid Composition, every applicable field written out — Early Reflections, Damping and Modulation included |
+| **Simple** | A Diffuser feeding a Feedback Loop and Downmix — the smallest useful reverb. Loaded at startup |
+| **Full** | The richest valid Composition, with every applicable field written out explicitly |
 | **Modulated** | Simple plus subtle Modulation at both sites that accept it: a Diffusion Step, and the Feedback Loop |
 | **Spatial** | Simple plus a subtle Early Reflections branch, with the Main and Early Downmix widened |
+
+**Full** is the one to open when you want to see the shape of everything at
+once — Early Reflections, Damping, Modulation at both sites, per-step
+overrides — with nothing left implicit. A contract test keeps it that way: if
+the renderer gains a field, Full is required to carry it.
 
 Switching templates replaces the editor text. It asks first **only when you
 would lose something** — that is, when the current text differs from both the
@@ -196,8 +215,8 @@ untouched. Given a missing comma:
 Format JSON: Expected ',' or '}' at position 32
 ```
 
-**Render is the only validation.** The editor does not lint, and no guessed
-diagnostics are painted into the margin.
+Render is the only validation there is. The editor does not lint, and no
+guessed diagnostics are painted into the margin.
 
 ---
 
@@ -220,9 +239,9 @@ normalized or loudness-matched between the renderer and your speakers.
 - **Download request.json** — the current editor text, valid or not, formatted
   or not. It is what is on screen, not what last rendered.
 
-**One render at a time.** Render is disabled while one runs, a second request
-is refused rather than queued, and a long render is allowed to finish — there
-is no progress bar, no cancel, and no timeout cutting it short.
+One render runs at a time. Render is disabled while one is in flight, a
+second request is refused rather than queued, and a long render is allowed to
+finish — there is no progress bar, no cancel, and no timeout cutting it short.
 
 ---
 
@@ -251,15 +270,17 @@ at /composition/stages/1/steps/0/modulation/depthMs
 ```
 
 Those categories and pointers are the renderer's, documented under
-[diagnostics](render-and-analyze-evidence.md#diagnostics). The bench adds two
-of its own:
+[diagnostics](render-and-analyze-evidence.md#diagnostics). The bench adds
+four of its own:
 
 | Category | Means |
 | --- | --- |
-| `bench_error` | The bench refused before reaching the renderer — no source chosen yet, or a body over its limit |
+| `bench_error` | Refused before reaching the renderer — no source chosen yet, or a body over its limit |
+| `busy` | Another Source or Render action is still running; this one was refused rather than queued |
 | `unsupported_output` | The renderer produced float64 output, which the bench will not play |
+| `render_failed` | The renderer failed without a JSON diagnostic to quote — its raw stderr is shown instead |
 
-**A failed render costs you nothing.** The previous successful result stays
+A failed render costs you nothing: the previous successful result stays
 loaded and playable, and your text is untouched.
 
 ---
@@ -271,6 +292,7 @@ Result](render-and-analyze-evidence.md) inside the session directory:
 
 ```text
 source/PianoDry.wav        the copy of your Audition source
+renders/request.json       the text handed to the last render attempt
 renders/<n>/output.wav     the audio the player is holding
 renders/<n>/render.json    provenance and frame accounting
 renders/<n>/request.json   the request text you rendered
@@ -343,9 +365,9 @@ playlists, batch rendering, or measurements. Render a result to disk and use
 
 ## Where next
 
-- [Configure the Composition](configure-the-composition.md) — every request
-  field, what it accepts, and what it defaults to
-- [Render and analyze evidence](render-and-analyze-evidence.md) — what a
-  Render Result holds, and how to measure one
-- [Run experiments](run-experiments.md) — when one audition is not enough and
-  you want to sweep an axis
+Once you know what you want to hear, [Configure the
+Composition](configure-the-composition.md) documents every field you can put
+in that editor. Once you have rendered something worth keeping, [Render and
+analyze evidence](render-and-analyze-evidence.md) covers what a Render Result
+holds and how to measure it — and when one audition stops being enough,
+[Run experiments](run-experiments.md) sweeps an axis instead of a setting.
