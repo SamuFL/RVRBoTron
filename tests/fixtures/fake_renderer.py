@@ -17,7 +17,6 @@ ignore -- rather than adding any such thing to serve.py itself:
 
   _sleepSeconds  -- wait this long before finishing, to simulate a slow render
   _samplePrecision -- report this in render.json instead of "float32"
-  _failCategory  -- fail with this renderer error category instead of finishing
 
 Before either sleeping or finishing, a PID file and a STARTED file are
 written under --output, so a test can wait for the render to have actually
@@ -103,10 +102,6 @@ def main(argv):
     sleep_seconds = config.get("_sleepSeconds")
     if sleep_seconds:
         time.sleep(float(sleep_seconds))
-
-    fail_category = config.get("_failCategory")
-    if fail_category:
-        return fail(fail_category, config.get("_failReason", "forced failure"))
 
     metadata = {
         "formatVersion": 1,

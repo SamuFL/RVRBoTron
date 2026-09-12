@@ -21,6 +21,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -266,8 +267,6 @@ def main():
             results["status"] = status
             results["body"] = body
 
-        import threading
-
         worker = threading.Thread(target=render_in_background)
         worker.start()
         try:
@@ -366,8 +365,6 @@ def main():
         select_source(base, token)
 
         slow_request = json.dumps({"formatVersion": 2, "_sleepSeconds": 10.0}).encode("utf-8")
-        import threading
-
         worker = threading.Thread(
             target=lambda: call(
                 f"{base}api/render?token={token}",
