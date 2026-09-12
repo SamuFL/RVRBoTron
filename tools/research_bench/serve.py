@@ -279,12 +279,20 @@ class Session:
         self.source_name = None
         self.result_dir = None
         self.render_count = 0
-        # Guards active_process, which a terminal-interruption handler on
-        # the main thread reads and kills while a renderer call (on a
-        # worker thread) still owns it -- separate from the lock above,
-        # which only ever one thread holds at a time.
+        # Guards active_process and shutting_down, which a
+        # terminal-interruption handler on the main thread reads and sets
+        # while a renderer call (on a worker thread) still owns the
+        # process -- separate from the lock above, which only ever one
+        # thread holds at a time. Spawning the child and publishing it to
+        # active_process happen inside the same critical section as the
+        # shutting_down check (issue #139 review) so an interruption that
+        # lands between Popen() returning and active_process being set
+        # cannot slip through and leave the child orphaned: either it is
+        # published before shutdown starts checking, or shutdown has
+        # already refused to let a new child start.
         self.process_lock = threading.Lock()
         self.active_process = None
+        self.shutting_down = False
 
     def resolve_within(self, path):
         """Guard every temporary path against escaping the session root."""
@@ -321,20 +329,27 @@ class Session:
         request_path = self.resolve_within(render_dir.parent / "request.json")
         request_path.write_bytes(request_text)
 
-        completed = self._run_renderer(
-            [
-                str(self.renderer),
-                "render",
-                "--input",
-                str(self.source_path),
-                "--config",
-                str(request_path),
-                "--output",
-                str(render_dir),
-                "--error-format",
-                "json",
-            ]
-        )
+        try:
+            completed = self._run_renderer(
+                [
+                    str(self.renderer),
+                    "render",
+                    "--input",
+                    str(self.source_path),
+                    "--config",
+                    str(request_path),
+                    "--output",
+                    str(render_dir),
+                    "--error-format",
+                    "json",
+                ]
+            )
+        except BenchError:
+            # Shutdown won the race with this render's own start (issue
+            # #139 review): no child was spawned, so there is nothing to
+            # preserve here either.
+            shutil.rmtree(render_dir, ignore_errors=True)
+            raise
         if completed.returncode != 0:
             # A failed render leaves the previous playable result alone.
             shutil.rmtree(render_dir, ignore_errors=True)
@@ -374,11 +389,20 @@ class Session:
         difference from subprocess.run: terminate_active_render (issue
         #139) needs it to end a renderer that is still running when the
         launcher is interrupted, rather than leaving it as an orphan.
+
+        Spawning and publishing the child happen inside the same
+        process_lock critical section terminate_active_render uses to read
+        and refuse further spawns: an interruption arriving mid-spawn
+        either lands before this runs (shutting_down is already set, so
+        nothing is spawned) or after (active_process is already published,
+        so it is found and killed) -- never in a gap where neither is true.
         """
-        process = subprocess.Popen(
-            arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
         with self.process_lock:
+            if self.shutting_down:
+                raise BenchError("the bench is shutting down", category="busy")
+            process = subprocess.Popen(
+                arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
             self.active_process = process
         try:
             stdout, stderr = process.communicate()
@@ -388,12 +412,14 @@ class Session:
         return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
     def terminate_active_render(self):
-        """End whatever renderer child is running; a no-op if none is.
+        """End whatever renderer child is running, and refuse any further
+        one from starting; a no-op beyond that if none is running.
 
         Terminal interruption must not leave a renderer process behind
         (issue #139): there is no queue or timeout to wait it out instead.
         """
         with self.process_lock:
+            self.shutting_down = True
             process = self.active_process
         if process is None or process.poll() is not None:
             return
@@ -552,6 +578,10 @@ def build_handler(session, token, port, static_files):
             waiting out a timeout: a Source or Render request that arrives
             while another is still in flight is refused immediately,
             matching the Render button the page disables meanwhile.
+            "Immediately" means before reading the new request's body, not
+            just before acting on it -- callers must defer their _body()
+            read into `action` itself, or a concurrent request would sit
+            uploading up to a gigabyte before ever being told no.
             """
             if not session.lock.acquire(blocking=False):
                 raise BenchError(
@@ -571,16 +601,19 @@ def build_handler(session, token, port, static_files):
             route = urlparse(self.path).path
             try:
                 if route == "/api/source":
-                    data = self._body(MAX_SOURCE_BYTES, "the Audition source")
                     facts = self._exclusive(
                         lambda: session.store_source(
-                            data, self.headers.get("X-Source-Filename", "")
+                            self._body(MAX_SOURCE_BYTES, "the Audition source"),
+                            self.headers.get("X-Source-Filename", ""),
                         )
                     )
                     self._send_json(HTTPStatus.OK, facts)
                 elif route == "/api/render":
-                    text = self._body(MAX_REQUEST_BYTES, "the request")
-                    facts = self._exclusive(lambda: session.render(text))
+                    facts = self._exclusive(
+                        lambda: session.render(
+                            self._body(MAX_REQUEST_BYTES, "the request")
+                        )
+                    )
                     self._send_json(HTTPStatus.OK, facts)
                 else:
                     self._reject(HTTPStatus.NOT_FOUND, "no such route")
@@ -665,6 +698,14 @@ def main(argv=None):
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    # Windows has no deliverable SIGTERM -- os.kill/Popen.terminate there
+    # is an unconditional TerminateProcess that runs no Python handler at
+    # all -- so a controlling process asking this launcher to shut down
+    # gracefully (rather than a user's own console Ctrl+C, which already
+    # arrives as SIGINT on every platform) has only CTRL_BREAK_EVENT to
+    # send, which Python surfaces as SIGBREAK.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, shutdown)
     try:
         server.serve_forever()
     finally:

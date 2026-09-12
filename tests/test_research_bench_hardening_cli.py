@@ -9,12 +9,12 @@ and the rest of the HTTP contract (Host/Origin, methods, headers, text-safe
 errors).
 
 Drives the real bench server, like test_research_bench_cli.py, but against
-tests/fixtures/fake_renderer.py rather than the real renderer: several
-behaviors here (a render that stalls, one that reports float64 output, one
-that fails on command) need to be driven on demand, in seconds, which the
-real DSP renderer cannot promise.
+the fake_renderer fixture rather than the real renderer: several behaviors
+here (a render that stalls, one that reports float64 output) need to be
+driven on demand, in seconds, which the real DSP renderer cannot promise.
 """
 
+import ctypes
 import json
 import os
 import signal
@@ -26,6 +26,68 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def spawn_kwargs():
+    """Extra Popen kwargs so interrupt() can reach this child specifically.
+
+    On Windows, delivering anything other than a hard TerminateProcess to
+    a specific child (rather than every process on the caller's console)
+    requires CREATE_NEW_PROCESS_GROUP at spawn time; POSIX needs nothing
+    extra.
+    """
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
+
+
+def interrupt(process):
+    """Ask the launcher to shut down the way a terminal interruption would,
+    rather than killing it outright -- the whole point of these tests is
+    to prove the launcher's own cleanup runs.
+
+    Windows has no deliverable SIGTERM (Popen.terminate()/os.kill() there
+    is an unconditional TerminateProcess that runs no Python handler), so
+    CTRL_BREAK_EVENT -- which serve.py also handles, as SIGBREAK -- is the
+    only way a separate process can ask this one to shut down gracefully.
+    """
+    if os.name == "nt":
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        process.send_signal(signal.SIGINT)
+
+
+def pid_is_alive(pid):
+    """Whether a process with this pid is still running.
+
+    os.kill(pid, 0) -- the usual POSIX liveness probe -- has no Windows
+    equivalent; Windows needs an actual handle and exit-code query.
+    """
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(
+            handle, ctypes.byref(exit_code)
+        ):
+            return False
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def wait_for_banner(process, timeout=60.0):
@@ -114,6 +176,7 @@ def main():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            **spawn_kwargs(),
         )
         url, session_root = wait_for_banner(process)
         base, _, query = url.partition("?")
@@ -122,7 +185,7 @@ def main():
         return process, base, token, session_root, host, int(port)
 
     def stop(process, session_root):
-        process.terminate()
+        interrupt(process)
         try:
             process.communicate(timeout=30)
         except subprocess.TimeoutExpired:
@@ -286,6 +349,49 @@ def main():
                     f"a concurrent render was queued instead of rejected: {elapsed}s"
                 )
 
+            # The busy check must run before the new request's body is
+            # read at all, not just before it is acted on -- otherwise a
+            # concurrent request whose body is still (slowly) arriving
+            # would sit in the read instead of being told no immediately.
+            # A raw socket lets this send a Content-Length the body never
+            # completes, so a server that reads before checking would
+            # hang here rather than answer quickly.
+            partial_started = time.time()
+            declared_length = 10_000
+            head = (
+                f"POST /api/render?token={token} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {declared_length}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            with socket.create_connection((host, port), timeout=10) as sock:
+                sock.sendall(head + b"{")  # one byte of a body never finished
+                sock.settimeout(5)
+                response = b""
+                try:
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        response += chunk
+                except socket.timeout:
+                    pass
+            partial_elapsed = time.time() - partial_started
+            head_bytes, _, _ = response.partition(b"\r\n\r\n")
+            if not head_bytes:
+                raise AssertionError("no response to a slow-uploading concurrent render")
+            status = int(head_bytes.split(b"\r\n")[0].split(b" ")[1])
+            if status != 409:
+                raise AssertionError(
+                    f"a slow-uploading concurrent render was not rejected: {status}"
+                )
+            if partial_elapsed > 1.0:
+                raise AssertionError(
+                    "a slow-uploading concurrent render waited for its body instead "
+                    f"of being rejected immediately: {partial_elapsed}s"
+                )
+
             # Source selection is a state-mutating action too, and shares
             # the same one-at-a-time rule.
             status, body, _ = call(
@@ -378,24 +484,24 @@ def main():
         wait_for_file(pid_path)
         renderer_pid = int(pid_path.read_text().strip())
 
-        process.send_signal(signal.SIGINT)
+        interrupt(process)
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
             raise AssertionError("the launcher did not shut down promptly on interruption")
 
-        try:
-            os.kill(renderer_pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
+        if pid_is_alive(renderer_pid):
             raise AssertionError("the active renderer survived terminal interruption")
 
         worker.join(timeout=15)
     finally:
         if process.poll() is None:
             process.terminate()
-            process.communicate(timeout=30)
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
         if session_root.exists():
             raise AssertionError(f"session root survived interruption: {session_root}")
 

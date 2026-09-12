@@ -9,14 +9,45 @@ and fetch the served audio -- rather than testing handler internals.
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def spawn_kwargs():
+    """Extra Popen kwargs so interrupt() can reach this child specifically.
+
+    On Windows, delivering anything other than a hard TerminateProcess to
+    a specific child (rather than every process on the caller's console)
+    requires CREATE_NEW_PROCESS_GROUP at spawn time; POSIX needs nothing
+    extra.
+    """
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
+
+
+def interrupt(process):
+    """Ask the launcher to shut down the way a terminal interruption would,
+    rather than killing it outright -- the whole point of these tests is
+    to prove the launcher's own cleanup runs.
+
+    Windows has no deliverable SIGTERM (Popen.terminate()/os.kill() there
+    is an unconditional TerminateProcess that runs no Python handler), so
+    CTRL_BREAK_EVENT -- which serve.py also handles, as SIGBREAK -- is the
+    only way a separate process can ask this one to shut down gracefully.
+    """
+    if os.name == "nt":
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        process.send_signal(signal.SIGINT)
 
 
 def wait_for_banner(process, timeout=60.0):
@@ -79,12 +110,16 @@ def main():
     renderer = Path(sys.argv[2])
     fixture = Path(sys.argv[3])
     workspace = Path(sys.argv[4])
+    sample_bits = int(sys.argv[7])
+    if sample_bits not in (32, 64):
+        raise AssertionError(f"unexpected configured sample bits: {sample_bits}")
 
     process = subprocess.Popen(
         [sys.executable, str(serve), "--renderer", str(renderer), "--no-browser"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        **spawn_kwargs(),
     )
     try:
         url, session_root = wait_for_banner(process)
@@ -322,86 +357,102 @@ def main():
         if failure["category"] != "invalid_configuration" or "location" not in failure:
             raise AssertionError(f"renderer diagnostic was not surfaced: {failure}")
 
-        # -- render, and read the exact audio back -------------------------
+        if sample_bits == 32:
+            # -- render, and read the exact audio back ---------------------
 
-        status, body, _ = call(
-            api("render"),
-            data=REVERB_REQUEST,
-            headers={"Content-Type": "application/json"},
-        )
-        if status != 200:
-            raise AssertionError(f"render failed: {body}")
-        result = json_body(body)
-        for key in ("sourceFilename", "sampleRate", "channels", "durationSeconds"):
-            if key not in result:
-                raise AssertionError(f"result facts missing {key}: {result}")
-        if result["sourceFilename"] != fixture.name:
-            raise AssertionError(f"wrong source reported: {result}")
-
-        status, served, headers = call(api("output.wav"))
-        if status != 200:
-            raise AssertionError(f"output.wav was not served: {status}")
-        if headers.get("Content-Type") != "audio/wav":
-            raise AssertionError(f"output.wav served as {headers}")
-        if served[:4] != b"RIFF" or served[8:12] != b"WAVE":
-            raise AssertionError("served output is not a RIFF/WAVE file")
-
-        # The served bytes must be the renderer's own output, unmodified.
-        # Reproduce the same render directly and compare.
-        result_dir = workspace / "direct"
-        if result_dir.exists():
-            shutil.rmtree(result_dir)
-        completed = subprocess.run(
-            [
-                str(renderer),
-                "render",
-                "--input",
-                str(fixture),
-                "--config",
-                str(write_request(workspace, REVERB_REQUEST)),
-                "--output",
-                str(result_dir),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode != 0:
-            raise AssertionError(f"reference render failed: {completed.stderr}")
-        if served != (result_dir / "output.wav").read_bytes():
-            raise AssertionError(
-                "served audio is not byte-identical to the renderer's own output"
+            status, body, _ = call(
+                api("render"),
+                data=REVERB_REQUEST,
+                headers={"Content-Type": "application/json"},
             )
+            if status != 200:
+                raise AssertionError(f"render failed: {body}")
+            result = json_body(body)
+            for key in ("sourceFilename", "sampleRate", "channels", "durationSeconds"):
+                if key not in result:
+                    raise AssertionError(f"result facts missing {key}: {result}")
+            if result["sourceFilename"] != fixture.name:
+                raise AssertionError(f"wrong source reported: {result}")
 
-        # -- the source is reused across renders ---------------------------
+            status, served, headers = call(api("output.wav"))
+            if status != 200:
+                raise AssertionError(f"output.wav was not served: {status}")
+            if headers.get("Content-Type") != "audio/wav":
+                raise AssertionError(f"output.wav served as {headers}")
+            if served[:4] != b"RIFF" or served[8:12] != b"WAVE":
+                raise AssertionError("served output is not a RIFF/WAVE file")
 
-        status, body, _ = call(
-            api("render"),
-            data=IDENTITY_REQUEST,
-            headers={"Content-Type": "application/json"},
-        )
-        if status != 200:
-            raise AssertionError(f"second render failed: {body}")
-        if json_body(body)["sourceFilename"] != fixture.name:
-            raise AssertionError("source was not reused across renders")
+            # The served bytes must be the renderer's own output, unmodified.
+            # Reproduce the same render directly and compare.
+            result_dir = workspace / "direct"
+            if result_dir.exists():
+                shutil.rmtree(result_dir)
+            completed = subprocess.run(
+                [
+                    str(renderer),
+                    "render",
+                    "--input",
+                    str(fixture),
+                    "--config",
+                    str(write_request(workspace, REVERB_REQUEST)),
+                    "--output",
+                    str(result_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode != 0:
+                raise AssertionError(f"reference render failed: {completed.stderr}")
+            if served != (result_dir / "output.wav").read_bytes():
+                raise AssertionError(
+                    "served audio is not byte-identical to the renderer's own output"
+                )
 
-        status, identity_served, _ = call(api("output.wav"))
-        if status != 200:
-            raise AssertionError("second output was not served")
-        if identity_served == served:
-            raise AssertionError("a new render did not replace the previous result")
+            # -- the source is reused across renders -------------------------
 
-        # -- a failed render keeps the previous playable result ------------
+            status, body, _ = call(
+                api("render"),
+                data=IDENTITY_REQUEST,
+                headers={"Content-Type": "application/json"},
+            )
+            if status != 200:
+                raise AssertionError(f"second render failed: {body}")
+            if json_body(body)["sourceFilename"] != fixture.name:
+                raise AssertionError("source was not reused across renders")
 
-        status, _, _ = call(
-            api("render"),
-            data=b"{ not json",
-            headers={"Content-Type": "application/json"},
-        )
-        if status != 400:
-            raise AssertionError("malformed request text rendered")
-        status, after_failure, _ = call(api("output.wav"))
-        if status != 200 or after_failure != identity_served:
-            raise AssertionError("a failed render disturbed the previous result")
+            status, identity_served, _ = call(api("output.wav"))
+            if status != 200:
+                raise AssertionError("second output was not served")
+            if identity_served == served:
+                raise AssertionError("a new render did not replace the previous result")
+
+            # -- a failed render keeps the previous playable result -----------
+
+            status, _, _ = call(
+                api("render"),
+                data=b"{ not json",
+                headers={"Content-Type": "application/json"},
+            )
+            if status != 400:
+                raise AssertionError("malformed request text rendered")
+            status, after_failure, _ = call(api("output.wav"))
+            if status != 200 or after_failure != identity_served:
+                raise AssertionError("a failed render disturbed the previous result")
+        else:
+            # A double-precision renderer's output is a contract mismatch
+            # the bench refuses rather than transcodes (issue #139): this
+            # build can never produce a playable result at all, so none of
+            # the playback assertions above apply under it.
+            status, body, _ = call(
+                api("render"),
+                data=REVERB_REQUEST,
+                headers={"Content-Type": "application/json"},
+            )
+            if status != 400 or json_body(body)["category"] != "unsupported_output":
+                raise AssertionError(f"a float64 render was not refused: {status} {body}")
+            status, _, _ = call(api("output.wav"))
+            if status != 404:
+                raise AssertionError("a refused float64 render still served output")
 
         # -- mutation methods are restricted -------------------------------
 
@@ -416,7 +467,7 @@ def main():
         if not session_root.exists():
             raise AssertionError("session root vanished while serving")
     finally:
-        process.terminate()
+        interrupt(process)
         try:
             process.communicate(timeout=30)
         except subprocess.TimeoutExpired:
