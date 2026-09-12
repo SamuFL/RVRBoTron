@@ -15,8 +15,10 @@ parameters. Use the renderer directly, or a sweep, when you want evidence.
 
 Two consequences of the renderer's own contract are worth knowing here:
 
-- It always writes IEEE float32 (src/io/WavStream.cpp), so this tool
-  converts to PCM at --bit-depth for samplers that will not load float.
+- It writes IEEE float, at whatever width its build uses -- float32 from
+  the default preset, float64 from the double one (src/io/WavStream.cpp
+  writes sizeof(dsp::Sample) * 8). Either way this tool converts to PCM at
+  --bit-depth, for samplers that will not load float.
 - It preserves no metadata: `smpl` loop points, cue markers and LIST/INFO
   tags in a source do not survive the render. Fine for one-shots; not for
   looped sustains.
@@ -231,14 +233,52 @@ def main(argv=None):
         sys.stderr.write(f"no .wav files in {arguments.source_dir}\n")
         return 1
 
-    arguments.dest_dir.mkdir(parents=True, exist_ok=True)
+    # Two sources can want one output name -- "a.wav" and "a-wet.wav" under
+    # --suffix=-wet, or "note.wav" and "note.WAV" where the source
+    # filesystem is case-sensitive and the destination is not. Rendering
+    # both would silently leave one, while the summary claimed both, so
+    # the whole mapping is checked before any work starts. Compared
+    # case-insensitively, since the destination may be.
+    plan = []
+    claimed = {}
+    collisions = []
+    for source in sources:
+        name = f"{source.stem}{arguments.suffix}.wav"
+        existing = claimed.get(name.lower())
+        if existing is not None:
+            collisions.append(f"{existing.name} and {source.name} -> {name}")
+        else:
+            claimed[name.lower()] = source
+            plan.append((source, arguments.dest_dir / name))
+    if collisions:
+        sys.stderr.write(
+            "these sources would be written to the same file:\n  "
+            + "\n  ".join(collisions)
+            + "\nRename them, or use a --suffix that keeps them distinct.\n"
+        )
+        return 1
+
+    try:
+        arguments.dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        sys.stderr.write(f"could not create {arguments.dest_dir}: {error}\n")
+        return 1
+
+    # Provenance is published only on success (below), so any copy left by
+    # an earlier run goes first: a rerun that fails partway would otherwise
+    # leave a request.json naming a different configuration than the WAVs
+    # written beside it. The exception is being handed that copy as
+    # --config, which is a supported way to re-render a folder.
+    copied_request = arguments.dest_dir / "request.json"
+    rendering_from_the_copy = (
+        copied_request.exists() and copied_request.samefile(arguments.config)
+    )
+    if copied_request.exists() and not rendering_from_the_copy:
+        copied_request.unlink()
 
     clipped = []
-    for index, source in enumerate(sources, start=1):
-        destination = (
-            arguments.dest_dir / f"{source.stem}{arguments.suffix}.wav"
-        )
-        print(f"[{index}/{len(sources)}] {source.name} -> {destination.name}")
+    for index, (source, destination) in enumerate(plan, start=1):
+        print(f"[{index}/{len(plan)}] {source.name} -> {destination.name}")
         try:
             peak = render_one(
                 arguments.renderer,
@@ -253,21 +293,18 @@ def main(argv=None):
             # per remaining file.
             sys.stderr.write(f"{source.name}: {error}\n")
             sys.stderr.write(
-                f"stopped after {index - 1} of {len(sources)} rendered\n"
+                f"stopped after {index - 1} of {len(plan)} rendered\n"
             )
             return 1
         if peak > 1.0:
             clipped.append((destination.name, peak))
 
-    # Written only once every render has succeeded, so its presence means
-    # the folder is complete -- re-rendering a folder with the request it
-    # already holds is a natural second run, and copying a file onto
-    # itself raises.
-    copied_request = arguments.dest_dir / "request.json"
-    if not (copied_request.exists() and copied_request.samefile(arguments.config)):
+    # Published only once every render has succeeded, so its presence means
+    # the folder is complete and describes the WAVs actually beside it.
+    if not rendering_from_the_copy:
         shutil.copyfile(arguments.config, copied_request)
 
-    print(f"\n{len(sources)} rendered into {arguments.dest_dir}")
+    print(f"\n{len(plan)} rendered into {arguments.dest_dir}")
     if clipped:
         print(f"warning: {len(clipped)} clipped:")
         for name, peak in clipped:

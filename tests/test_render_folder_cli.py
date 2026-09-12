@@ -130,6 +130,13 @@ def exercising_samples(bit_depth, count=4096):
     return values[:count]
 
 
+def broken_request(workspace):
+    """A request the renderer rejects, for exercising the failure path."""
+    path = workspace / "broken.json"
+    path.write_text(json.dumps({"formatVersion": 2, "reverbAmount": 0.7}) + "\n")
+    return path
+
+
 def run(tool, renderer, source_dir, dest_dir, config, *extra):
     return subprocess.run(
         [
@@ -262,8 +269,7 @@ def main():
                 f"{name} has no clipping line of its own: {completed.stdout}"
             )
 
-    # A run that fails leaves no request.json claiming the folder is done.
-    if (workspace / "loud" / "request.json").exists() is False:
+    if not (workspace / "loud" / "request.json").exists():
         raise AssertionError("a successful run did not record its request")
 
     # -- clipping clamps, it does not wrap -------------------------------
@@ -369,10 +375,8 @@ def main():
 
     # -- a renderer failure stops the run and surfaces its diagnostic ----
 
-    broken = workspace / "broken.json"
-    broken.write_text(json.dumps({"formatVersion": 2, "reverbAmount": 0.7}) + "\n")
     completed = run(
-        tool, renderer, source_dir, workspace / "broken", broken
+        tool, renderer, source_dir, workspace / "broken", broken_request(workspace)
     )
     if completed.returncode == 0:
         raise AssertionError("an invalid request did not fail the run")
@@ -407,6 +411,66 @@ def main():
                 "the refused run still wrote into the source directory: "
                 f"{sorted(path.name for path in guarded.iterdir())}"
             )
+
+    # -- a failed rerun does not leave stale provenance ------------------
+    # A folder holding request.json claims to be complete and to describe
+    # the WAVs beside it. A rerun with a different request that fails
+    # partway must not leave the old one standing over new audio.
+
+    stale = workspace / "stale"
+    completed = run(tool, renderer, source_dir, stale, config, "--bit-depth", "24")
+    if completed.returncode != 0:
+        raise AssertionError(f"seeding the stale-provenance run failed: {completed.stderr}")
+    if not (stale / "request.json").exists():
+        raise AssertionError("the seeding run recorded no request")
+
+    completed = run(tool, renderer, source_dir, stale, broken_request(workspace))
+    if completed.returncode == 0:
+        raise AssertionError("the failing rerun was reported as success")
+    if (stale / "request.json").exists():
+        raise AssertionError(
+            "a failed rerun left request.json claiming the folder is complete"
+        )
+
+    # -- two sources cannot claim one output name ------------------------
+    # "note.wav" beside "note.WAV" both render to "note.wav", so one would
+    # silently overwrite the other while the summary claimed both. Only a
+    # case-sensitive filesystem can hold that pair, so this asserts where
+    # it can and skips where the filesystem makes the case unreachable --
+    # appending a constant --suffix cannot collide, since distinct stems
+    # stay distinct.
+
+    colliding = workspace / "colliding"
+    colliding.mkdir()
+    shutil.copyfile(mono, colliding / "note.wav")
+    shutil.copyfile(stereo, colliding / "note.WAV")
+    case_sensitive = len(list(colliding.iterdir())) == 2
+    if case_sensitive:
+        collision_dest = workspace / "colliding-out"
+        completed = run(tool, renderer, colliding, collision_dest, config)
+        if completed.returncode == 0:
+            raise AssertionError("colliding output names were accepted")
+        if "note.wav" not in completed.stderr or "note.WAV" not in completed.stderr:
+            raise AssertionError(
+                f"the collision report did not name both sources: {completed.stderr}"
+            )
+        if collision_dest.exists() and any(collision_dest.iterdir()):
+            raise AssertionError("the refused run still rendered something")
+    else:
+        print(
+            "skipping the name-collision case: this filesystem is "
+            "case-insensitive, so note.wav and note.WAV cannot coexist"
+        )
+
+    # -- an unusable --dest-dir is refused cleanly -----------------------
+
+    blocked = workspace / "blocked"
+    blocked.write_text("I am a file, not a directory\n")
+    completed = run(tool, renderer, source_dir, blocked, config)
+    if completed.returncode == 0 or "Traceback" in completed.stderr:
+        raise AssertionError(
+            f"a --dest-dir that is a file was not refused cleanly: {completed.stderr}"
+        )
 
     # -- uppercase extensions are sources too ----------------------------
     # Sample libraries ship ".WAV" constantly; missing them would silently
