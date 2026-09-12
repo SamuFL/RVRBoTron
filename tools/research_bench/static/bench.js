@@ -172,17 +172,159 @@
     });
   });
 
+  // A JSON pretty-printer that never routes numbers through a JavaScript
+  // Number: the renderer accepts the full uint64 seed range
+  // (tests/test_configuration_cli.py:343-378), which exceeds 2^53, and
+  // JSON.parse/JSON.stringify would silently round such a seed to the
+  // nearest double. Numeric and string lexemes are re-emitted verbatim;
+  // only whitespace and structure change. Layout matches
+  // JSON.stringify(_, null, 2): two-space indents, ": " after keys, no
+  // trailing commas, "{}"/"[]" for empty containers.
+  function formatJsonPreservingLexemes(text) {
+    var i = 0;
+    var n = text.length;
+
+    function fail(message) {
+      throw new SyntaxError(message + " at position " + i);
+    }
+
+    function skipWhitespace() {
+      while (i < n && /[ \t\n\r]/.test(text[i])) { i++; }
+    }
+
+    function parseString() {
+      var start = i;
+      if (text[i] !== "\"") { fail("Expected string"); }
+      i++;
+      while (true) {
+        if (i >= n) { fail("Unterminated string"); }
+        var c = text[i];
+        if (c === "\\") {
+          i += 2;
+        } else if (c === "\"") {
+          i++;
+          break;
+        } else {
+          i++;
+        }
+      }
+      return text.slice(start, i);
+    }
+
+    function parseNumber() {
+      var start = i;
+      if (text[i] === "-") { i++; }
+      if (!/[0-9]/.test(text[i] || "")) { fail("Invalid number"); }
+      while (/[0-9]/.test(text[i] || "")) { i++; }
+      if (text[i] === ".") {
+        i++;
+        if (!/[0-9]/.test(text[i] || "")) { fail("Invalid number"); }
+        while (/[0-9]/.test(text[i] || "")) { i++; }
+      }
+      if (text[i] === "e" || text[i] === "E") {
+        i++;
+        if (text[i] === "+" || text[i] === "-") { i++; }
+        if (!/[0-9]/.test(text[i] || "")) { fail("Invalid number"); }
+        while (/[0-9]/.test(text[i] || "")) { i++; }
+      }
+      return { kind: "raw", raw: text.slice(start, i) };
+    }
+
+    function parseLiteral(word, kind) {
+      if (text.slice(i, i + word.length) !== word) { fail("Invalid literal"); }
+      i += word.length;
+      return { kind: kind, raw: word };
+    }
+
+    function parseArray() {
+      i++; // "["
+      var items = [];
+      skipWhitespace();
+      if (text[i] === "]") { i++; return { kind: "array", items: items }; }
+      while (true) {
+        skipWhitespace();
+        items.push(parseValue());
+        skipWhitespace();
+        if (text[i] === ",") { i++; continue; }
+        if (text[i] === "]") { i++; break; }
+        fail("Expected ',' or ']'");
+      }
+      return { kind: "array", items: items };
+    }
+
+    function parseObject() {
+      i++; // "{"
+      var members = [];
+      skipWhitespace();
+      if (text[i] === "}") { i++; return { kind: "object", members: members }; }
+      while (true) {
+        skipWhitespace();
+        var key = parseString();
+        skipWhitespace();
+        if (text[i] !== ":") { fail("Expected ':'"); }
+        i++;
+        skipWhitespace();
+        var value = parseValue();
+        members.push({ key: key, value: value });
+        skipWhitespace();
+        if (text[i] === ",") { i++; continue; }
+        if (text[i] === "}") { i++; break; }
+        fail("Expected ',' or '}'");
+      }
+      return { kind: "object", members: members };
+    }
+
+    function parseValue() {
+      skipWhitespace();
+      var c = text[i];
+      if (c === "{") { return parseObject(); }
+      if (c === "[") { return parseArray(); }
+      if (c === "\"") { return { kind: "raw", raw: parseString() }; }
+      if (c === "t") { return parseLiteral("true", "raw"); }
+      if (c === "f") { return parseLiteral("false", "raw"); }
+      if (c === "n") { return parseLiteral("null", "raw"); }
+      if (c === "-" || /[0-9]/.test(c || "")) { return parseNumber(); }
+      fail("Unexpected token");
+    }
+
+    function serialize(node, depth) {
+      var indent = "  ".repeat(depth);
+      var childIndent = "  ".repeat(depth + 1);
+      if (node.kind === "raw") { return node.raw; }
+      if (node.kind === "array") {
+        if (node.items.length === 0) { return "[]"; }
+        var items = node.items.map(function (item) {
+          return childIndent + serialize(item, depth + 1);
+        });
+        return "[\n" + items.join(",\n") + "\n" + indent + "]";
+      }
+      if (node.kind === "object") {
+        if (node.members.length === 0) { return "{}"; }
+        var members = node.members.map(function (member) {
+          return childIndent + member.key + ": " + serialize(member.value, depth + 1);
+        });
+        return "{\n" + members.join(",\n") + "\n" + indent + "}";
+      }
+      fail("Unknown node");
+    }
+
+    var root = parseValue();
+    skipWhitespace();
+    if (i !== n) { fail("Unexpected trailing content"); }
+    return serialize(root, 0);
+  }
+
   // Explicit action, and the only one that ever rewrites the editor text.
   // Malformed JSON is reported and the text is left exactly as it was.
   formatButton.addEventListener("click", function () {
-    var parsed;
+    var formatted;
     try {
-      parsed = JSON.parse(getRequestText());
+      formatted = formatJsonPreservingLexemes(getRequestText());
     } catch (error) {
       say("Format JSON: " + String(error.message || error), "error");
       return;
     }
-    setRequestText(JSON.stringify(parsed, null, 2));
+    setRequestText(formatted);
     say("Formatted.", "ok");
   });
 

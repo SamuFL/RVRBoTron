@@ -62,8 +62,9 @@ STATIC_FILES = {
 # headless-browser probe before this was added. Nothing the bench ever
 # shows (filenames, request text, renderer diagnostics) reaches a style
 # context, so this widens no attack surface the bench has; script-src stays
-# 'self' with no inline exception. img-src allows data: for one drag-cursor
-# glyph Ace requests. worker-src is spelled out (default-src 'none' already
+# 'self' with no inline exception. img-src allows data: for the two
+# indentation-guide glyphs the fixed Ace theme embeds. worker-src is spelled
+# out (default-src 'none' already
 # covers it) because Ace workers are a deliberate omission: see bench.js,
 # which also disables useWorker explicitly rather than relying on this alone.
 CONTENT_SECURITY_POLICY = (
