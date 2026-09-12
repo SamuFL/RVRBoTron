@@ -113,6 +113,7 @@ def main():
     sample_bits = int(sys.argv[7])
     if sample_bits not in (32, 64):
         raise AssertionError(f"unexpected configured sample bits: {sample_bits}")
+    templates_dir = Path(sys.argv[8])
 
     process = subprocess.Popen(
         [sys.executable, str(serve), "--renderer", str(renderer), "--no-browser"],
@@ -228,6 +229,52 @@ def main():
                     f"vendored {name} does not match VENDORING.md: "
                     f"{digest} != {expected_hash}"
                 )
+
+        # -- Request templates (issue #140) are served exactly as committed -
+
+        template_names = ("simple", "full", "modulated", "spatial")
+        for name in template_names:
+            status, body, template_headers = call(
+                f"{base}templates/{name}.json?token={token}"
+            )
+            if status != 200:
+                raise AssertionError(f"the {name} template was not served: {status}")
+            if "json" not in template_headers.get("Content-Type", ""):
+                raise AssertionError(f"{name} template served as {template_headers}")
+            on_disk = (templates_dir / f"{name}.json").read_bytes()
+            if body != on_disk:
+                raise AssertionError(
+                    f"served {name} template does not match the committed file"
+                )
+            json_body(body)  # must parse as JSON
+
+        status, _, _ = call(f"{base}templates/simple.json")
+        if status != 403:
+            raise AssertionError(f"an untokened template fetch was served: {status}")
+
+        # -- static browser behavior (issue #140): selector, hint, startup --
+        # No browser-automation framework (issue #128's own testing
+        # decision): these assert what the served text contains, not what
+        # a rendered DOM or a user's click would show.
+
+        if 'id="template"' not in text:
+            raise AssertionError("page has no Request-template selector")
+        for label in ("Simple", "Full", "Modulated", "Spatial"):
+            if f">{label}<" not in text:
+                raise AssertionError(f"template selector is missing {label!r}")
+        if "configure-the-composition.md" not in text:
+            raise AssertionError(
+                "page has no hint pointing at the Requested-configuration reference"
+            )
+
+        status, script_body, _ = call(f"{base}bench.js?token={token}")
+        script_text = script_body.decode("utf-8")
+        if '"/templates/" + key + ".json"' not in script_text:
+            raise AssertionError("script does not fetch templates by name")
+        if 'fetchTemplateText("simple")' not in script_text:
+            raise AssertionError("startup does not load the Simple template")
+        if "window.confirm(" not in script_text:
+            raise AssertionError("template switch has no confirmation guard")
 
         # -- rendering needs a source first --------------------------------
 

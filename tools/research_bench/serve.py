@@ -53,6 +53,16 @@ STATIC_FILES = {
         "vendor/ace/theme-tomorrow_night.js",
         "text/javascript; charset=utf-8",
     ),
+    # The four committed Request templates (issue #140): ordinary JSON,
+    # served exactly like every other static asset, so the page fetches
+    # them the same way it fetches its own script and style.
+    "/templates/simple.json": ("templates/simple.json", "application/json"),
+    "/templates/full.json": ("templates/full.json", "application/json"),
+    "/templates/modulated.json": (
+        "templates/modulated.json",
+        "application/json",
+    ),
+    "/templates/spatial.json": ("templates/spatial.json", "application/json"),
 }
 
 # style-src carries 'unsafe-inline': Ace injects its base, scrollbar, and

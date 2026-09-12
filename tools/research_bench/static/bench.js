@@ -4,6 +4,7 @@
   var token = new URLSearchParams(window.location.search).get("token") || "";
   var sourceInput = document.getElementById("source");
   var sourceName = document.getElementById("source-name");
+  var templateSelect = document.getElementById("template");
   var renderButton = document.getElementById("render");
   var formatButton = document.getElementById("format");
   var downloadRequestButton = document.getElementById("download-request");
@@ -39,28 +40,74 @@
     editor.setValue(text, -1); // -1: cursor at the start, nothing selected
   }
 
-  // A starting request, so the bench is usable before reading a guide.
-  // Edit it freely: this text, not this file, is what gets rendered.
-  setRequestText(JSON.stringify({
-    formatVersion: 2,
-    seed: 42,
-    composition: {
-      stages: [
-        { type: "split", channels: 8 },
-        { type: "diffuser", steps: 4, totalMs: 80 },
-        { type: "feedback-loop", delayMinMs: 60, delayMaxMs: 120, rt60Sec: 2.0 },
-        { type: "downmix", strategy: "orthogonal-rows" }
-      ],
-      preDelayMs: 20,
-      dryDb: 0,
-      wetDb: -3,
-      wetOnly: false
-    }
-  }, null, 2));
-
   function api(path) {
     return path + "?token=" + encodeURIComponent(token);
   }
+
+  // The four committed Request templates (issue #140), executable
+  // documentation rendered through the real renderer in tests -- discover
+  // the editable structure here, not from memory. Labels match the option
+  // text exactly, for status messages and the confirmation prompt.
+  var TEMPLATE_LABELS = {
+    simple: "Simple",
+    full: "Full",
+    modulated: "Modulated",
+    spatial: "Spatial"
+  };
+
+  // The two checkpoints a template load never needs confirmation against:
+  // whatever was last loaded, and whatever last rendered successfully.
+  // Editing away from both, then trying to switch templates, is the one
+  // case that can lose work -- and the only one that asks first.
+  var lastLoadedTemplateText = null;
+  var lastRenderedText = null;
+  var activeTemplateKey = "simple";
+
+  function fetchTemplateText(key) {
+    return fetch(api("/templates/" + key + ".json")).then(function (response) {
+      if (!response.ok) {
+        throw new Error("could not load the " + TEMPLATE_LABELS[key] + " template");
+      }
+      return response.text();
+    });
+  }
+
+  function applyTemplate(key, text) {
+    setRequestText(text);
+    lastLoadedTemplateText = text;
+    activeTemplateKey = key;
+    templateSelect.value = key;
+  }
+
+  // Startup always loads Simple fresh over the network, never from a
+  // cache, cookie, or local storage -- reloading the page is the only
+  // reset this bench has, and it must actually reset (issue #140).
+  fetchTemplateText("simple").then(function (text) {
+    applyTemplate("simple", text);
+    say("Loaded the Simple template. Choose an Audition source to begin.");
+  }).catch(function (error) {
+    say(String(error.message || error), "error");
+  });
+
+  templateSelect.addEventListener("change", function () {
+    var key = templateSelect.value;
+    var current = getRequestText();
+    var unsaved = current !== lastLoadedTemplateText && current !== lastRenderedText;
+    if (unsaved && !window.confirm(
+      "Replace the current request text with the " + TEMPLATE_LABELS[key] +
+        " template? Changes since the last load or render will be lost."
+    )) {
+      templateSelect.value = activeTemplateKey;
+      return;
+    }
+    fetchTemplateText(key).then(function (text) {
+      applyTemplate(key, text);
+      say("Loaded the " + TEMPLATE_LABELS[key] + " template.", "ok");
+    }).catch(function (error) {
+      templateSelect.value = activeTemplateKey;
+      say(String(error.message || error), "error");
+    });
+  });
 
   // Every message is assigned as text, never as markup: filenames,
   // requests, and renderer diagnostics are all untrusted content.
@@ -148,12 +195,16 @@
   renderButton.addEventListener("click", function () {
     setBusy(true);
     say("Rendering…");
-    // The editor's current string is sent through as-is.
+    // Captured once, not re-read after the request settles: what counts
+    // as "last successfully rendered" (issue #140's template dirty-check)
+    // is the text actually sent, regardless of anything typed meanwhile.
+    var sentText = getRequestText();
     send("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: getRequestText()
+      body: sentText
     }).then(function (facts) {
+      lastRenderedText = sentText;
       factsBox.textContent =
         facts.sourceFilename + " — " + facts.durationSeconds + " s, " +
         facts.sampleRate + " Hz, " + facts.channels + " ch";

@@ -23,6 +23,24 @@
 </section>
 
 <section>
+  <label for="template">Request template</label>
+  <div class="row">
+    <select id="template">
+      <option value="simple">Simple</option>
+      <option value="full">Full</option>
+      <option value="modulated">Modulated</option>
+      <option value="spatial">Spatial</option>
+    </select>
+  </div>
+  <!-- The templates are executable documentation (issue #140), not this
+       field reference: every value they accept, and what it defaults to,
+       stays in one place rather than duplicated here. -->
+  <p class="hint">
+    Full field reference: <code>docs/guides/configure-the-composition.md</code>
+  </p>
+</section>
+
+<section>
   <label id="request-label">Requested configuration</label>
   <div id="request-editor" aria-labelledby="request-label"></div>
 </section>

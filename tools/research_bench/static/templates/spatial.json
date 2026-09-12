@@ -1,0 +1,48 @@
+{
+  "formatVersion": 2,
+  "seed": 42,
+  "composition": {
+    "stages": [
+      {
+        "type": "split",
+        "channels": 8
+      },
+      {
+        "type": "diffuser",
+        "steps": 4,
+        "totalMs": 80
+      },
+      {
+        "type": "feedback-loop",
+        "delayMinMs": 60,
+        "delayMaxMs": 120,
+        "rt60Sec": 2.0
+      },
+      {
+        "type": "downmix",
+        "strategy": "orthogonal-rows",
+        "widthDeg": 130
+      }
+    ],
+    "preDelayMs": 20,
+    "dryDb": 0,
+    "wetDb": -3,
+    "wetOnly": false,
+    "early": {
+      "levelDb": -9,
+      "taps": [
+        {
+          "stepIndex": 0
+        },
+        {
+          "stepIndex": 1,
+          "gainDb": -3
+        }
+      ],
+      "downmix": {
+        "strategy": "orthogonal-rows",
+        "widthDeg": 130
+      }
+    }
+  }
+}
