@@ -400,6 +400,7 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
     ${CMAKE_SOURCE_DIR}/tools/research_bench/static/vendor/ace/VENDORING.md
     ${RVRBOTRON_TEST_SAMPLE_BITS}
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/static/templates
 )
 
 # The test drives a live server it starts itself. If the launcher ever hangs
@@ -425,3 +426,15 @@ add_test(
 # alone went from well under a second locally to 35+ seconds on a loaded
 # macOS runner. Budget generously rather than at CTest's 25-minute default.
 set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 450)
+
+add_test(
+  NAME research_bench_templates_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_research_bench_templates_cli.py
+    $<TARGET_FILE:rvrbotron>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/static/templates
+    ${CMAKE_CURRENT_BINARY_DIR}/research-bench-templates-contract
+    ${CMAKE_SOURCE_DIR}/src/cli/ConfigJson.cpp
+)

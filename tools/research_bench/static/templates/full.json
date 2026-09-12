@@ -1,0 +1,111 @@
+{
+  "formatVersion": 2,
+  "seed": 42,
+  "composition": {
+    "stages": [
+      {
+        "type": "split",
+        "channels": 8,
+        "strategy": "duplicate",
+        "normalisation": "energy"
+      },
+      {
+        "type": "diffuser",
+        "steps": 4,
+        "totalMs": 300,
+        "distribution": "doubling",
+        "step": {
+          "delayStrategy": "segmented-random",
+          "mix": "hadamard",
+          "shuffle": true,
+          "polarity": "seeded-random",
+          "modulation": {
+            "depthMs": 0.05,
+            "rateHz": 0.2,
+            "shape": "triangle",
+            "channelFraction": 1.0,
+            "interpolation": "lagrange3"
+          }
+        },
+        "stepOverrides": [
+          {
+            "index": 3,
+            "delayStrategy": "uniform-random",
+            "mix": "householder",
+            "shuffle": false,
+            "polarity": "none",
+            "modulation": {
+              "depthMs": 0.1,
+              "rateHz": 0.15,
+              "shape": "sine",
+              "channelFraction": 0.75,
+              "interpolation": "linear"
+            }
+          }
+        ]
+      },
+      {
+        "type": "feedback-loop",
+        "delayMinMs": 100,
+        "delayMaxMs": 200,
+        "delayStrategy": "segmented-random",
+        "rt60Sec": 2.4,
+        "decayMargin": 1.5,
+        "mix": "householder",
+        "gainMode": "per-channel",
+        "silenceFloorDb": null,
+        "damping": {
+          "highRatio": 0.6,
+          "highHz": 3500,
+          "lowRatio": 0.9,
+          "lowHz": 250
+        },
+        "modulation": {
+          "depthMs": 0.3,
+          "rateHz": 0.2,
+          "shape": "sine",
+          "channelFraction": 0.8,
+          "interpolation": "lagrange3"
+        }
+      },
+      {
+        "type": "downmix",
+        "strategy": "select",
+        "leftChannel": 0,
+        "rightChannel": 1,
+        "normalisation": "energy",
+        "widthDeg": 90
+      }
+    ],
+    "mainEnabled": true,
+    "mainLevelDb": 0,
+    "dryDb": 0,
+    "wetDb": -3,
+    "wetOnly": false,
+    "preDelayMs": 15,
+    "early": {
+      "enabled": true,
+      "levelDb": -6,
+      "decayDbPerSec": 0.5,
+      "taps": [
+        {
+          "stepIndex": 0,
+          "gainDb": -3
+        },
+        {
+          "stepIndex": 1,
+          "gainDb": -6
+        },
+        {
+          "stepIndex": 2,
+          "gainDb": -9
+        }
+      ],
+      "downmix": {
+        "strategy": "orthogonal-rows",
+        "normalisation": "energy",
+        "widthDeg": 110
+      }
+    }
+  }
+}

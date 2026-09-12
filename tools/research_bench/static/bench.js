@@ -4,6 +4,7 @@
   var token = new URLSearchParams(window.location.search).get("token") || "";
   var sourceInput = document.getElementById("source");
   var sourceName = document.getElementById("source-name");
+  var templateSelect = document.getElementById("template");
   var renderButton = document.getElementById("render");
   var formatButton = document.getElementById("format");
   var downloadRequestButton = document.getElementById("download-request");
@@ -39,28 +40,103 @@
     editor.setValue(text, -1); // -1: cursor at the start, nothing selected
   }
 
-  // A starting request, so the bench is usable before reading a guide.
-  // Edit it freely: this text, not this file, is what gets rendered.
-  setRequestText(JSON.stringify({
-    formatVersion: 2,
-    seed: 42,
-    composition: {
-      stages: [
-        { type: "split", channels: 8 },
-        { type: "diffuser", steps: 4, totalMs: 80 },
-        { type: "feedback-loop", delayMinMs: 60, delayMaxMs: 120, rt60Sec: 2.0 },
-        { type: "downmix", strategy: "orthogonal-rows" }
-      ],
-      preDelayMs: 20,
-      dryDb: 0,
-      wetDb: -3,
-      wetOnly: false
-    }
-  }, null, 2));
-
   function api(path) {
     return path + "?token=" + encodeURIComponent(token);
   }
+
+  // The four committed Request templates (issue #140), executable
+  // documentation rendered through the real renderer in tests -- discover
+  // the editable structure here, not from memory. Labels match the option
+  // text exactly, for status messages and the confirmation prompt.
+  var TEMPLATE_LABELS = {
+    simple: "Simple",
+    full: "Full",
+    modulated: "Modulated",
+    spatial: "Spatial"
+  };
+
+  // The two checkpoints a template load never needs confirmation against:
+  // whatever was last loaded, and whatever last rendered successfully.
+  // Editing away from both, then trying to switch templates, is the one
+  // case that can lose work -- and the only one that asks first.
+  var lastLoadedTemplateText = null;
+  var lastRenderedText = null;
+  var activeTemplateKey = "simple";
+
+  // Bumped by every loadTemplate call, and captured per call as
+  // requestId: a fetch whose id no longer matches this counter when it
+  // resolves has been superseded by a later load (the user switching
+  // again before the first fetch settles, or startup's own load losing
+  // to an early click) and applies nothing, so an out-of-order response
+  // can never silently overwrite a more recent selection.
+  var templateRequestId = 0;
+
+  function fetchTemplateText(key) {
+    return fetch(api("/templates/" + key + ".json")).then(function (response) {
+      if (!response.ok) {
+        throw new Error("could not load the " + TEMPLATE_LABELS[key] + " template");
+      }
+      return response.text();
+    });
+  }
+
+  function applyTemplate(key, text) {
+    setRequestText(text);
+    lastLoadedTemplateText = text;
+    activeTemplateKey = key;
+    templateSelect.value = key;
+  }
+
+  function loadTemplate(key, loadedMessage) {
+    templateRequestId += 1;
+    var requestId = templateRequestId;
+    // The confirmation prompt (or its absence, when nothing is at risk)
+    // only accounts for edits that already existed when this load began.
+    // Typing during the fetch itself -- brief, but real on a slow
+    // loopback connection or a large template -- gets nothing to compare
+    // against there, so it is checked again here: if the editor no longer
+    // reads the way it did when the request started, something changed
+    // out from under this load, and applying the fetched text would
+    // silently discard it without ever asking.
+    var textBeforeFetch = getRequestText();
+    fetchTemplateText(key).then(function (text) {
+      if (requestId !== templateRequestId) { return; }
+      if (getRequestText() !== textBeforeFetch) {
+        templateSelect.value = activeTemplateKey;
+        say(
+          "Not loading the " + TEMPLATE_LABELS[key] +
+            " template: the request text changed while it was loading.",
+          "error"
+        );
+        return;
+      }
+      applyTemplate(key, text);
+      say(loadedMessage || ("Loaded the " + TEMPLATE_LABELS[key] + " template."), "ok");
+    }).catch(function (error) {
+      if (requestId !== templateRequestId) { return; }
+      templateSelect.value = activeTemplateKey;
+      say(String(error.message || error), "error");
+    });
+  }
+
+  // Startup always loads Simple fresh over the network, never from a
+  // cache, cookie, or local storage -- reloading the page is the only
+  // reset this bench has, and it must actually reset (issue #140).
+  loadTemplate("simple", "Loaded the Simple template. Choose an Audition source to begin.");
+
+  templateSelect.addEventListener("change", function () {
+    var key = templateSelect.value;
+    var current = getRequestText();
+    var unsaved = current !== lastLoadedTemplateText && current !== lastRenderedText;
+    if (unsaved && !window.confirm(
+      "Replace the current request text with the " + TEMPLATE_LABELS[key] +
+        " template? Changes since the last load or render will be lost."
+    )) {
+      templateSelect.value = activeTemplateKey;
+      return;
+    }
+    loadTemplate(key);
+  });
 
   // Every message is assigned as text, never as markup: filenames,
   // requests, and renderer diagnostics are all untrusted content.
@@ -148,12 +224,16 @@
   renderButton.addEventListener("click", function () {
     setBusy(true);
     say("Rendering…");
-    // The editor's current string is sent through as-is.
+    // Captured once, not re-read after the request settles: what counts
+    // as "last successfully rendered" (issue #140's template dirty-check)
+    // is the text actually sent, regardless of anything typed meanwhile.
+    var sentText = getRequestText();
     send("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: getRequestText()
+      body: sentText
     }).then(function (facts) {
+      lastRenderedText = sentText;
       factsBox.textContent =
         facts.sourceFilename + " — " + facts.durationSeconds + " s, " +
         facts.sampleRate + " Hz, " + facts.channels + " ch";

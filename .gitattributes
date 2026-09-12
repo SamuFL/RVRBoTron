@@ -5,3 +5,9 @@ samples/listening/*.wav filter=lfs diff=lfs merge=lfs -text
 # the integrity check in tests/test_research_bench_cli.py on any platform
 # whose git converts LF to CRLF by default (issue #152).
 tools/research_bench/static/vendor/ace/* text eol=lf
+
+# Compared byte-for-byte against what serve.py serves (issue #140): serve.py
+# reads these as text and re-encodes with normalized newlines, so a CRLF
+# checkout would make every comparison in tests/test_research_bench_cli.py
+# fail on a platform whose git converts LF to CRLF by default.
+tools/research_bench/static/templates/*.json text eol=lf

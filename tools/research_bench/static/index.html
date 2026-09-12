@@ -23,6 +23,29 @@
 </section>
 
 <section>
+  <label for="template">Request template</label>
+  <div class="row">
+    <select id="template">
+      <option value="simple">Simple</option>
+      <option value="full">Full</option>
+      <option value="modulated">Modulated</option>
+      <option value="spatial">Spatial</option>
+    </select>
+  </div>
+  <!-- The templates are executable documentation (issue #140), not this
+       field reference: every value they accept, and what it defaults to,
+       stays in one place rather than duplicated here. A plain hyperlink,
+       not a served local route: the bench binds loopback and serves
+       nothing under docs/, and CSP's fetch/script/style restrictions
+       never apply to a user's own top-level navigation from a click. -->
+  <p class="hint">
+    Full field reference:
+    <a href="https://github.com/SamuFL/RVRBoTron/blob/develop/docs/guides/configure-the-composition.md"
+       target="_blank" rel="noopener noreferrer">configure-the-composition.md</a>
+  </p>
+</section>
+
+<section>
   <label id="request-label">Requested configuration</label>
   <div id="request-editor" aria-labelledby="request-label"></div>
 </section>
