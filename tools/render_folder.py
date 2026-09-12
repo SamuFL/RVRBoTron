@@ -80,7 +80,11 @@ def read_float_wav(path):
     while offset + 8 <= len(data):
         chunk_id = data[offset : offset + 4]
         (size,) = struct.unpack_from("<I", data, offset + 4)
+        if offset + 8 + size > len(data):
+            raise ValueError(f"{path} contains a truncated WAV chunk")
         if chunk_id == b"fmt ":
+            if size < 16:
+                raise ValueError(f"{path} contains a truncated fmt chunk")
             format_info = struct.unpack_from("<HHIIHH", data, offset + 8)
         elif chunk_id == b"data":
             payload = data[offset + 8 : offset + 8 + size]
@@ -90,8 +94,11 @@ def read_float_wav(path):
     format_tag, channels, sample_rate, _, _, sample_bits = format_info
     if format_tag != 3 or sample_bits not in (32, 64):
         raise ValueError(f"{path} is not the IEEE float WAV the renderer writes")
+    # Kept at the renderer's own precision rather than widened to float64:
+    # the conversion below only clips and scales, and a long tail on a large
+    # sample is already the peak memory this tool holds.
     dtype = "<f4" if sample_bits == 32 else "<f8"
-    return np.frombuffer(payload, dtype=dtype).astype(np.float64), channels, sample_rate
+    return np.frombuffer(payload, dtype=dtype), channels, sample_rate
 
 
 def encode_pcm(samples, bit_depth):
@@ -99,7 +106,7 @@ def encode_pcm(samples, bit_depth):
 
     Scales by 2^(bits-1) - 1 rather than 2^(bits-1), which cannot overflow
     at exactly +1.0. The asymmetry against a decoder dividing by 2^(bits-1)
-    costs at most one LSB -- -144 dBFS at 24-bit, -96 at 16 -- and the
+    costs at most one LSB -- about -138 dBFS at 24-bit, -90 at 16 -- and the
     contract test pins that bound by round-tripping an identity render.
     """
     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
@@ -195,27 +202,36 @@ def main(argv=None):
     if not arguments.config.is_file():
         sys.stderr.write(f"no Requested configuration at {arguments.config}\n")
         return 1
-    # Rendering into the source folder under the same names overwrites the
-    # raw material in place, which for recorded samples is unrecoverable.
-    # A suffix makes the outputs distinct, so that stays allowed.
-    if (
-        not arguments.suffix
-        and arguments.dest_dir.resolve() == arguments.source_dir.resolve()
+    if not arguments.renderer.is_file():
+        sys.stderr.write(f"no renderer at {arguments.renderer}\n")
+        return 1
+    # Never render into the source folder. Without a suffix it overwrites
+    # the raw material, which for recorded samples is unrecoverable; with
+    # one it is merely unusable -- a second run globs the first run's own
+    # outputs into "-wet-wet", and the copied request lands among the raw
+    # sources. samefile rather than comparing resolved paths: it catches
+    # the same directory reached by a different spelling, including the
+    # case-insensitive one ("raw" and "RAW") that macOS and Windows hand you.
+    if arguments.dest_dir.exists() and arguments.dest_dir.samefile(
+        arguments.source_dir
     ):
         sys.stderr.write(
-            "--dest-dir is the source directory and --suffix is empty, which "
-            "would overwrite the sources with their own renders. Choose a "
-            "different --dest-dir, or pass a --suffix.\n"
+            "--dest-dir is the source directory, which would render the raw "
+            "material onto itself. Choose a separate --dest-dir.\n"
         )
         return 1
 
-    sources = sorted(arguments.source_dir.glob("*.wav"))
+    # Case-insensitively, because sample libraries ship ".WAV" constantly.
+    sources = sorted(
+        path
+        for path in arguments.source_dir.iterdir()
+        if path.is_file() and path.suffix.lower() == ".wav"
+    )
     if not sources:
-        sys.stderr.write(f"no *.wav files in {arguments.source_dir}\n")
+        sys.stderr.write(f"no .wav files in {arguments.source_dir}\n")
         return 1
 
     arguments.dest_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(arguments.config, arguments.dest_dir / "request.json")
 
     clipped = []
     for index, source in enumerate(sources, start=1):
@@ -231,7 +247,7 @@ def main(argv=None):
                 destination,
                 arguments.bit_depth,
             )
-        except (RuntimeError, ValueError) as error:
+        except (RuntimeError, ValueError, OSError, struct.error) as error:
             # Fail fast: in a uniformly recorded folder a failure is
             # systematic, so continuing would collect the same error once
             # per remaining file.
@@ -243,12 +259,20 @@ def main(argv=None):
         if peak > 1.0:
             clipped.append((destination.name, peak))
 
+    # Written only once every render has succeeded, so its presence means
+    # the folder is complete -- re-rendering a folder with the request it
+    # already holds is a natural second run, and copying a file onto
+    # itself raises.
+    copied_request = arguments.dest_dir / "request.json"
+    if not (copied_request.exists() and copied_request.samefile(arguments.config)):
+        shutil.copyfile(arguments.config, copied_request)
+
     print(f"\n{len(sources)} rendered into {arguments.dest_dir}")
     if clipped:
-        worst = max(20.0 * np.log10(peak) for _, peak in clipped)
-        names = ", ".join(name for name, _ in clipped)
+        print(f"warning: {len(clipped)} clipped:")
+        for name, peak in clipped:
+            print(f"  {name} +{20.0 * np.log10(peak):.1f} dBFS")
         print(
-            f"warning: {len(clipped)} clipped (max +{worst:.1f} dBFS): {names}\n"
             "Lower dryDb/wetDb in the request and render again if that matters."
         )
     return 0

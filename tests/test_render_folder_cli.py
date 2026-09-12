@@ -92,6 +92,44 @@ def pcm_samples(path):
     ]
 
 
+def write_pcm_wav(path, samples, channels, sample_rate, bit_depth):
+    """A PCM WAV of the given signed integer samples, for round-trip sources."""
+    width = bit_depth // 8
+    payload = b"".join(
+        value.to_bytes(width, "little", signed=True) for value in samples
+    )
+    block_align = channels * width
+    fmt = struct.pack(
+        "<HHIIHH",
+        1,
+        channels,
+        sample_rate,
+        sample_rate * block_align,
+        block_align,
+        bit_depth,
+    )
+    chunks = b"fmt " + struct.pack("<I", len(fmt)) + fmt
+    chunks += b"data" + struct.pack("<I", len(payload)) + payload
+    path.write_bytes(b"RIFF" + struct.pack("<I", len(chunks) + 4) + b"WAVE" + chunks)
+
+
+def exercising_samples(bit_depth, count=4096):
+    """Deterministic samples spanning the depth's full range, extremes first.
+
+    A committed impulse fixture is almost entirely zeros, so round-tripping
+    one would pass even for a conversion that dropped every non-zero
+    sample. These exercise sign, scale and byte packing at every magnitude.
+    """
+    limit = (1 << (bit_depth - 1)) - 1
+    edges = [0, 1, -1, limit, -limit, limit // 2, -(limit // 2)]
+    state = 0x2545F491
+    values = list(edges)
+    while len(values) < count:
+        state = (state * 1103515245 + 12345) & 0x7FFFFFFF
+        values.append((state % (2 * limit + 1)) - limit)
+    return values[:count]
+
+
 def run(tool, renderer, source_dir, dest_dir, config, *extra):
     return subprocess.run(
         [
@@ -208,48 +246,126 @@ def main():
         raise AssertionError(
             f"clipping was not reported: {completed.stdout}"
         )
-    if "C3-rr1.wav" not in completed.stdout:
-        raise AssertionError(
-            f"the clipping report did not name the file: {completed.stdout}"
+    # Every clipped file names its own overage: one aggregate number tells
+    # you something clipped, not which file to go fix.
+    for name in ("C3-rr1.wav", "C3-rr2.wav"):
+        line = next(
+            (
+                text
+                for text in completed.stdout.splitlines()
+                if name in text and "dBFS" in text
+            ),
+            None,
         )
+        if line is None:
+            raise AssertionError(
+                f"{name} has no clipping line of its own: {completed.stdout}"
+            )
 
-    # -- the float-to-PCM conversion is accurate ------------------------
-    # An identity Composition returns the input unchanged, so a PCM24
-    # source round-trips through the renderer's float32 pipeline and back
-    # to PCM24. Anything wrong with the scale factor, the byte order, or
-    # the 24-bit packing shows up here as a large difference; the honest
-    # bound is one LSB (see encode_pcm).
+    # A run that fails leaves no request.json claiming the folder is done.
+    if (workspace / "loud" / "request.json").exists() is False:
+        raise AssertionError("a successful run did not record its request")
 
-    identity_source = workspace / "identity-raw"
-    identity_source.mkdir()
-    shutil.copyfile(stereo, identity_source / "note.wav")
-    identity_config = workspace / "identity.json"
-    identity_config.write_text(json.dumps({"formatVersion": 2}) + "\n")
-    # Rendered at the source's own depth, so the comparison is like for like.
-    identity_dest = workspace / "identity-out"
+    # -- clipping clamps, it does not wrap -------------------------------
+    # Reporting a clip while writing wrapped samples would be the worst of
+    # both worlds. An all-positive source driven past full scale must come
+    # back saturated at +full scale; wrapping inverts those samples instead
+    # and shows up as large negatives.
+
+    full_scale = (1 << 23) - 1
+    dc_source = workspace / "dc-raw"
+    dc_source.mkdir()
+    write_pcm_wav(
+        dc_source / "dc.wav", [int(full_scale * 0.9)] * 2000, 1, 48000, 24
+    )
+    dc_config = workspace / "dc.json"
+    dc_config.write_text(
+        json.dumps(
+            {
+                "formatVersion": 2,
+                "composition": {
+                    "stages": [
+                        {"type": "split", "channels": 8},
+                        {"type": "diffuser", "steps": 4, "totalMs": 10},
+                        {
+                            "type": "downmix",
+                            "strategy": "select",
+                            "leftChannel": 0,
+                        },
+                    ],
+                    "dryDb": 12,
+                    "wetDb": -120,
+                    "wetOnly": False,
+                },
+            }
+        )
+        + "\n"
+    )
     completed = run(
-        tool,
-        renderer,
-        identity_source,
-        identity_dest,
-        identity_config,
-        "--bit-depth",
-        "16",
+        tool, renderer, dc_source, workspace / "dc-out", dc_config, "--bit-depth", "24"
     )
     if completed.returncode != 0:
-        raise AssertionError(f"the identity run failed: {completed.stderr}")
+        raise AssertionError(f"the saturation run failed: {completed.stderr}")
+    decoded = pcm_samples(workspace / "dc-out" / "dc.wav")
+    if max(decoded) != full_scale:
+        raise AssertionError(
+            f"a clipped positive source did not saturate: max {max(decoded)}"
+        )
+    if min(decoded) < -(full_scale // 4):
+        raise AssertionError(
+            f"clipping wrapped instead of clamping: min {min(decoded)}"
+        )
 
-    before = pcm_samples(identity_source / "note.wav")
-    after = pcm_samples(identity_dest / "note.wav")
-    if len(before) != len(after):
-        raise AssertionError(
-            f"identity changed the sample count: {len(before)} -> {len(after)}"
+    # -- the float-to-PCM conversion is accurate at both depths ----------
+    # An identity Composition returns its input unchanged, so a PCM source
+    # round-trips through the renderer's float pipeline and back to PCM at
+    # the same depth. Anything wrong with the scale factor, the byte order
+    # or the 24-bit packing shows up here; the honest bound is one LSB
+    # (see encode_pcm). The sources are noise across the full range rather
+    # than a committed impulse, which is almost all zeros and would pass
+    # even for a conversion that dropped every non-zero sample.
+
+    identity_config = workspace / "identity.json"
+    identity_config.write_text(json.dumps({"formatVersion": 2}) + "\n")
+
+    for bit_depth, channels in ((16, 1), (24, 2)):
+        identity_source = workspace / f"identity-raw-{bit_depth}"
+        identity_source.mkdir()
+        samples = exercising_samples(bit_depth)
+        write_pcm_wav(
+            identity_source / "note.wav", samples, channels, 48000, bit_depth
         )
-    worst = max(abs(a - b) for a, b in zip(before, after))
-    if worst > 1:
-        raise AssertionError(
-            f"float-to-PCM24 conversion is off by {worst} LSBs, expected at most 1"
+
+        identity_dest = workspace / f"identity-out-{bit_depth}"
+        completed = run(
+            tool,
+            renderer,
+            identity_source,
+            identity_dest,
+            identity_config,
+            "--bit-depth",
+            str(bit_depth),
         )
+        if completed.returncode != 0:
+            raise AssertionError(
+                f"the {bit_depth}-bit identity run failed: {completed.stderr}"
+            )
+
+        before = pcm_samples(identity_source / "note.wav")
+        after = pcm_samples(identity_dest / "note.wav")
+        if len(before) != len(after):
+            raise AssertionError(
+                f"{bit_depth}-bit identity changed the sample count: "
+                f"{len(before)} -> {len(after)}"
+            )
+        if not any(before):
+            raise AssertionError("the round-trip source is silent, proving nothing")
+        worst = max(abs(a - b) for a, b in zip(before, after))
+        if worst > 1:
+            raise AssertionError(
+                f"float-to-PCM{bit_depth} conversion is off by {worst} LSBs, "
+                "expected at most 1"
+            )
 
     # -- a renderer failure stops the run and surfaces its diagnostic ----
 
@@ -275,30 +391,81 @@ def main():
     guarded.mkdir()
     shutil.copyfile(mono, guarded / "precious.wav")
     before_bytes = (guarded / "precious.wav").read_bytes()
-    completed = run(tool, renderer, guarded, guarded, config)
-    if completed.returncode == 0:
-        raise AssertionError("rendering onto the source directory was allowed")
-    if (guarded / "precious.wav").read_bytes() != before_bytes:
-        raise AssertionError("the source file was modified despite the refusal")
+    # Refused with or without a suffix: a suffixed in-place run is not
+    # idempotent (its second pass globs its own "-wet" outputs) and drops
+    # the copied request among the raw sources.
+    for extra in ((), ("--suffix=-wet",)):
+        completed = run(tool, renderer, guarded, guarded, config, *extra)
+        if completed.returncode == 0:
+            raise AssertionError(
+                f"rendering onto the source directory was allowed with {extra}"
+            )
+        if (guarded / "precious.wav").read_bytes() != before_bytes:
+            raise AssertionError("the source file was modified despite the refusal")
+        if sorted(path.name for path in guarded.iterdir()) != ["precious.wav"]:
+            raise AssertionError(
+                "the refused run still wrote into the source directory: "
+                f"{sorted(path.name for path in guarded.iterdir())}"
+            )
 
-    # With a suffix the outputs are distinct, so it is allowed.
-    completed = run(tool, renderer, guarded, guarded, config, "--suffix=-wet")
+    # -- uppercase extensions are sources too ----------------------------
+    # Sample libraries ship ".WAV" constantly; missing them would silently
+    # render nothing.
+
+    upper = workspace / "upper"
+    upper.mkdir()
+    shutil.copyfile(mono, upper / "D3-rr1.WAV")
+    completed = run(tool, renderer, upper, workspace / "upper-out", config)
     if completed.returncode != 0:
+        raise AssertionError(f"an uppercase .WAV source was skipped: {completed.stderr}")
+    if not (workspace / "upper-out" / "D3-rr1.wav").exists():
         raise AssertionError(
-            f"a suffixed in-place render was refused: {completed.stderr}"
+            f"no output for the .WAV source: "
+            f"{sorted(p.name for p in (workspace / 'upper-out').iterdir())}"
         )
-    if (guarded / "precious.wav").read_bytes() != before_bytes:
-        raise AssertionError("a suffixed run still overwrote the source")
-    if not (guarded / "precious-wet.wav").exists():
-        raise AssertionError("the suffixed output was not written")
 
-    # -- a missing source directory is refused before any work -----------
+    # -- bad paths are refused cleanly, never as a traceback -------------
+
+    for label, extra in (
+        ("a missing source directory", (workspace / "absent", workspace / "nowhere", config)),
+        ("a missing config", (source_dir, workspace / "nowhere", workspace / "absent.json")),
+    ):
+        completed = run(tool, renderer, *extra)
+        if completed.returncode == 0:
+            raise AssertionError(f"{label} was accepted")
+        if "Traceback" in completed.stderr:
+            raise AssertionError(f"{label} produced a traceback: {completed.stderr}")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(tool),
+            "--renderer",
+            str(workspace / "absent-renderer"),
+            "--source-dir",
+            str(source_dir),
+            "--dest-dir",
+            str(workspace / "nowhere"),
+            "--config",
+            str(config),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0 or "Traceback" in completed.stderr:
+        raise AssertionError(f"a missing renderer was not refused cleanly: {completed.stderr}")
+
+    # -- re-rendering a folder with the request it already holds ---------
+    # The tool copies the request beside its outputs, so pointing --config
+    # back at that copy is a natural second run, not an error.
 
     completed = run(
-        tool, renderer, workspace / "absent", workspace / "nowhere", config
+        tool, renderer, source_dir, dest, dest / "request.json", "--bit-depth", "24"
     )
-    if completed.returncode == 0:
-        raise AssertionError("a missing source directory was accepted")
+    if completed.returncode != 0:
+        raise AssertionError(
+            f"re-rendering with the copied request failed: {completed.stderr}"
+        )
 
 
 if __name__ == "__main__":
