@@ -399,7 +399,11 @@ class Session:
         """
         with self.process_lock:
             if self.shutting_down:
-                raise BenchError("the bench is shutting down", category="busy")
+                raise BenchError(
+                    "the bench is shutting down",
+                    category="busy",
+                    status=HTTPStatus.CONFLICT,
+                )
             process = subprocess.Popen(
                 arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
