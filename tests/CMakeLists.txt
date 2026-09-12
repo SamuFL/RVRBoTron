@@ -418,6 +418,10 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-hardening-contract
 )
 
-# Several cases drive a deliberately slow fake render (issue #139); bound
-# the whole run well under CTest's 25-minute default rather than at it.
-set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 120)
+# Several cases drive a deliberately slow fake render, and the suite
+# launches its own bench server seven separate times -- each paying full
+# process-spawn and startup-probe cost. That cost is small locally but far
+# from it on CI: research_bench_contract's own process-spawn overhead
+# alone went from well under a second locally to 35+ seconds on a loaded
+# macOS runner. Budget generously rather than at CTest's 25-minute default.
+set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 450)
