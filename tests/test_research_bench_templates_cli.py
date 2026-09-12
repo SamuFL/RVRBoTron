@@ -13,15 +13,13 @@ the guide together.
 """
 
 import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 TEMPLATE_NAMES = ("simple", "full", "modulated", "spatial")
-
-# ModulationConfig's fields (include/rvrbotron/config/ReverbConfig.h),
-# identical whether attached to a Diffusion Step or a Feedback Loop.
-MODULATION_KEYS = {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"}
 
 
 def load(templates_dir, name):
@@ -53,94 +51,111 @@ def assert_keys(node, expected_keys, where):
         raise AssertionError(f"{where} is missing {missing}: {sorted(node.keys())}")
 
 
-def check_full_field_coverage(full):
+def parser_accepted_fields(source, function_name):
+    """The exact field allowlist one ConfigJson.cpp parser function accepts,
+    read from its own rejectUnknownFields(...) call -- the parser's actual
+    source of truth, not a hand-transcribed copy of it. A field the parser
+    starts (or stops) accepting changes this set the moment ConfigJson.cpp
+    changes, with no separate step to keep it current -- so check_full_
+    field_coverage catches a newly added applicable field even before
+    anyone updates this test or the template for it.
+    """
+    definition = re.search(
+        r"^\S.*\b" + re.escape(function_name) + r"\s*\(", source, re.MULTILINE
+    )
+    if not definition:
+        raise AssertionError(f"{function_name} not found in ConfigJson.cpp")
+    call = re.search(r"rejectUnknownFields\s*\(", source[definition.end():])
+    if not call:
+        raise AssertionError(f"{function_name} has no rejectUnknownFields call")
+    search_from = definition.end() + call.end()
+    brace_start = source.index("{", search_from)
+    brace_end = source.index("}", brace_start)
+    fields = set(re.findall(r'"([A-Za-z0-9]+)"', source[brace_start:brace_end]))
+    if not fields:
+        raise AssertionError(f"{function_name}'s rejectUnknownFields call has no fields")
+    return fields
+
+
+def load_parser_fields(config_json_path):
+    source = config_json_path.read_text()
+    return {
+        "top": parser_accepted_fields(source, "parseRequestedConfig"),
+        "composition": parser_accepted_fields(source, "parseRequestedComposition"),
+        "split": parser_accepted_fields(source, "parseRequestedSplit"),
+        # lengthsMs is Diffuser's mutually exclusive alternative to
+        # steps/totalMs/distribution (issue #140's own acceptance criterion
+        # keeps such alternatives out of Full's JSON), so it is excluded
+        # here as a documented choice, not missing by oversight.
+        "diffuser": parser_accepted_fields(source, "parseRequestedDiffuser")
+        - {"lengthsMs"},
+        "step": parser_accepted_fields(source, "parseRequestedStep"),
+        "step_override": parser_accepted_fields(source, "parseRequestedStepOverride"),
+        "modulation": parser_accepted_fields(source, "parseRequestedModulation"),
+        "feedback_loop": parser_accepted_fields(source, "parseRequestedFeedbackLoop"),
+        "damping": parser_accepted_fields(source, "parseRequestedDamping"),
+        # leftChannel/rightChannel apply only to strategy "select"; every
+        # other strategy rejects them outright (parseRequestedDownmix's own
+        # branch on strategy). type is required only as the stage array's
+        # own discriminator -- Early's downmix, parsed by this same
+        # function, never carries it (checkNestedDownmixType's requireType
+        # is false there). Both are named separately so a caller can add
+        # them back only where the JSON in hand actually needs them.
+        "downmix": parser_accepted_fields(source, "parseRequestedDownmix")
+        - {"leftChannel", "rightChannel", "type"},
+        "downmix_select_only": {"leftChannel", "rightChannel"},
+        "downmix_stage_only": {"type"},
+        "early": parser_accepted_fields(source, "parseRequestedEarly"),
+        "early_tap": parser_accepted_fields(source, "parseRequestedEarlyTap"),
+    }
+
+
+def check_full_field_coverage(full, fields):
     """Every field applicable to Full's shape (a Diffuser feeding a Feedback
     Loop, both with every optional feature attached, plus Early
-    Reflections) must appear explicitly. lengthsMs is Diffuser's mutually
-    exclusive alternative to steps/totalMs/distribution (issue #140's own
-    acceptance criterion keeps such alternatives out of the JSON, in the
-    reference documentation instead), so its absence here is required, not
-    an oversight to fix.
+    Reflections) must appear explicitly. `fields` comes from
+    load_parser_fields, i.e. from ConfigJson.cpp itself, so a field the
+    parser gains shows up as newly required here -- not just a field
+    Full happens to stop setting.
     """
-    assert_keys(full, {"formatVersion", "seed", "composition"}, "Full")
+    assert_keys(full, fields["top"], "Full")
     composition = full["composition"]
-    assert_keys(
-        composition,
-        {
-            "stages",
-            "mainEnabled",
-            "mainLevelDb",
-            "early",
-            "dryDb",
-            "wetDb",
-            "wetOnly",
-            "preDelayMs",
-        },
-        "Full/composition",
-    )
+    assert_keys(composition, fields["composition"], "Full/composition")
 
     split, diffuser, feedback_loop, downmix = composition["stages"]
 
-    assert_keys(
-        split, {"type", "channels", "strategy", "normalisation"}, "Full/split"
-    )
+    assert_keys(split, fields["split"], "Full/split")
 
     if "lengthsMs" in diffuser:
         raise AssertionError(
             "Full/diffuser sets lengthsMs alongside steps/totalMs/distribution, "
             "which are mutually exclusive"
         )
+    assert_keys(diffuser, fields["diffuser"], "Full/diffuser")
+    assert_keys(diffuser["step"], fields["step"], "Full/diffuser/step")
     assert_keys(
-        diffuser,
-        {"type", "steps", "totalMs", "distribution", "step", "stepOverrides"},
-        "Full/diffuser",
-    )
-    assert_keys(
-        diffuser["step"],
-        {"delayStrategy", "mix", "shuffle", "polarity", "modulation"},
-        "Full/diffuser/step",
-    )
-    assert_keys(
-        diffuser["step"]["modulation"], MODULATION_KEYS, "Full/diffuser/step/modulation"
+        diffuser["step"]["modulation"],
+        fields["modulation"],
+        "Full/diffuser/step/modulation",
     )
     if not diffuser["stepOverrides"]:
         raise AssertionError("Full/diffuser/stepOverrides is empty")
     for override in diffuser["stepOverrides"]:
         assert_keys(
-            override,
-            {"index", "delayStrategy", "mix", "shuffle", "polarity", "modulation"},
-            "Full/diffuser/stepOverrides[]",
+            override, fields["step_override"], "Full/diffuser/stepOverrides[]"
         )
         assert_keys(
             override["modulation"],
-            MODULATION_KEYS,
+            fields["modulation"],
             "Full/diffuser/stepOverrides[]/modulation",
         )
 
+    assert_keys(feedback_loop, fields["feedback_loop"], "Full/feedback-loop")
     assert_keys(
-        feedback_loop,
-        {
-            "type",
-            "delayMinMs",
-            "delayMaxMs",
-            "delayStrategy",
-            "rt60Sec",
-            "decayMargin",
-            "mix",
-            "gainMode",
-            "silenceFloorDb",
-            "damping",
-            "modulation",
-        },
-        "Full/feedback-loop",
+        feedback_loop["damping"], fields["damping"], "Full/feedback-loop/damping"
     )
     assert_keys(
-        feedback_loop["damping"],
-        {"highRatio", "highHz", "lowRatio", "lowHz"},
-        "Full/feedback-loop/damping",
-    )
-    assert_keys(
-        feedback_loop["modulation"], MODULATION_KEYS, "Full/feedback-loop/modulation"
+        feedback_loop["modulation"], fields["modulation"], "Full/feedback-loop/modulation"
     )
 
     # select is the only Downmix strategy with additional applicable
@@ -148,14 +163,7 @@ def check_full_field_coverage(full):
     # them outright, so a shape richer in fields calls for select here.
     assert_keys(
         downmix,
-        {
-            "type",
-            "strategy",
-            "leftChannel",
-            "rightChannel",
-            "normalisation",
-            "widthDeg",
-        },
+        fields["downmix"] | fields["downmix_select_only"] | fields["downmix_stage_only"],
         "Full/downmix",
     )
     if downmix["strategy"] != "select":
@@ -165,24 +173,16 @@ def check_full_field_coverage(full):
         )
 
     early = composition["early"]
-    assert_keys(
-        early,
-        {"enabled", "levelDb", "decayDbPerSec", "taps", "downmix"},
-        "Full/early",
-    )
+    assert_keys(early, fields["early"], "Full/early")
     if not early["taps"]:
         raise AssertionError("Full/early/taps is empty")
     for tap in early["taps"]:
-        assert_keys(tap, {"stepIndex", "gainDb"}, "Full/early/taps[]")
+        assert_keys(tap, fields["early_tap"], "Full/early/taps[]")
     # Early's own downmix defaults select to Channels 0/1 rather than
     # requiring them explicitly, so a non-select strategy here -- distinct
     # from the Main Downmix's select above -- demonstrates that field set
     # too, without leftChannel/rightChannel ambiguity either way.
-    assert_keys(
-        early["downmix"],
-        {"strategy", "normalisation", "widthDeg"},
-        "Full/early/downmix",
-    )
+    assert_keys(early["downmix"], fields["downmix"], "Full/early/downmix")
     if early["downmix"]["strategy"] == "select":
         raise AssertionError(
             "Full/early/downmix should use a non-select strategy to cover the "
@@ -242,12 +242,14 @@ def main():
     fixture = Path(sys.argv[2])
     templates_dir = Path(sys.argv[3])
     workspace = Path(sys.argv[4])
-    workspace.mkdir(parents=True, exist_ok=True)
+    config_json_path = Path(sys.argv[5])
+    shutil.rmtree(workspace, ignore_errors=True)
+    workspace.mkdir(parents=True)
 
     templates = {name: load(templates_dir, name) for name in TEMPLATE_NAMES}
 
     check_shapes(templates)
-    check_full_field_coverage(templates["full"])
+    check_full_field_coverage(templates["full"], load_parser_fields(config_json_path))
 
     for name in TEMPLATE_NAMES:
         output_dir = workspace / name

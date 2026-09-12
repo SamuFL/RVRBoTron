@@ -90,8 +90,26 @@
   function loadTemplate(key, loadedMessage) {
     templateRequestId += 1;
     var requestId = templateRequestId;
+    // The confirmation prompt (or its absence, when nothing is at risk)
+    // only accounts for edits that already existed when this load began.
+    // Typing during the fetch itself -- brief, but real on a slow
+    // loopback connection or a large template -- gets nothing to compare
+    // against there, so it is checked again here: if the editor no longer
+    // reads the way it did when the request started, something changed
+    // out from under this load, and applying the fetched text would
+    // silently discard it without ever asking.
+    var textBeforeFetch = getRequestText();
     fetchTemplateText(key).then(function (text) {
       if (requestId !== templateRequestId) { return; }
+      if (getRequestText() !== textBeforeFetch) {
+        templateSelect.value = activeTemplateKey;
+        say(
+          "Not loading the " + TEMPLATE_LABELS[key] +
+            " template: the request text changed while it was loading.",
+          "error"
+        );
+        return;
+      }
       applyTemplate(key, text);
       say(loadedMessage || ("Loaded the " + TEMPLATE_LABELS[key] + " template."), "ok");
     }).catch(function (error) {

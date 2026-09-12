@@ -436,4 +436,5 @@ add_test(
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
     ${CMAKE_SOURCE_DIR}/tools/research_bench/static/templates
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-templates-contract
+    ${CMAKE_SOURCE_DIR}/src/cli/ConfigJson.cpp
 )
