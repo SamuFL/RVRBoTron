@@ -19,6 +19,10 @@ from pathlib import Path
 
 TEMPLATE_NAMES = ("simple", "full", "modulated", "spatial")
 
+# ModulationConfig's fields (include/rvrbotron/config/ReverbConfig.h),
+# identical whether attached to a Diffusion Step or a Feedback Loop.
+MODULATION_KEYS = {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"}
+
 
 def load(templates_dir, name):
     return json.loads((templates_dir / f"{name}.json").read_text())
@@ -97,9 +101,7 @@ def check_full_field_coverage(full):
         "Full/diffuser/step",
     )
     assert_keys(
-        diffuser["step"]["modulation"],
-        {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"},
-        "Full/diffuser/step/modulation",
+        diffuser["step"]["modulation"], MODULATION_KEYS, "Full/diffuser/step/modulation"
     )
     if not diffuser["stepOverrides"]:
         raise AssertionError("Full/diffuser/stepOverrides is empty")
@@ -111,7 +113,7 @@ def check_full_field_coverage(full):
         )
         assert_keys(
             override["modulation"],
-            {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"},
+            MODULATION_KEYS,
             "Full/diffuser/stepOverrides[]/modulation",
         )
 
@@ -138,9 +140,7 @@ def check_full_field_coverage(full):
         "Full/feedback-loop/damping",
     )
     assert_keys(
-        feedback_loop["modulation"],
-        {"depthMs", "rateHz", "shape", "channelFraction", "interpolation"},
-        "Full/feedback-loop/modulation",
+        feedback_loop["modulation"], MODULATION_KEYS, "Full/feedback-loop/modulation"
     )
 
     # select is the only Downmix strategy with additional applicable

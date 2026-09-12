@@ -63,6 +63,14 @@
   var lastRenderedText = null;
   var activeTemplateKey = "simple";
 
+  // Bumped by every loadTemplate call, and captured per call as
+  // requestId: a fetch whose id no longer matches this counter when it
+  // resolves has been superseded by a later load (the user switching
+  // again before the first fetch settles, or startup's own load losing
+  // to an early click) and applies nothing, so an out-of-order response
+  // can never silently overwrite a more recent selection.
+  var templateRequestId = 0;
+
   function fetchTemplateText(key) {
     return fetch(api("/templates/" + key + ".json")).then(function (response) {
       if (!response.ok) {
@@ -79,15 +87,24 @@
     templateSelect.value = key;
   }
 
+  function loadTemplate(key, loadedMessage) {
+    templateRequestId += 1;
+    var requestId = templateRequestId;
+    fetchTemplateText(key).then(function (text) {
+      if (requestId !== templateRequestId) { return; }
+      applyTemplate(key, text);
+      say(loadedMessage || ("Loaded the " + TEMPLATE_LABELS[key] + " template."), "ok");
+    }).catch(function (error) {
+      if (requestId !== templateRequestId) { return; }
+      templateSelect.value = activeTemplateKey;
+      say(String(error.message || error), "error");
+    });
+  }
+
   // Startup always loads Simple fresh over the network, never from a
   // cache, cookie, or local storage -- reloading the page is the only
   // reset this bench has, and it must actually reset (issue #140).
-  fetchTemplateText("simple").then(function (text) {
-    applyTemplate("simple", text);
-    say("Loaded the Simple template. Choose an Audition source to begin.");
-  }).catch(function (error) {
-    say(String(error.message || error), "error");
-  });
+  loadTemplate("simple", "Loaded the Simple template. Choose an Audition source to begin.");
 
   templateSelect.addEventListener("change", function () {
     var key = templateSelect.value;
@@ -100,13 +117,7 @@
       templateSelect.value = activeTemplateKey;
       return;
     }
-    fetchTemplateText(key).then(function (text) {
-      applyTemplate(key, text);
-      say("Loaded the " + TEMPLATE_LABELS[key] + " template.", "ok");
-    }).catch(function (error) {
-      templateSelect.value = activeTemplateKey;
-      say(String(error.message || error), "error");
-    });
+    loadTemplate(key);
   });
 
   // Every message is assigned as text, never as markup: filenames,

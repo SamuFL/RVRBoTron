@@ -189,8 +189,16 @@ def main():
         if re.search(r"<script(?![^>]*\ssrc=)[^>]*>\s*\S", text) or "<style" in text:
             raise AssertionError("page carries inline script or style the policy forbids")
 
-        # Every asset the page references must actually be served.
-        assets = re.findall(r'(?:src|href)="([^"]+)"', text)
+        # Every same-origin asset the page references must actually be
+        # served. The field-reference hint's own href (issue #140) is a
+        # plain external hyperlink a researcher's own click navigates to
+        # -- never fetched by the bench itself -- so it is exempt here,
+        # not a same-origin asset the bench forgot to serve.
+        assets = [
+            asset
+            for asset in re.findall(r'(?:src|href)="([^"]+)"', text)
+            if not asset.startswith(("http://", "https://"))
+        ]
         if not any(asset.startswith("bench.js") for asset in assets):
             raise AssertionError(f"page does not load its script: {assets}")
         for asset in assets:
@@ -271,7 +279,7 @@ def main():
         script_text = script_body.decode("utf-8")
         if '"/templates/" + key + ".json"' not in script_text:
             raise AssertionError("script does not fetch templates by name")
-        if 'fetchTemplateText("simple")' not in script_text:
+        if 'loadTemplate("simple"' not in script_text:
             raise AssertionError("startup does not load the Simple template")
         if "window.confirm(" not in script_text:
             raise AssertionError("template switch has no confirmation guard")
