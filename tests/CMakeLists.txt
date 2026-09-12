@@ -25,6 +25,17 @@ target_compile_features(test_mix_matrix_resolution PRIVATE cxx_std_17)
 
 add_test(NAME mix_matrix_resolution COMMAND test_mix_matrix_resolution)
 
+# A stand-in renderer for the Research bench hardening contract (issue
+# #139): a real compiled executable, not a script, because serve.py
+# launches --renderer directly and Windows' CreateProcess cannot run a
+# script through its shebang line the way a POSIX exec can.
+add_executable(fake_renderer
+  fixtures/fake_renderer.cpp
+)
+
+target_link_libraries(fake_renderer PRIVATE nlohmann_json::nlohmann_json)
+target_compile_features(fake_renderer PRIVATE cxx_std_17)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 if(RVRBOTRON_SAMPLE_DOUBLE)
@@ -388,9 +399,29 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-contract
     ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/matrix
     ${CMAKE_SOURCE_DIR}/tools/research_bench/static/vendor/ace/VENDORING.md
+    ${RVRBOTRON_TEST_SAMPLE_BITS}
 )
 
 # The test drives a live server it starts itself. If the launcher ever hangs
 # before printing its banner, bound the wait here rather than at CTest's
 # 25-minute default.
 set_tests_properties(research_bench_contract PROPERTIES TIMEOUT 180)
+
+add_test(
+  NAME research_bench_hardening_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_research_bench_hardening_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/serve.py
+    $<TARGET_FILE:fake_renderer>
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/research-bench-hardening-contract
+)
+
+# Several cases drive a deliberately slow fake render, and the suite
+# launches its own bench server seven separate times -- each paying full
+# process-spawn and startup-probe cost. That cost is small locally but far
+# from it on CI: research_bench_contract's own process-spawn overhead
+# alone went from well under a second locally to 35+ seconds on a loaded
+# macOS runner. Budget generously rather than at CTest's 25-minute default.
+set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 450)
