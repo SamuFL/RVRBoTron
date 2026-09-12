@@ -394,3 +394,18 @@ add_test(
 # before printing its banner, bound the wait here rather than at CTest's
 # 25-minute default.
 set_tests_properties(research_bench_contract PROPERTIES TIMEOUT 180)
+
+add_test(
+  NAME research_bench_hardening_contract
+  COMMAND
+    ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_research_bench_hardening_cli.py
+    ${CMAKE_SOURCE_DIR}/tools/research_bench/serve.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fake_renderer.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/audio/impulse-mono-pcm16-48000.wav
+    ${CMAKE_CURRENT_BINARY_DIR}/research-bench-hardening-contract
+)
+
+# Several cases drive a deliberately slow fake render (issue #139); bound
+# the whole run well under CTest's 25-minute default rather than at it.
+set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 120)

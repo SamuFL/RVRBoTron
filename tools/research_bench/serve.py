@@ -93,11 +93,18 @@ PROBE_TIMEOUT_SECONDS = 30
 class BenchError(Exception):
     """A failure to report to the page as text, never as markup."""
 
-    def __init__(self, reason, category="bench_error", location=None):
+    def __init__(
+        self,
+        reason,
+        category="bench_error",
+        location=None,
+        status=HTTPStatus.BAD_REQUEST,
+    ):
         super().__init__(reason)
         self.reason = reason
         self.category = category
         self.location = location
+        self.status = status
 
     def payload(self):
         body = {"category": self.category, "reason": self.reason}
@@ -272,6 +279,12 @@ class Session:
         self.source_name = None
         self.result_dir = None
         self.render_count = 0
+        # Guards active_process, which a terminal-interruption handler on
+        # the main thread reads and kills while a renderer call (on a
+        # worker thread) still owns it -- separate from the lock above,
+        # which only ever one thread holds at a time.
+        self.process_lock = threading.Lock()
+        self.active_process = None
 
     def resolve_within(self, path):
         """Guard every temporary path against escaping the session root."""
@@ -308,7 +321,7 @@ class Session:
         request_path = self.resolve_within(render_dir.parent / "request.json")
         request_path.write_bytes(request_text)
 
-        completed = subprocess.run(
+        completed = self._run_renderer(
             [
                 str(self.renderer),
                 "render",
@@ -320,9 +333,7 @@ class Session:
                 str(render_dir),
                 "--error-format",
                 "json",
-            ],
-            capture_output=True,
-            text=True,
+            ]
         )
         if completed.returncode != 0:
             # A failed render leaves the previous playable result alone.
@@ -330,6 +341,18 @@ class Session:
             raise renderer_failure(completed.stderr)
 
         metadata = json.loads((render_dir / "render.json").read_text())
+        # The bench plays exactly what the renderer wrote (issue #128): a
+        # float64 build's output is a contract mismatch, not something to
+        # transcode. Caught here, from the renderer's own metadata, rather
+        # than by inspecting the WAV bytes it just wrote.
+        if metadata.get("samplePrecision") == "float64":
+            shutil.rmtree(render_dir, ignore_errors=True)
+            raise BenchError(
+                "the renderer produced float64 output, which the bench "
+                "does not play or transcode. Point --renderer at the "
+                "repository's default float32 build.",
+                category="unsupported_output",
+            )
         previous = self.result_dir
         self.result_dir = render_dir
         if previous is not None and previous != render_dir:
@@ -344,6 +367,43 @@ class Session:
             "durationSeconds": round(frames / sample_rate, 3),
         }
 
+    def _run_renderer(self, arguments):
+        """subprocess.run, but with the live process reachable for a kill.
+
+        Exposing the Popen object between start and completion is the only
+        difference from subprocess.run: terminate_active_render (issue
+        #139) needs it to end a renderer that is still running when the
+        launcher is interrupted, rather than leaving it as an orphan.
+        """
+        process = subprocess.Popen(
+            arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        with self.process_lock:
+            self.active_process = process
+        try:
+            stdout, stderr = process.communicate()
+        finally:
+            with self.process_lock:
+                self.active_process = None
+        return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+
+    def terminate_active_render(self):
+        """End whatever renderer child is running; a no-op if none is.
+
+        Terminal interruption must not leave a renderer process behind
+        (issue #139): there is no queue or timeout to wait it out instead.
+        """
+        with self.process_lock:
+            process = self.active_process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
     def read_output(self):
         """The newest result's bytes, read while the lock is held.
 
@@ -357,6 +417,7 @@ class Session:
             return path.read_bytes() if path.exists() else None
 
     def close(self):
+        self.terminate_active_render()
         shutil.rmtree(self.root, ignore_errors=True)
 
 
@@ -484,6 +545,25 @@ def build_handler(session, token, port, static_files):
             else:
                 self._reject(HTTPStatus.NOT_FOUND, "no such route")
 
+        def _exclusive(self, action):
+            """Run one state-mutating action at a time; reject, never queue.
+
+            Issue #139 rules out a render queue, parallel execution, and
+            waiting out a timeout: a Source or Render request that arrives
+            while another is still in flight is refused immediately,
+            matching the Render button the page disables meanwhile.
+            """
+            if not session.lock.acquire(blocking=False):
+                raise BenchError(
+                    "another action is already running; wait for it to finish",
+                    category="busy",
+                    status=HTTPStatus.CONFLICT,
+                )
+            try:
+                return action()
+            finally:
+                session.lock.release()
+
         def do_POST(self):
             if not self._authorized():
                 self._reject(HTTPStatus.FORBIDDEN, "not authorized")
@@ -492,22 +572,20 @@ def build_handler(session, token, port, static_files):
             try:
                 if route == "/api/source":
                     data = self._body(MAX_SOURCE_BYTES, "the Audition source")
-                    with session.lock:
-                        facts = session.store_source(
+                    facts = self._exclusive(
+                        lambda: session.store_source(
                             data, self.headers.get("X-Source-Filename", "")
                         )
+                    )
                     self._send_json(HTTPStatus.OK, facts)
                 elif route == "/api/render":
                     text = self._body(MAX_REQUEST_BYTES, "the request")
-                    # One render at a time: the lock also keeps the newest
-                    # successful result from being swapped mid-download.
-                    with session.lock:
-                        facts = session.render(text)
+                    facts = self._exclusive(lambda: session.render(text))
                     self._send_json(HTTPStatus.OK, facts)
                 else:
                     self._reject(HTTPStatus.NOT_FOUND, "no such route")
             except BenchError as error:
-                self._send_json(HTTPStatus.BAD_REQUEST, error.payload())
+                self._send_json(error.status, error.payload())
 
         def _reject_method(self):
             """The bench has no route that answers PUT, DELETE, or PATCH.
@@ -579,6 +657,10 @@ def main(argv=None):
         webbrowser.open(url)
 
     def shutdown(*_):
+        # Kill any renderer in flight before waiting on it: server.shutdown
+        # only stops accepting new requests, and would otherwise sit behind
+        # a worker thread that is itself sitting in process.communicate().
+        session.terminate_active_render()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
