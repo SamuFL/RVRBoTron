@@ -16,12 +16,6 @@ EarlyReflections::EarlyReflections(const ResolvedEarlyReflections& config)
     throw std::invalid_argument(
         "EarlyReflections requires at least one resolved tap");
   }
-  // Every tap shares this object's one accumulator (docs/design/reverb/
-  // stages/07-early-reflections.md's "Early envelope": taps are shaped
-  // and summed into a single N-Channel frame before Downmix), so
-  // accumulator_ must already be sized and stable before taps_ captures
-  // its data() pointer -- both true here, since accumulator_ is
-  // constructed above and never resized afterward.
   taps_.reserve(config.taps.size());
   for (const auto& tap : config.taps) {
     taps_.push_back(
@@ -56,10 +50,6 @@ bool EarlyReflections::enabled() const noexcept {
 }
 
 std::size_t EarlyReflections::ownedBytes() const noexcept {
-  // downmix_ is embedded by value, so its own in-place storage is already
-  // part of sizeof(*this); downmix_.ownedStorageBytes() adds only its
-  // backing-vector allocations, not a second sizeof(Downmix) (issue #111,
-  // see Downmix::ownedStorageBytes()'s own declaration).
   return sizeof(*this) + downmix_.ownedStorageBytes() +
          ownedVectorBytes(accumulator_) + ownedVectorBytes(taps_);
 }

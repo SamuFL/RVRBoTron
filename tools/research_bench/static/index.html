@@ -3,10 +3,6 @@
 <head>
 <meta charset="utf-8">
 <title>RVRBoTron Research Bench</title>
-<!-- The script and style are same-origin files, not inline: the bench's
-     script-src stays 'self' with no inline exception (style-src allows
-     'unsafe-inline' only for Ace's own runtime CSS injection -- see
-     vendor/ace/VENDORING.md). __BENCH_TOKEN__ is replaced at startup. -->
 <link rel="stylesheet" href="bench.css?token=__BENCH_TOKEN__">
 </head>
 <body>
@@ -32,12 +28,6 @@
       <option value="spatial">Spatial</option>
     </select>
   </div>
-  <!-- The templates are executable documentation (issue #140), not this
-       field reference: every value they accept, and what it defaults to,
-       stays in one place rather than duplicated here. A plain hyperlink,
-       not a served local route: the bench binds loopback and serves
-       nothing under docs/, and CSP's fetch/script/style restrictions
-       never apply to a user's own top-level navigation from a click. -->
   <p class="hint">
     Full field reference:
     <a href="https://github.com/SamuFL/RVRBoTron/blob/develop/docs/guides/configure-the-composition.md"

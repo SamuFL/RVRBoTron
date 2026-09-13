@@ -65,11 +65,6 @@ def main():
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
 
-    # N=2, delayStrategy "even" throughout (deterministic, no
-    # positional-random draws) so the Feedback Loop's resolved delays are
-    # hand-derivable exactly as in test_feedback_loop_cli.py, and are
-    # identical to a loop-only render's -- proving loop time is unaffected
-    # by the Diffuser placed in front of it.
     loop_only_request = {
         "formatVersion": 2,
         "seed": 7,

@@ -44,13 +44,6 @@ def main():
     shutil.rmtree(workspace, ignore_errors=True)
     workspace.mkdir(parents=True)
 
-    # A millisecond-scale tracer catalog: N=2, delayStrategy "even" (see
-    # test_feedback_loop_cli.py), delays 1/2 ms -- fast enough for CI while
-    # still exercising a Damping-enabled Feedback Loop composition. One
-    # two-value axis (high-ratio) plus one one-value axis (low-corner, which
-    # overrides two fields together the way damping_sweep_v1.json's own
-    # low-corner axis does), so the sweep produces exactly three points:
-    # reference, high-ratio/strong, low-corner/100Hz.
     reference = {
         "formatVersion": 2,
         "seed": 7,
@@ -164,9 +157,6 @@ def main():
     if output_dir.exists():
         raise AssertionError("a skipped sweep unexpectedly created output")
 
-    # An unpulled Git LFS pointer (present on disk, but pointer text rather
-    # than audio) is likewise skipped, not failed, with its own distinct
-    # explanation.
     lfs_pointer = workspace / "lfs-pointer.wav"
     lfs_pointer.write_bytes(
         b"version https://git-lfs.github.com/spec/v1\n"
@@ -185,8 +175,6 @@ def main():
     if output_dir.exists():
         raise AssertionError("a skipped (LFS pointer) sweep unexpectedly created output")
 
-    # A sample that exists locally but is not a readable WAV file fails
-    # cleanly with an explanatory message, not an unhandled traceback.
     invalid_wav = workspace / "invalid.wav"
     invalid_wav.write_bytes(b"not a wav file at all")
     invalid = run_sweep(invalid_wav)
@@ -427,12 +415,6 @@ def main():
         if expected not in report_html:
             raise AssertionError(f"listening report is missing {expected!r}")
 
-    # The central reporting rule from #79/ADR-0004: a >10% Reference-band
-    # deviation is flagged as significant, never treated as a failure.
-    # high-ratio/strong (highRatio 0.2) genuinely produces
-    # significantDeviation: true against this tracer's rt60Sec -- verified
-    # via its own published tail-v2.json, not assumed -- so this is a real
-    # exercise of the flag, not a fixture that merely claims to be one.
     if outcome(report, "high-ratio/strong")["status"] != "completed":
         raise AssertionError(
             "a significant Reference-band deviation incorrectly failed the "

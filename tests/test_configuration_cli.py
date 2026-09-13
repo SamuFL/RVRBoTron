@@ -40,10 +40,6 @@ def read_float_wav(path: Path):
 
 
 def write_float32_wav(path: Path, sample_rate: int, channels: int, samples):
-    # A minimal canonical IEEE float32 RIFF/WAVE file -- the renderer's
-    # own accepted input format, mirroring tests/fixtures/
-    # generate_wav_matrix.py's make_wav rather than introducing a second
-    # WAV-writing convention.
     audio = struct.pack("<" + "f" * len(samples), *samples)
     bytes_per_sample = 4
     block_align = channels * bytes_per_sample
@@ -68,11 +64,6 @@ def deinterleave(channels: int, samples):
 
 
 def zero_lag_correlation(a, b):
-    # The repository's canonical Output correlation: an uncentered
-    # normalized zero-lag dot product (tools/analyze_diffusion.py's
-    # correlation_evidence, lines 123-131), not Pearson correlation --
-    # impulse responses generally have nonzero mean, so centering first
-    # would report a different quantity.
     numerator = math.fsum(x * y for x, y in zip(a, b))
     denominator = math.sqrt(
         math.fsum(x * x for x in a) * math.fsum(y * y for y in b)
@@ -83,11 +74,6 @@ def zero_lag_correlation(a, b):
 
 
 def halves_row(channels, left_group):
-    # `halves` (#110): the first ceil(N/2) Channels map left, the
-    # remainder maps right, each group using equal 1/sqrt(groupSize)
-    # coefficients -- an independent Python re-derivation of
-    # src/config/ResolveConfig.cpp's halvesRow, for comparing against the
-    # rendered resolved.json rather than reusing that C++ code.
     row = [0.0] * channels
     left_count = (channels + 1) // 2
     begin, end = (0, left_count) if left_group else (left_count, channels)
@@ -98,9 +84,6 @@ def halves_row(channels, left_group):
 
 
 def alternating_row(channels, left_group):
-    # `alternating` (#110): even Channel indices map left, odd indices
-    # map right, each group using equal 1/sqrt(groupSize) coefficients --
-    # an independent Python re-derivation of alternatingRow.
     row = [0.0] * channels
     first = 0 if left_group else 1
     indices = list(range(first, channels, 2))
@@ -119,12 +102,6 @@ def inter_channel_level_difference_db(left, right):
 
 
 def width_matrix(width_deg):
-    # Width's resolved 2x2 mid/side matrix (#109, docs/design/reverb/
-    # stages/08-downmix.md's "Width as a constant-power mid/side law") --
-    # an independent Python re-derivation of resolveWidthMatrix, for
-    # comparing against the rendered resolved.json rather than reusing
-    # that C++ code. Exact endpoints at 0/90/180 degrees, matching the
-    # production resolver's own bypass of the general trig formula there.
     half = 1.0 / math.sqrt(2.0)
     if width_deg == 0.0:
         return [half, half, half, half]
@@ -141,9 +118,6 @@ def width_matrix(width_deg):
 
 
 def dft_power_spectrum(samples):
-    # A direct O(n^2) DFT is fine here: fixtures below are a few dozen
-    # samples (a millisecond-scale Diffuser response), not a signal this
-    # test suite needs FFT-scale performance for.
     n = len(samples)
     power = []
     for k in range(n // 2 + 1):
@@ -160,22 +134,11 @@ def dft_power_spectrum(samples):
 
 
 def sum_all_row(channels):
-    # `sum-all` (#114): equal `1/sqrt(channels)` coefficients over every
-    # Channel, the same row duplicated to both L and R -- an independent
-    # Python re-derivation of src/config/ResolveConfig.cpp's sumAllRow,
-    # for comparing against the rendered resolved.json rather than
-    # reusing that C++ code.
     coefficient = 1.0 / math.sqrt(channels)
     return [coefficient] * channels
 
 
 def alignment_score(channel_frames, activity_floor_db=-120.0):
-    # Alignment score (#114, CONTEXT.md's "pairwise overlap of active
-    # arrival times between Channels, measured independently of amplitude
-    # sign") -- an independent Python re-derivation of
-    # tools/analyze_diffusion.py's alignment_evidence/activity_floor,
-    # given per-Channel sample lists (e.g. a deinterleaved Diffusion Step
-    # capture) rather than a NumPy array.
     peak = max(
         (abs(value) for samples in channel_frames for value in samples),
         default=0.0,
@@ -203,10 +166,6 @@ def alignment_score(channel_frames, activity_floor_db=-120.0):
 
 
 def mono_fold_down_evidence(left, right):
-    # Equal-power mono fold-down (docs/design/reverb/stages/08-downmix.md:
-    # "mono = (L + R) / sqrt(2)"), reporting folded energy relative to
-    # stereo energy so cancellation is visible without an acoustic
-    # rejection threshold (#114).
     half = 1.0 / math.sqrt(2.0)
     mono = [(l + r) * half for l, r in zip(left, right)]
     mono_energy = math.fsum(v * v for v in mono)
@@ -226,10 +185,6 @@ def mono_fold_down_evidence(left, right):
 
 
 def peak_factor(samples):
-    # A crest-factor-style "peak factor" (#114): peak absolute sample over
-    # RMS amplitude, comparable between a coherent `sum-all` render and its
-    # matched `select` control -- coherent reinforcement raises peaks
-    # relative to RMS.
     if not samples:
         return 0.0
     peak = max(abs(value) for value in samples)
@@ -241,17 +196,6 @@ OCTAVE_BAND_START_HZ = 20.0
 
 
 def octave_band_powers(power, sample_rate, fft_length):
-    # Groups a raw per-bin power spectrum (dft_power_spectrum's own
-    # output: bin k at k * sample_rate / fft_length Hz) into full-octave
-    # bands centered at 20 Hz * 2**band, so a comparison between two
-    # spectra is a stable, perceptually-grouped quantity rather than one
-    # that depends on the raw per-bin FFT resolution (issue #114's PR
-    # review: "the resulting max/RMS values therefore depend on FFT
-    # length"). One octave wide rather than tools/analyze_diffusion.py's
-    # twelfth-octave Coloration curve -- an independent Python
-    # re-derivation of that same idea, for this stdlib-only test file,
-    # at the coarser band width docs/design/reverb/stages/08-downmix.md
-    # itself names ("octave-band spectral deviation").
     nyquist = sample_rate / 2.0
     bands = []
     band = 0
@@ -273,12 +217,6 @@ def octave_band_powers(power, sample_rate, fft_length):
 
 
 def spectral_deviation_evidence(left, right, aggregate_source_power, sample_rate):
-    # Octave-band spectral deviation of the downmixed L/R power spectra
-    # against the same N-Channel source's aggregate power spectrum
-    # (docs/design/reverb/stages/08-downmix.md's "Mono compatibility"
-    # section and issue #114's own evidence requirement) -- the same
-    # comparison the orthogonal-rows fixture above makes, factored out
-    # for reuse by the sum-all/select matched comparison below.
     fft_length = len(left)
     left_power = dft_power_spectrum(left)
     right_power = dft_power_spectrum(right)
@@ -943,8 +881,6 @@ def main():
         raise AssertionError("Downmix ablation did not round-trip")
     if ablation_stages[2]["compensation"] != 1.0:
         raise AssertionError("Downmix none normalisation compensated select")
-    # An omitted rightChannel duplicates leftChannel to mono (issue #107),
-    # covering the "one selected Channel" acceptance scenario at N=4.
     if "rightChannel" in ablation_stages[2]:
         raise AssertionError(
             f"omitted rightChannel did not stay omitted: {ablation_stages[2]}"
@@ -982,11 +918,6 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved ablations changed output")
 
-    # Uniform-random deliberately samples with replacement, so it tolerates a
-    # step budget (1 sample, 2 positions) far shorter than 4 Channels would
-    # ever need for segmented-random or even -- and this seed/budget/Channel
-    # combination is independently known (see docs/adr/0002) to draw the
-    # same position twice.
     uniform_random_request = workspace / "uniform-random-request.json"
     uniform_random_result = workspace / "uniform-random-result"
     uniform_random_rerender = workspace / "uniform-random-rerender"
@@ -1211,11 +1142,6 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved Householder rerender changed output")
 
-    # RandomOrthogonal is seeded and dense, with no Haar-uniformity claim;
-    # this expected matrix is independently derived from the documented
-    # positional derivation (ADR 0002): fill [-1,1] with usage "MIXORTHO"
-    # (itemIndex = row, valueIndex = column), then Householder QR with the
-    # sign convention documented alongside `householderQrOrthogonalize`.
     random_orthogonal_request = workspace / "random-orthogonal-request.json"
     random_orthogonal_result = workspace / "random-orthogonal-result"
     random_orthogonal_rerender = workspace / "random-orthogonal-rerender"
@@ -1271,10 +1197,6 @@ def main():
     ][0]
     if random_orthogonal_step["mix"] != "random-orthogonal":
         raise AssertionError("random-orthogonal mix did not round-trip")
-    # Tolerance-based: Householder QR's sqrt makes the exact double result
-    # path-dependent on operation order, so an independently worked port of
-    # the documented algorithm can differ from the production result by a
-    # handful of ULPs while both remain correct.
     expected_random_orthogonal_2 = [
         [-0.042407822634498826, -0.9991003836348983],
         [0.9991003836348983, -0.042407822634498715],
@@ -1319,10 +1241,6 @@ def main():
     ).read_bytes():
         raise AssertionError("resolved RandomOrthogonal rerender changed output")
 
-    # A matrix of a given type is shared across steps unless an indexed
-    # override selects another type: step 0 keeps the shared Hadamard
-    # default, steps 1 and 2 both override to Householder and must resolve
-    # to the identical shared Householder(8) matrix.
     matrix_override_request = json.loads(reference_request.read_text())
     matrix_override_request["composition"]["stages"][1]["steps"] = 3
     matrix_override_request["composition"]["stages"][1]["totalMs"] = 3
@@ -1372,9 +1290,6 @@ def main():
             "Hadamard default"
         )
 
-    # RandomOrthogonal validation trusts the resolved coefficients' M M^T=I
-    # property, not the seeded construction that produced them: a
-    # hand-authored ablation may substitute any valid orthogonal matrix.
     substituted_random_orthogonal = json.loads(
         json.dumps(random_orthogonal_resolved)
     )
@@ -1507,9 +1422,6 @@ def main():
     ).read_bytes():
         raise AssertionError("single-Channel resolved rerender changed output")
 
-    # N=1 under the default `energy` normalisation (the ablation fixture
-    # above uses `none`) must resolve the documented 1/sqrt(2) mono
-    # duplication compensation, not the N>1 sqrt(N/2) formula.
     single_channel_energy_request = workspace / "single-channel-energy-request.json"
     single_channel_energy_result = workspace / "single-channel-energy-result"
     single_channel_energy_rerender = workspace / "single-channel-energy-rerender"
@@ -1572,10 +1484,6 @@ def main():
     ).read_bytes():
         raise AssertionError("N=1 energy-normalized resolved rerender changed output")
 
-    # A Feedback Loop source resolves the Main Downmix's Alignment
-    # expectation as "unaligned" (Composition wiring, not Requested
-    # configuration, decides this -- issue #107), covering the "unaligned
-    # Feedback Loop input" acceptance scenario with two selected Channels.
     feedback_loop_downmix_request = workspace / "feedback-loop-downmix-request.json"
     feedback_loop_downmix_result = workspace / "feedback-loop-downmix-result"
     feedback_loop_downmix_request.write_text(
@@ -1661,12 +1569,6 @@ def main():
     ).read_bytes():
         raise AssertionError("unaligned Feedback Loop resolved rerender changed output")
 
-    # A non-default Channel pair (2/3 of N=4, rather than the legacy 0/1)
-    # must actually drive the DSP: capture the N-Channel signal entering
-    # the Downmix and verify output.wav reads exactly Channels 2 and 3 of
-    # it, not the archived implicit pair -- a regression that silently
-    # kept reading Channels 0/1 would pass every other Downmix scenario
-    # above, since they all happen to select 0 (and 1).
     non_default_channel_request = workspace / "non-default-channel-request.json"
     non_default_channel_result = workspace / "non-default-channel-result"
     non_default_channel_request.write_text(
@@ -1748,15 +1650,6 @@ def main():
                 f"({expected_left}, {expected_right})"
             )
 
-    # orthogonal-rows (#108): the dense branch-specific RandomOrthogonal
-    # Main Downmix. Two N values, each a Diffuser-only fixed-total-power
-    # fixture (Split's own energy normalisation keeps per-Channel power at
-    # 1/N of the fixed impulse energy, matching the design's expected-power
-    # fixture), captured with --capture-stages all so the N-Channel signal
-    # entering the Downmix is available for spectral evidence. Expected
-    # level and Output correlation are measured on a separate same-N
-    # Feedback-Loop (unaligned) render instead -- see the comment further
-    # below, at the point that second render is built.
     orthogonal_rows_energy_by_channels = {}
     for orthogonal_rows_channels in (4, 8):
         orthogonal_request_path = workspace / (
@@ -1915,19 +1808,6 @@ def main():
             orthogonal_rows_channels, diffusion_samples
         )
 
-        # Expected level independence and Output correlation are defined
-        # over seeded *unaligned* fixtures (docs/design/reverb/stages/
-        # 08-downmix.md: "Tests use seeded unaligned fixtures" and the
-        # Invariants section's "Expected level independence"), so those
-        # two are measured on a same-N, same-strategy Feedback-Loop
-        # (unaligned) render rather than the Diffuser-only (aligned)
-        # render above -- an aligned source's shared onset would let
-        # correlated interference confound both measurements. Spectral
-        # evidence stays on the aligned render above: the diffusion-step
-        # capture it depends on has no Feedback-Loop equivalent (see
-        # dsp::StageCaptureBoundary, which only captures split/
-        # diffusion-step boundaries), and the "Spectral evidence"
-        # invariant does not itself specify unaligned input.
         orthogonal_unaligned_request_path = workspace / (
             f"orthogonal-rows-{orthogonal_rows_channels}-unaligned-"
             f"request.json"
@@ -1970,11 +1850,6 @@ def main():
             2, unaligned_output_samples
         )
 
-        # Expected level: total downmix output energy, compared across N
-        # below (compensation is designed to keep it roughly independent of
-        # N under this fixed-total-power fixture -- an expected-power
-        # contract, not exact per-instance equality; see issue #108 and
-        # docs/design/reverb/stages/08-downmix.md).
         output_energy = math.fsum(
             v * v for v in unaligned_left
         ) + math.fsum(v * v for v in unaligned_right)
@@ -1982,10 +1857,6 @@ def main():
             output_energy
         )
 
-        # Output correlation: finite and within the mathematically valid
-        # range, reported rather than gated against an acoustic threshold
-        # (no universal pass/fail on decorrelation -- see the parent spec's
-        # Out of Scope).
         correlation = zero_lag_correlation(unaligned_left, unaligned_right)
         if not math.isfinite(correlation) or abs(correlation) > 1.0 + 1e-9:
             raise AssertionError(
@@ -1994,12 +1865,6 @@ def main():
                 f"{correlation}"
             )
 
-        # Spectral evidence: the downmixed L/R power spectra against the
-        # same N-Channel source's aggregate power spectrum, reported as
-        # max/RMS band deviation -- again exposed as evidence, not an
-        # acoustic pass/fail (docs/design/reverb/stages/08-downmix.md's own
-        # "Worth sweeping early" and Invariants sections). Measured on the
-        # aligned render (see the capture-boundary note above).
         aggregate_source_power = [0.0] * (len(left) // 2 + 1)
         for channel_samples in source_channels:
             channel_power = dft_power_spectrum(channel_samples)
@@ -2017,11 +1882,6 @@ def main():
                 f"{orthogonal_rows_channels}"
             )
 
-        # Persist the evidence this fixture exists to gather (issue #108,
-        # docs/design/reverb/stages/08-downmix.md's "Decorrelation
-        # evidence" and "Spectral evidence") -- otherwise it is computed
-        # and immediately discarded, leaving nothing for a human to read
-        # even though every threshold above is deliberately non-gating.
         orthogonal_evidence_path = workspace / (
             f"orthogonal-rows-{orthogonal_rows_channels}-evidence.json"
         )
@@ -2038,14 +1898,7 @@ def main():
             )
         )
 
-    # Expected-level independence across N (within a generous tolerance --
-    # an expected-power contract over a single seeded realization, not
-    # exact equality; see docs/design/reverb/stages/08-downmix.md).
     energies = list(orthogonal_rows_energy_by_channels.values())
-    # A silent Downmix (energies all 0.0) would otherwise pass the ratio
-    # check below vacuously -- 0.0 > 3.0 * 0.0 is false -- so require each
-    # seeded fixture to have actually produced a nonzero expected level
-    # before comparing their ratio across N.
     if any(energy <= 0.0 for energy in energies):
         raise AssertionError(
             f"orthogonal-rows output energy was not positive: "
@@ -2057,9 +1910,6 @@ def main():
             f"independent of N: {orthogonal_rows_energy_by_channels}"
         )
 
-    # normalisation: "none" omits only the common compensation scalar --
-    # rows stay the same unit-norm intrinsic rows as under "energy", but
-    # compensation and the effective rows collapse to 1.0/row itself.
     orthogonal_none_document = json.loads(orthogonal_request_path.read_text())
     orthogonal_none_document["composition"]["stages"][2][
         "normalisation"
@@ -2149,13 +1999,6 @@ def main():
         workspace / "orthogonal-rows-with-left-channel-result",
     )
 
-    # halves/alternating (#110): equal-coefficient disjoint Channel-group
-    # Main Downmixes. Diffuser-only (aligned) fixed-total-power fixtures at
-    # even and odd N verify row/compensation/replay and the "aligned"
-    # Alignment expectation; a same-N Feedback-Loop (unaligned) fixture
-    # supplies the expected-level/correlation/level-difference evidence
-    # (see the comment further below, at the point that render is built,
-    # for why) -- see docs/design/reverb/stages/08-downmix.md.
     group_strategies = {
         "halves": halves_row,
         "alternating": alternating_row,
@@ -2310,15 +2153,6 @@ def main():
                     f"at N={group_channels}: {output_channels}"
                 )
 
-            # Expected level independence and Output correlation are
-            # defined over seeded *unaligned* fixtures (docs/design/
-            # reverb/stages/08-downmix.md: "Tests use seeded unaligned
-            # fixtures" and the Invariants section's "Expected level
-            # independence"), so both are measured on a same-N,
-            # same-strategy Feedback-Loop (unaligned) render rather than
-            # the Diffuser-only (aligned) render above -- an aligned
-            # source's shared onset would let correlated interference
-            # confound both measurements.
             unaligned_document = json.loads(group_request_path.read_text())
             unaligned_document["composition"]["stages"][1] = {
                 "type": "feedback-loop",
@@ -2355,18 +2189,11 @@ def main():
             )
             left, right = deinterleave(2, unaligned_output_samples)
 
-            # Expected level: total downmix output energy, compared across
-            # N below (an expected-power contract, not exact per-instance
-            # equality; see issue #110 and
-            # docs/design/reverb/stages/08-downmix.md).
             output_energy = math.fsum(v * v for v in left) + math.fsum(
                 v * v for v in right
             )
             group_energy_by_channels[group_channels] = output_energy
 
-            # Output correlation and inter-channel level difference:
-            # finite and reported, not gated against an acoustic threshold
-            # (issue #110's "no universal pass/fail on decorrelation").
             correlation = zero_lag_correlation(left, right)
             level_difference_db = inter_channel_level_difference_db(
                 left, right
@@ -2415,10 +2242,6 @@ def main():
                 f"level-independent of N: {group_energy_by_channels}"
             )
 
-        # normalisation: "none" omits only the common compensation scalar
-        # -- rows stay the same unit-norm intrinsic rows as under
-        # "energy", but compensation and the effective rows collapse to
-        # 1.0/row itself.
         none_document = json.loads(group_request_path.read_text())
         none_document["composition"]["stages"][2]["normalisation"] = "none"
         none_request = workspace / f"{strategy_name}-none-request.json"
@@ -2504,19 +2327,6 @@ def main():
             workspace / f"{strategy_name}-with-left-channel-result",
         )
 
-    # `sum-all` (#114): the diagnostic Coherent Downmix ablation -- the
-    # same `1/sqrt(N)` row duplicated to both L and R. Unlike halves/
-    # alternating/orthogonal-rows, it supports N>=1 like `select`
-    # (docs/design/reverb/stages/08-downmix.md), so N=1 is exercised
-    # directly here rather than rejected. Each Diffuser-only (aligned) N
-    # fixture verifies rows/compensation/alignment/replay, an Alignment
-    # score measured on its own captured Diffusion Step, a Coherent
-    # Downmix ablation tag derived from strategy *and* resolved alignment
-    # together (never the strategy name alone), and mono fold-down/peak
-    # factor/spectral deviation evidence. N=4 also renders a matched
-    # `select` control to compare peak factor and spectral deviation as a
-    # non-fatal warning; the other N values instead demonstrate that the
-    # comparison is reported unavailable absent a control.
     for sum_all_channels in (1, 4, 8):
         sum_all_request_path = workspace / (
             f"sum-all-{sum_all_channels}-request.json"
@@ -2634,17 +2444,6 @@ def main():
                     f"{sum_all_downmix}"
                 )
 
-        # A Coherent Downmix ablation tag (issue #114): resolved.json's
-        # own `coherentDownmixAblation` field (production code --
-        # ResolveConfig.cpp's resolveCoherentDownmixAblation, derived from
-        # strategy *and* resolved Alignment together, never the strategy
-        # name alone) is asserted directly here, not re-derived from
-        # strategy/alignment inside the test, so this genuinely exercises
-        # the emitted artifact rather than a tautology. Given the
-        # strategy/alignment checks above already confirmed "sum-all"/
-        # "aligned", the field must be True; the matching Feedback-Loop
-        # fixture below confirms the *same* emitted field is False once
-        # the source is unaligned.
         if sum_all_downmix["coherentDownmixAblation"] is not True:
             raise AssertionError(
                 f"aligned sum-all's own coherentDownmixAblation field was "
@@ -2692,10 +2491,6 @@ def main():
         left, right = deinterleave(2, output_samples)
         source_channels = deinterleave(sum_all_channels, diffusion_samples)
 
-        # Alignment score (#114): measured on the captured Diffusion Step
-        # feeding this Downmix, independent of Downmix strategy itself --
-        # reported alongside the Alignment expectation above rather than
-        # conflated with it (CONTEXT.md's "Alignment score" entry).
         score = alignment_score(source_channels)
         if not (
             0.0 <= score["mean"] <= 1.0 and 0.0 <= score["minimum"] <= 1.0
@@ -2750,13 +2545,6 @@ def main():
             "spectralRmsDeviation": sum_all_rms_deviation,
         }
 
-        # A matched `select` control (issue #114): rendered from the same
-        # Diffuser-only Composition and seed, differing only in Downmix
-        # strategy, so peak factor and spectral deviation can be compared
-        # directly. Exercised once (N=4) to keep the render count
-        # bounded; the other N values instead demonstrate the AC's own
-        # "absent a control, the report states that comparison is
-        # unavailable".
         if sum_all_channels == 4:
             control_document = json.loads(sum_all_request_path.read_text())
             control_document["composition"]["stages"][2] = {
@@ -2843,11 +2631,6 @@ def main():
         evidence_path = workspace / f"sum-all-{sum_all_channels}-evidence.json"
         evidence_path.write_text(json.dumps(evidence, indent=2))
 
-    # normalisation: "none" omits only the common compensation scalar --
-    # rows stay the same unit-norm intrinsic rows as under "energy", but
-    # compensation and the effective rows collapse to 1.0/row itself
-    # (#114, matching orthogonal-rows/halves/alternating's own contract
-    # above). Uses the last loop iteration's N=8 fixture.
     sum_all_none_document = json.loads(sum_all_request_path.read_text())
     sum_all_none_document["composition"]["stages"][2]["normalisation"] = "none"
     sum_all_none_request = workspace / "sum-all-none-request.json"
@@ -2878,9 +2661,6 @@ def main():
             f"{sum_all_none_downmix}"
         )
 
-    # leftChannel/rightChannel are select-specific: providing either
-    # alongside sum-all is rejected, not silently ignored (#114, matching
-    # halves/alternating's own contract above).
     sum_all_with_left_channel_document = json.loads(
         (workspace / "sum-all-4-request.json").read_text()
     )
@@ -2907,14 +2687,6 @@ def main():
         workspace / "sum-all-with-left-channel-result",
     )
 
-    # sum-all through a Feedback Loop (#114): Alignment expectation is
-    # derived from Composition wiring, so a source that includes a
-    # Feedback Loop must resolve unaligned, and the same strategy name
-    # must then *not* be tagged as a Coherent Downmix ablation -- proving
-    # the tag is never derived from the strategy name alone. This
-    # unaligned fixture also supplies Output correlation and
-    # inter-channel level difference evidence (docs/design/reverb/
-    # stages/08-downmix.md: "Tests use seeded unaligned fixtures").
     sum_all_unaligned_request = workspace / "sum-all-unaligned-request.json"
     sum_all_unaligned_request.write_text(
         json.dumps(
@@ -2960,11 +2732,6 @@ def main():
             f"sum-all Feedback Loop Downmix did not resolve unaligned: "
             f"{sum_all_unaligned_downmix}"
         )
-    # The same emitted `coherentDownmixAblation` field asserted directly
-    # above (not re-derived here either) must be False for this fixture:
-    # the strategy name is still "sum-all", but Alignment now resolves
-    # "unaligned", proving production code never tags solely from the
-    # strategy name.
     unaligned_tag = sum_all_unaligned_downmix["coherentDownmixAblation"]
     if unaligned_tag is not False:
         raise AssertionError(
@@ -2977,13 +2744,6 @@ def main():
     unaligned_left, unaligned_right = deinterleave(
         2, sum_all_unaligned_samples
     )
-    # sum-all's leftRow/rightRow are the same duplicated row by
-    # construction (asserted above), so L and R are always bit-identical
-    # regardless of Alignment: correlation is trivially 1.0 and level
-    # difference trivially 0 dB. Still reported, as the AC requires, but
-    # expected to be a structural constant rather than a varying
-    # measurement -- unlike peak factor and spectral deviation above,
-    # which the matched-control comparison actually distinguishes.
     unaligned_correlation = zero_lag_correlation(unaligned_left, unaligned_right)
     unaligned_level_difference_db = inter_channel_level_difference_db(
         unaligned_left, unaligned_right
@@ -3015,9 +2775,6 @@ def main():
         )
     )
 
-    # Main wet path enablement, level, and Width (#109): docs/design/
-    # reverb/stages/09-composition.md's mainEnabled/mainLevelDb and
-    # docs/design/reverb/stages/08-downmix.md's Width.
     main_base_document = {
         "formatVersion": 2,
         "seed": 42,
@@ -3114,10 +2871,6 @@ def main():
             f"unexpected default Main wet path controls: "
             f"{main_default_composition}"
         )
-    # The Composition's own dry/wet envelope (#114) exposes documented
-    # defaults on the same non-empty Composition: 0 dB dry/wet, 1.0
-    # dry/wet gain, and wet-only -- reproducing every existing non-empty
-    # format-v2 request's wet-only rendering exactly.
     if (
         main_default_composition["dryDb"] != 0.0
         or main_default_composition["dryGain"] != 1.0
@@ -3128,7 +2881,6 @@ def main():
         raise AssertionError(
             f"unexpected default dry/wet envelope: {main_default_composition}"
         )
-    # Pre-delay (#133) completes the envelope: 0 ms / 0 sample default.
     if (
         main_default_composition["preDelayMs"] != 0.0
         or main_default_composition["preDelaySamples"] != 0
@@ -3212,10 +2964,6 @@ def main():
                 "by its resolved gain"
             )
 
-    # The Composition's own dry/wet envelope (#114, ADR-0007): command-
-    # level cases for wetOnly send-style gating, insert-style dry+wet,
-    # stereo channel-for-channel mapping, mono duplication, legacy
-    # resolved.json omission, and partial-envelope rejection.
     envelope_tolerance = 2e-6
 
     def render_envelope_document(document, input_fixture, name):
@@ -3240,11 +2988,6 @@ def main():
         document["composition"].update(overrides)
         return document
 
-    # Insert-style dry+wet: final output is the fixed-order sum of the
-    # dry contribution and the scaled Wet sum. Proven by rendering dry
-    # and wet in isolation (Main disabled for the dry-only reference, so
-    # its Wet sum is exact zero) and comparing their sample-wise sum
-    # against the combined render, on both mono and stereo dry input.
     for input_fixture, input_name in (
         (fixture, "mono"),
         (stereo_fixture, "stereo"),
@@ -3293,9 +3036,6 @@ def main():
                     f"references"
                 )
 
-    # wetOnly (the default) gates dry to exact zero while preserving
-    # dryDb: a non-default dryDb with wetOnly omitted (still true)
-    # renders byte-identical to the plain wet-only default above.
     wet_only_preserved_dry_result = render_envelope_document(
         envelope_document({"dryDb": -6.0}), fixture, "wet-only-preserved-dry"
     )
@@ -3311,8 +3051,6 @@ def main():
             "a preserved but gated dryDb changed wet-only output"
         )
 
-    # Newly emitted Resolved configurations record the complete envelope
-    # set, and rerendering from them is bit-identical.
     envelope_requested_result = render_envelope_document(
         envelope_document(
             {"wetOnly": False, "dryDb": -6.0, "wetDb": -3.0}
@@ -3356,10 +3094,6 @@ def main():
             "was not bit-identical"
         )
 
-    # A non-empty format-v2 Resolved Composition carrying no envelope
-    # fields at all loads as the ADR-0007 legacy neutral reading (wet-
-    # only, 0 dB dry/wet, 1.0 dry/wet gain) -- byte-identical to an
-    # explicit neutral Resolved Composition.
     legacy_resolved_document = json.loads(
         (main_default_result / "resolved.json").read_text()
     )
@@ -3395,9 +3129,6 @@ def main():
             "render the neutral (wet-only) reading"
         )
 
-    # A partial envelope set -- hand-corrupted or truncated evidence, not
-    # a legitimate complete artifact -- is rejected at the Composition
-    # path rather than guessed at.
     partial_resolved_document = json.loads(json.dumps(legacy_resolved_document))
     partial_resolved_document["composition"]["dryDb"] = -6.0
     partial_resolved_path = workspace / "partial-envelope-resolved.json"
@@ -3416,10 +3147,6 @@ def main():
         workspace / "partial-envelope-result",
     )
 
-    # An envelope field on an empty-stage Resolved Composition is
-    # rejected there too, mirroring the Requested-side empty-Composition
-    # rejection above -- a resolved.json is a direct, non-JSON-adjacent
-    # entry point in its own right.
     for empty_resolved_field, empty_resolved_value in (
         ("dryDb", -6.0),
         ("wetDb", -6.0),
@@ -3455,9 +3182,6 @@ def main():
             workspace / f"empty-resolved-with-{empty_resolved_field}-result",
         )
 
-    # An extreme dryDb/wetDb resolves a gain that is a valid finite
-    # positive double but not representable at float precision, mirroring
-    # mainLevelDb's own extreme-value check.
     for extreme_field in ("dryDb", "wetDb"):
         for extreme_level in (1000.0, -1000.0):
             extreme_document = envelope_document({extreme_field: extreme_level})
@@ -3483,8 +3207,6 @@ def main():
                 / f"envelope-extreme-{extreme_field}-{extreme_level}-result",
             )
 
-    # Pre-delay (#133, docs/design/reverb/stages/09-composition.md's
-    # "Pre-delay and dry/wet"): completes the Composition envelope.
     pre_delay_ms = 0.5
     pre_delay_samples = 24  # 0.5ms @ 48kHz is exact.
 
@@ -3523,12 +3245,6 @@ def main():
             f"tailBudgetFrames: {pre_delay_metadata}"
         )
 
-    # The same total-length formula holds even when both wet branches
-    # are disabled: preDelayFrames and tailBudgetFrames are resolved
-    # from the Composition's own structure, not from whether Main/Early
-    # happen to be silenced. wetOnly stays at its default (true), so
-    # output.wav is pure silence throughout despite reserving the full
-    # timeline.
     pre_delay_both_disabled_document = envelope_document(
         {"mainEnabled": False, "preDelayMs": pre_delay_ms}
     )
@@ -3562,26 +3278,6 @@ def main():
             "did not render exact stereo silence"
         )
 
-    # The wet path receives silence for exactly the resolved Pre-delay
-    # interval before the (delayed) source reaches Split; the dry signal
-    # stays sample-aligned from frame zero. Verified by exact equivalence
-    # against a reference fed a manually zero-padded copy of the same
-    # source at zero Pre-delay, using the "split" Stage capture -- and,
-    # separately, frame zero of output.wav, where wet is still exact
-    # silence, isolating dry directly.
-    #
-    # Every local name below is prefixed pre_delay_ (not the shorter
-    # names this pattern would otherwise suggest, e.g. reference_result):
-    # this function is one long flat scope, and a handful of short,
-    # generic names -- reference_request/reference_result chief among
-    # them -- are already established and reused hundreds of lines
-    # further down, so reusing them here would silently overwrite state
-    # later tests still depend on.
-    #
-    # read_float_wav decodes canonical IEEE float WAVs only (matching
-    # analyze_diffusion.numpy_frames' own contract); stereo_fixture is
-    # float32, unlike the mono PCM16 fixture used for the JSON-only
-    # checks above.
     pre_delay_source_channels, pre_delay_source_samples = read_float_wav(
         stereo_fixture
     )
@@ -3725,11 +3421,6 @@ def main():
             "bit-identical"
         )
 
-    # Modulation advances while the initial silence traverses the wet
-    # path: a modulated Pre-delay render is deterministic and repeatable
-    # (Repeat determinism, CONTEXT.md) -- proven directly here, without
-    # asserting any byte-shift equivalence to a zero-Pre-delay
-    # configuration, which #133 explicitly does not require.
     modulated_pre_delay_document = envelope_document(
         {"wetOnly": False, "preDelayMs": pre_delay_ms}
     )
@@ -3797,9 +3488,6 @@ def main():
         workspace / "pre-delay-inconsistent-result",
     )
 
-    # Width (#109): endpoint identity (0/90/180) and an intermediate
-    # angle, each checked against the resolved matrix and replayed from
-    # resolved.json.
     for width_deg in (0.0, 45.0, 90.0, 135.0, 180.0):
         width_document = json.loads(json.dumps(main_base_document))
         width_document["composition"]["stages"][2]["widthDeg"] = width_deg
@@ -3864,8 +3552,6 @@ def main():
                 f"degrees"
             )
 
-    # 90 degrees defaults identically to an omitted widthDeg: a
-    # bit-identical bypass against the default render above.
     width_90_result = workspace / "main-width-90.0-result"
     if (width_90_result / "output.wav").read_bytes() != (
         main_default_result / "output.wav"
@@ -3874,10 +3560,6 @@ def main():
             "Width at 90 degrees was not a bit-identical bypass"
         )
 
-    # Actual energy change across Width is measured and reported, not
-    # gated, on a seeded unaligned (Feedback-Loop) fixed-total-power
-    # fixture (docs/design/reverb/stages/08-downmix.md's "Width evidence"
-    # and "actual energy change is always reported").
     width_energy_by_degrees = {}
     for width_deg in (0.0, 90.0, 180.0):
         width_energy_document = {
@@ -3936,11 +3618,6 @@ def main():
             )
         width_energy_by_degrees[width_deg] = width_energy
 
-    # Width actually changes energy on this fixture -- not a universal
-    # acoustic threshold (docs/design/reverb/stages/08-downmix.md's
-    # "Width evidence" explicitly reports rather than gates this), but a
-    # genuinely measured change rather than the same value reported three
-    # times over.
     distinct_width_energies = {
         round(value, 9) for value in width_energy_by_degrees.values()
     }
@@ -3955,10 +3632,6 @@ def main():
         json.dumps(width_energy_by_degrees, indent=2)
     )
 
-    # widthDeg must stay within its declared structural domain (#109,
-    # docs/design/reverb/stages/09-composition.md's Rules table: "width
-    # must be finite and in their declared structural domains") -- both
-    # above 180 and below 0.
     for out_of_range_width_deg in (200.0, -10.0):
         width_out_of_range_document = json.loads(
             json.dumps(main_base_document)
@@ -3990,13 +3663,6 @@ def main():
             / f"main-width-out-of-range-{out_of_range_width_deg}-result",
         )
 
-    # An extreme mainLevelDb resolves a mainGain that is a valid finite
-    # positive double but is not representable at float precision --
-    # +1000 dB overflows float to infinity, -1000 dB underflows it to
-    # exact zero -- and both are rejected rather than silently applying a
-    # gain DSP construction cannot actually reproduce (see Downmix's own
-    # double-resolved/Sample-applied split for why float precision is
-    # the binding constraint regardless of this build's own Sample type).
     for extreme_main_level_db in (1000.0, -1000.0):
         main_extreme_level_document = json.loads(
             json.dumps(main_base_document)
@@ -4025,11 +3691,6 @@ def main():
             workspace / f"main-extreme-level-{extreme_main_level_db}-result",
         )
 
-    # The parallel Early Reflections branch (issue #111, docs/design/
-    # reverb/stages/07-early-reflections.md and docs/design/reverb/
-    # stages/09-composition.md): Requested configuration, Resolved
-    # evidence, stereo WAV output, and replay covered end-to-end for one
-    # tap.
     early_base_document = json.loads(json.dumps(main_base_document))
     early_base_document["composition"]["early"] = {
         "enabled": True,
@@ -4096,8 +3757,6 @@ def main():
             f"{early_output_channels} Channels"
         )
 
-    # Replay from Resolved Configuration reproduces the exact same
-    # Requested-derived render.
     early_rerender = workspace / "early-rerender"
     require_success(
         run_renderer(
@@ -4121,9 +3780,6 @@ def main():
     ).read_bytes():
         raise AssertionError("Early Reflections resolved rerender changed output")
 
-    # A present Early branch defaults to enabled, 0 dB, and a `select`
-    # Downmix of Channels 0/1 -- unlike the Main Downmix's own `select`,
-    # which has no implicit Channel choice (issue #107).
     early_default_document = json.loads(json.dumps(main_base_document))
     early_default_document["composition"]["early"] = {
         "taps": [{"stepIndex": 0}]
@@ -4158,11 +3814,6 @@ def main():
             f"select Channels 0-1: {early_default_composition}"
         )
 
-    # Multiple distinct taps, each with a per-tap gainDb offset and a
-    # shared decayDbPerSec envelope slope, are covered end-to-end too
-    # (issue #112): canonical (ascending) order in Resolved evidence
-    # regardless of Requested order, each tap's own shaping gain, stereo
-    # WAV output, and replay.
     early_multi_tap_document = {
         "formatVersion": 2,
         "seed": 42,
@@ -4368,10 +4019,6 @@ def main():
         workspace / "early-without-diffuser-result",
     )
 
-    # Diffuser-then-Feedback-Loop routes the tap in parallel too, and
-    # Early's own Downmix resolves an aligned Alignment expectation
-    # independently of the Main Downmix, which is unaligned when its
-    # source includes a Feedback Loop (issue #107).
     early_loop_document = {
         "formatVersion": 2,
         "seed": 42,
@@ -4507,8 +4154,6 @@ def main():
         workspace / "early-empty-result",
     )
 
-    # An out-of-range tap stepIndex is rejected: this Diffuser has one
-    # step (index 0), so index 1 does not exist.
     early_out_of_range_document = json.loads(json.dumps(main_base_document))
     early_out_of_range_document["composition"]["early"] = {
         "taps": [{"stepIndex": 1}]
@@ -4560,11 +4205,6 @@ def main():
         workspace / "early-negative-decay-result",
     )
 
-    # Early's own `downmix` bypasses the composition.stages dispatcher
-    # that normally requires and checks `type` before ever parsing a
-    # Downmix (PR review on #111): a requested `downmix` whose `type`
-    # names a different stage is rejected rather than silently accepted
-    # as a Downmix.
     early_wrong_type_document = json.loads(json.dumps(main_base_document))
     early_wrong_type_document["composition"]["early"] = {
         "taps": [{"stepIndex": 0}],
@@ -4591,10 +4231,6 @@ def main():
         workspace / "early-wrong-type-result",
     )
 
-    # On replay, resolved.json always serializes `type: "downmix"` for
-    # every Downmix (unlike a request, where Early's own `downmix` never
-    # carries `type` in the documented examples), so a resolved Early
-    # `downmix` missing `type` entirely is rejected too.
     early_resolved_missing_type = json.loads(
         (early_result / "resolved.json").read_text()
     )
@@ -4771,10 +4407,6 @@ def main():
     downmix_non_distinct_request["composition"]["stages"][2]["rightChannel"] = 0
     short_delay_request = json.loads(reference_request.read_text())
     short_delay_request["composition"]["stages"][1]["totalMs"] = 0.1
-    # Same short budget and Channel count as the accepted uniform-random
-    # request above (1 sample, 2 positions, N=4): even still rejects it,
-    # proving the "too short" diagnostic is strategy-specific rather than a
-    # blanket minimum uniform-random happens to slip past.
     short_even_delay_request = json.loads(reference_request.read_text())
     short_even_delay_request["composition"]["stages"][0]["channels"] = 4
     short_even_delay_request["composition"]["stages"][1]["totalMs"] = 0.02
@@ -4799,15 +4431,6 @@ def main():
         {"index": 0, "polarity": "none"},
         {"index": 0, "shuffle": False},
     ]
-    # A doubling chain long enough to overflow the geometric weight sum
-    # (2**i for i in [0, steps)) regardless of the platform's `long double`
-    # range: 64-bit (where `long double` == `double`, e.g. Windows/ARM64)
-    # overflows within ~1024 steps, while 80-/128-bit extended formats
-    # (e.g. x86-64 Linux/macOS) need roughly 16384. 100000 steps clears
-    # every known long double range, so on every platform either an
-    # individual weight or their sum ends up non-finite -- exercising the
-    # same "invalid weights" rejection this must reject cleanly instead of
-    # reading past the end of its internal ordering array.
     doubling_weight_overflow_request = json.loads(reference_request.read_text())
     doubling_weight_overflow_request["composition"]["stages"][1] = {
         "type": "diffuser",
@@ -4815,10 +4438,6 @@ def main():
         "totalMs": 300,
         "distribution": "doubling",
     }
-    # An unsupported formatVersion (neither 2 nor the archived 1) alongside
-    # otherwise catastrophic parameters: the format check must still fail
-    # fast and cleanly rather than the resolver hanging or crashing on a
-    # billion-Channel, 30000-second Diffuser.
     unsafe_format_request = json.loads(reference_request.read_text())
     unsafe_format_request["formatVersion"] = 3
     unsafe_format_request["composition"]["stages"][0]["channels"] = 1073741824

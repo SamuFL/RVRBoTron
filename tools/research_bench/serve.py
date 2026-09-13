@@ -36,9 +36,6 @@ from urllib.parse import parse_qs, quote, urlparse
 HOST = "127.0.0.1"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# The page's own script and style are served as same-origin files so the
-# Content-Security-Policy below can stay at 'self' with no inline exception.
-# Each carries the capability token, like every other request.
 TOKEN_PLACEHOLDER = "__BENCH_TOKEN__"
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -53,9 +50,6 @@ STATIC_FILES = {
         "vendor/ace/theme-tomorrow_night.js",
         "text/javascript; charset=utf-8",
     ),
-    # The four committed Request templates (issue #140): ordinary JSON,
-    # served exactly like every other static asset, so the page fetches
-    # them the same way it fetches its own script and style.
     "/templates/simple.json": ("templates/simple.json", "application/json"),
     "/templates/full.json": ("templates/full.json", "application/json"),
     "/templates/modulated.json": (
@@ -65,18 +59,6 @@ STATIC_FILES = {
     "/templates/spatial.json": ("templates/spatial.json", "application/json"),
 }
 
-# style-src carries 'unsafe-inline': Ace injects its base, scrollbar, and
-# theme CSS as inline <style> elements at runtime (ace/lib/dom's own
-# importCssString), not through a <link> the integration controls --
-# confirmed the sole source of every blocked style-src-elem violation with a
-# headless-browser probe before this was added. Nothing the bench ever
-# shows (filenames, request text, renderer diagnostics) reaches a style
-# context, so this widens no attack surface the bench has; script-src stays
-# 'self' with no inline exception. img-src allows data: for the two
-# indentation-guide glyphs the fixed Ace theme embeds. worker-src is spelled
-# out (default-src 'none' already
-# covers it) because Ace workers are a deliberate omission: see bench.js,
-# which also disables useWorker explicitly rather than relying on this alone.
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
     "connect-src 'self'; media-src 'self'; img-src 'self' data:; "
@@ -84,19 +66,12 @@ CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'"
 )
 
-# The renderer's own WAV contract (src/io/WavStream.cpp): mono or stereo
-# RIFF/WAVE, PCM16/24/32 or IEEE float32/64. The bench converts nothing, so
-# it accepts exactly this and rejects the rest with the same vocabulary.
 WAV_FORMAT_PCM = 1
 WAV_FORMAT_IEEE_FLOAT = 3
 
-# A crude guard so one stray selection cannot exhaust memory or fill the
-# session root. Issue #139 owns the researcher-facing limit contract.
 MAX_REQUEST_BYTES = 1 * 1024 * 1024
 MAX_SOURCE_BYTES = 1 * 1024 * 1024 * 1024
 
-# Long enough for a cold start, short enough that a binary which never
-# answers is reported rather than waited on.
 PROBE_TIMEOUT_SECONDS = 30
 
 
@@ -289,17 +264,6 @@ class Session:
         self.source_name = None
         self.result_dir = None
         self.render_count = 0
-        # Guards active_process and shutting_down, which a
-        # terminal-interruption handler on the main thread reads and sets
-        # while a renderer call (on a worker thread) still owns the
-        # process -- separate from the lock above, which only ever one
-        # thread holds at a time. Spawning the child and publishing it to
-        # active_process happen inside the same critical section as the
-        # shutting_down check (issue #139 review) so an interruption that
-        # lands between Popen() returning and active_process being set
-        # cannot slip through and leave the child orphaned: either it is
-        # published before shutdown starts checking, or shutdown has
-        # already refused to let a new child start.
         self.process_lock = threading.Lock()
         self.active_process = None
         self.shutting_down = False
@@ -333,9 +297,6 @@ class Session:
         render_dir = self.resolve_within(self.root / "renders" / str(self.render_count))
         render_dir.parent.mkdir(parents=True, exist_ok=True)
 
-        # The editor's text is the request. It is written through byte for
-        # byte -- never parsed and re-serialized here -- so what the
-        # renderer validates is exactly what is on screen.
         request_path = self.resolve_within(render_dir.parent / "request.json")
         request_path.write_bytes(request_text)
 
@@ -355,21 +316,13 @@ class Session:
                 ]
             )
         except BenchError:
-            # Shutdown won the race with this render's own start (issue
-            # #139 review): no child was spawned, so there is nothing to
-            # preserve here either.
             shutil.rmtree(render_dir, ignore_errors=True)
             raise
         if completed.returncode != 0:
-            # A failed render leaves the previous playable result alone.
             shutil.rmtree(render_dir, ignore_errors=True)
             raise renderer_failure(completed.stderr)
 
         metadata = json.loads((render_dir / "render.json").read_text())
-        # The bench plays exactly what the renderer wrote (issue #128): a
-        # float64 build's output is a contract mismatch, not something to
-        # transcode. Caught here, from the renderer's own metadata, rather
-        # than by inspecting the WAV bytes it just wrote.
         if metadata.get("samplePrecision") == "float64":
             shutil.rmtree(render_dir, ignore_errors=True)
             raise BenchError(
@@ -704,20 +657,11 @@ def main(argv=None):
         webbrowser.open(url)
 
     def shutdown(*_):
-        # Kill any renderer in flight before waiting on it: server.shutdown
-        # only stops accepting new requests, and would otherwise sit behind
-        # a worker thread that is itself sitting in process.communicate().
         session.terminate_active_render()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    # Windows has no deliverable SIGTERM -- os.kill/Popen.terminate there
-    # is an unconditional TerminateProcess that runs no Python handler at
-    # all -- so a controlling process asking this launcher to shut down
-    # gracefully (rather than a user's own console Ctrl+C, which already
-    # arrives as SIGINT on every platform) has only CTRL_BREAK_EVENT to
-    # send, which Python surfaces as SIGBREAK.
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, shutdown)
     try:

@@ -215,12 +215,6 @@ def main():
             f"optimized build unexpectedly warned: {completed.stderr!r}"
         )
 
-    # A Composition with active Modulation on both a Diffusion Step and
-    # the Feedback Loop, one interpolation method each, reports each
-    # stage's own resolved method (issue #92) -- so two benchmark runs
-    # against different interpolation choices stay directly comparable
-    # without the caller separately tracking which resolved.json produced
-    # which report.
     modulation_request = workspace / "modulation-request.json"
     modulation_request.write_text(
         json.dumps(
@@ -377,10 +371,6 @@ def main():
             f"empty Composition was not rejected: {empty_composition.stderr}"
         )
 
-    # A Resolved v1 payload must fail fast at /formatVersion with the
-    # recovery message, even when its Composition is also malformed under
-    # v2 rules -- the version check must run before Composition parsing,
-    # not surface a stage-parsing error instead (issue #106 follow-up).
     v1_resolved = workspace / "v1-resolved.json"
     v1_resolved.write_text(
         json.dumps(

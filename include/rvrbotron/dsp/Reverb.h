@@ -12,12 +12,6 @@ namespace rvrbotron::dsp {
 enum class StageCaptureBoundary {
   split,
   diffusionStep,
-  // The Main and Early stereo pairs (issue #113, docs/design/reverb/
-  // stages/09-composition.md's "Optional early-stereo and main-stereo
-  // capture boundaries"): captured after each branch's own shaping,
-  // Downmix, Width, and level, immediately before the two are summed
-  // into the final stereo output. `index` is always 0 -- one pair per
-  // branch, not per Channel.
   mainStereo,
   earlyStereo,
 };
@@ -51,22 +45,8 @@ public:
 
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;
-  // Resolved upper bound on frames to render past input EOF: a Diffuser's
-  // genuinely finite response length, a Feedback Loop's Tail budget, or
-  // their sum when both stages are present. See CONTEXT.md's Tail budget
-  // entry. Retains this decay-only meaning regardless of Pre-delay (issue
-  // #133): preDelayFrames() below is separate and additional.
   [[nodiscard]] std::uint64_t tailBudgetFrames() const noexcept;
-  // Resolved Pre-delay, in frames: the single delay before Split (issue
-  // #133). Zero for the empty identity Composition and for a non-empty
-  // Composition with zero (the default) Pre-delay. A caller draining
-  // past input EOF must authorize preDelayFrames() + tailBudgetFrames()
-  // frames of silence, not tailBudgetFrames() alone, so delayed wet
-  // energy is not truncated.
   [[nodiscard]] std::uint64_t preDelayFrames() const noexcept;
-  // Exact DSP-owned bytes: the heap-allocated pimpl's object storage, its
-  // owned-container capacities, and every owned Split/Diffuser/Downmix
-  // sub-object reachable from it.
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
 
 private:

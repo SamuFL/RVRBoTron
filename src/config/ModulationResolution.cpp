@@ -9,11 +9,6 @@
 namespace rvrbotron::config {
 namespace {
 
-// Feedback Loop tags are unchanged from issue #89/#90 (existing
-// resolved.json files and their rendered audio must not shift). Diffusion
-// Step tags (issue #91) are new, distinct constants -- not the same tag
-// with a repurposed itemIndex -- mirroring kDiffusionDelayUsage's own
-// separation from kFeedbackLoopDelayUsage in ResolveConfig.cpp.
 constexpr std::uint64_t kFeedbackLoopModulationRateSpreadUsage =
     0x4d4f445241544553ULL;
 constexpr std::uint64_t kDiffusionModulationRateSpreadUsage =

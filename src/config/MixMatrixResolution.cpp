@@ -17,13 +17,6 @@ bool hasOddParity(std::uint32_t value) noexcept {
   return odd;
 }
 
-// Numerically negligible pivot/reflection norms indicate the generated
-// matrix is singular or near-singular; treated as an explicit construction
-// failure rather than silently substituting an arbitrary direction. This
-// threshold is deliberately generous relative to the double-precision
-// arithmetic involved -- reaching it from an honest random fill is
-// practically impossible, so it exists to convert an exceptional situation
-// into a loud, explicit failure rather than to trigger routinely.
 constexpr double kSingularEpsilon = 1e-9;
 
 } // namespace
@@ -109,9 +102,6 @@ std::optional<std::vector<double>> householderQrOrthogonalize(
     }
 
     const auto pivot = matrix[k * n + k];
-    // Fixed sign convention: choose the reflection's target opposite the
-    // pivot's sign, the standard numerically stable choice that avoids
-    // subtracting two nearly equal numbers.
     const auto alpha = pivot >= 0.0 ? -normX : normX;
 
     double normV = 0.0;
@@ -128,9 +118,6 @@ std::optional<std::vector<double>> householderQrOrthogonalize(
       v[i] /= normV;
     }
 
-    // Apply H_k = I - 2 v v^T to the trailing submatrix (columns k..n-1)
-    // and accumulate Q := Q * H_k (columns k..n-1 of Q), so after the full
-    // sweep Q holds the orthogonal factor of the original matrix.
     for (std::size_t column = k; column < n; ++column) {
       double dot = 0.0;
       for (std::size_t i = k; i < n; ++i) {

@@ -25,11 +25,6 @@ struct StageCaptureMetadata {
   std::uint32_t sampleRate;
   std::uint32_t channels;
   std::uint64_t frames;
-  // True only for a "main-stereo"/"early-stereo" capture whose own
-  // branch was disabled (issue #113): the capture still exists, sized
-  // to the full render timeline, but is exact zero throughout rather
-  // than a genuinely rendered signal. Always false for "split"/
-  // "diffusion-step", which have no enablement of their own.
   bool disabled = false;
 };
 
@@ -41,18 +36,7 @@ struct RenderMetadata {
   std::uint32_t outputChannels;
   std::uint64_t inputFrames;
   std::uint64_t renderedFrames;
-  // The resolved Pre-delay (issue #133), in frames: the single delay
-  // before Split, kept separate from tailBudgetFrames below so onset
-  // delay is never confused with decay duration. Zero for the empty
-  // identity Composition and for a non-empty Composition with zero (the
-  // default) Pre-delay.
   std::uint64_t preDelayFrames;
-  // The resolved Tail budget authorised for draining past input EOF (see
-  // CONTEXT.md); 0 for a Composition with no Diffuser or Feedback Loop.
-  // Retains this decay-only meaning regardless of Pre-delay. The
-  // renderer currently always drains preDelayFrames plus the complete
-  // Tail budget, so renderedFrames - inputFrames equals their sum
-  // exactly.
   std::uint64_t tailBudgetFrames;
   std::size_t blockSize;
   std::optional<std::string> stageCaptureProfile;

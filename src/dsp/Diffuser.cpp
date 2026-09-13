@@ -50,10 +50,6 @@ void Diffuser::processFrame(
   if (inputs != outputs) {
     std::copy_n(inputs, channels_, outputs);
   }
-  // `earlyTaps` is sorted ascending by stepIndex with unique indices (see
-  // the header), so a single forward-advancing index -- rather than
-  // rescanning the whole array per step -- matches each step against at
-  // most one tap.
   std::size_t nextTap = 0;
   for (std::size_t index = 0; index < steps_.size(); ++index) {
     steps_[index]->processFrame(outputs, outputs);
