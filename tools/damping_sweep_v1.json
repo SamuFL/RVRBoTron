@@ -1,0 +1,115 @@
+{
+  "formatVersion": 1,
+  "reference": {
+    "formatVersion": 2,
+    "seed": 42,
+    "composition": {
+      "stages": [
+        {
+          "type": "split",
+          "channels": 8,
+          "strategy": "duplicate",
+          "normalisation": "energy"
+        },
+        {
+          "type": "feedback-loop",
+          "delayMinMs": 100,
+          "delayMaxMs": 200,
+          "delayStrategy": "segmented-random",
+          "rt60Sec": 2.4,
+          "mix": "householder",
+          "gainMode": "per-channel",
+          "damping": {
+            "highRatio": 0.5,
+            "highHz": 4000,
+            "lowRatio": 1.0,
+            "lowHz": 200
+          }
+        },
+        {
+          "type": "downmix",
+          "strategy": "select",
+          "leftChannel": 0,
+          "rightChannel": 1,
+          "normalisation": "energy"
+        }
+      ]
+    }
+  },
+  "axes": [
+    {
+      "name": "high-ratio",
+      "hypothesis": "highRatio 1.0 -> 0.2 at fixed RT60 is the decay-curve surface, and the clearest demonstration of why per-band measurement was necessary (stage 05-damping.md, 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "none",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/highRatio", "value": 1.0}
+          ]
+        },
+        {
+          "label": "strong",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/highRatio", "value": 0.2}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "low-ratio",
+      "hypothesis": "lowRatio below 1.0 is the small-room effect: an undamped low end turns long tails to mud (stage 05-damping.md, 'What it does musically' and 'Worth sweeping early').",
+      "values": [
+        {
+          "label": "moderate",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/lowRatio", "value": 0.5}
+          ]
+        },
+        {
+          "label": "strong",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/lowRatio", "value": 0.2}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "high-corner",
+      "hypothesis": "highHz across 1k-10k at fixed ratio separates 'how much darker' from 'where the darkening starts' (stage 05-damping.md, 'Worth sweeping early'); the Reference's own 4000 Hz corner sits between these two points.",
+      "values": [
+        {
+          "label": "2kHz",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/highHz", "value": 2000}
+          ]
+        },
+        {
+          "label": "8kHz",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/highHz", "value": 8000}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "low-corner",
+      "hypothesis": "The low shelf's corner placement, the low-frequency counterpart to high-corner: the Reference's own lowRatio (1.0, bypassed) would make a corner move inaudible, so both points also fix lowRatio at a shared non-unity value.",
+      "values": [
+        {
+          "label": "100Hz",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/lowRatio", "value": 0.4},
+            {"op": "replace", "path": "/composition/stages/1/damping/lowHz", "value": 100}
+          ]
+        },
+        {
+          "label": "400Hz",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/damping/lowRatio", "value": 0.4},
+            {"op": "replace", "path": "/composition/stages/1/damping/lowHz", "value": 400}
+          ]
+        }
+      ]
+    }
+  ]
+}

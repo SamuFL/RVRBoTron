@@ -1,0 +1,96 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default development build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/default",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "double",
+      "displayName": "Double-precision development build",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/double",
+      "cacheVariables": {
+        "RVRBOTRON_SAMPLE_DOUBLE": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Optimized release build",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "release-double",
+      "displayName": "Optimized double-precision release build",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/release-double",
+      "cacheVariables": {
+        "RVRBOTRON_SAMPLE_DOUBLE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "double",
+      "configurePreset": "double"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "release-double",
+      "configurePreset": "release-double"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "double",
+      "configurePreset": "double",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-double",
+      "configurePreset": "release-double",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

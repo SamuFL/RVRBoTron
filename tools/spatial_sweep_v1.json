@@ -1,0 +1,250 @@
+{
+  "formatVersion": 1,
+  "reference": {
+    "formatVersion": 2,
+    "seed": 42,
+    "composition": {
+      "mainEnabled": true,
+      "mainLevelDb": 0,
+      "stages": [
+        {
+          "type": "split",
+          "channels": 8,
+          "strategy": "duplicate",
+          "normalisation": "energy"
+        },
+        {
+          "type": "diffuser",
+          "steps": 4,
+          "totalMs": 300,
+          "distribution": "doubling",
+          "step": {
+            "delayStrategy": "segmented-random",
+            "mix": "hadamard",
+            "shuffle": true,
+            "polarity": "seeded-random"
+          }
+        },
+        {
+          "type": "feedback-loop",
+          "delayMinMs": 100,
+          "delayMaxMs": 200,
+          "delayStrategy": "segmented-random",
+          "rt60Sec": 2.4,
+          "mix": "householder",
+          "gainMode": "per-channel"
+        },
+        {
+          "type": "downmix",
+          "strategy": "orthogonal-rows",
+          "normalisation": "energy",
+          "widthDeg": 90
+        }
+      ],
+      "early": {
+        "enabled": true,
+        "levelDb": -6,
+        "decayDbPerSec": 0,
+        "taps": [
+          {"stepIndex": 0, "gainDb": 0},
+          {"stepIndex": 1, "gainDb": 0}
+        ],
+        "downmix": {
+          "strategy": "select",
+          "leftChannel": 0,
+          "rightChannel": 1,
+          "widthDeg": 90,
+          "normalisation": "energy"
+        }
+      }
+    }
+  },
+  "axes": [
+    {
+      "name": "tap-index",
+      "hypothesis": "Which Diffusion Steps are tapped changes the Early onset and echo density independently of everything else (stage 07: Tap support).",
+      "scope": "/composition/early/taps",
+      "values": [
+        {
+          "label": "single-early",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/taps", "value": [
+              {"stepIndex": 0, "gainDb": 0}
+            ]}
+          ]
+        },
+        {
+          "label": "single-late",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/taps", "value": [
+              {"stepIndex": 3, "gainDb": 0}
+            ]}
+          ]
+        },
+        {
+          "label": "all-steps",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/taps", "value": [
+              {"stepIndex": 0, "gainDb": 0},
+              {"stepIndex": 1, "gainDb": 0},
+              {"stepIndex": 2, "gainDb": 0},
+              {"stepIndex": 3, "gainDb": 0}
+            ]}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "early-level",
+      "hypothesis": "Early branch level sets onset-to-tail balance independently of Main (stage 09: mainLevelDb/early.levelDb are independent controls).",
+      "scope": "/composition/early/levelDb",
+      "values": [
+        {
+          "label": "quiet",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/levelDb", "value": -18}
+          ]
+        },
+        {
+          "label": "loud",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/levelDb", "value": 0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "early-slope",
+      "hypothesis": "A nonzero envelope slope attenuates later taps relative to earlier ones without changing per-tap gainDb (stage 07: shaping gain).",
+      "scope": "/composition/early/decayDbPerSec",
+      "values": [
+        {
+          "label": "steep",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/decayDbPerSec", "value": 20}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "coherent-downmix",
+      "hypothesis": "sum-all on aligned Early Reflections coherently reinforces relative to the Reference's own select control (stage 08: Coherent Downmix ablation) -- compared explicitly, see coherent-downmix-comparison.json.",
+      "scope": "/composition/early/downmix",
+      "values": [
+        {
+          "label": "sum-all",
+          "overrides": [
+            {"op": "remove", "path": "/composition/early/downmix/leftChannel"},
+            {"op": "remove", "path": "/composition/early/downmix/rightChannel"},
+            {"op": "replace", "path": "/composition/early/downmix/strategy", "value": "sum-all"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "main-strategy",
+      "hypothesis": "Main Downmix strategy changes stereo image independently of the unaligned Feedback Loop source it reads (stage 08: Strategies) -- sum-all is deliberately excluded here, since it is the dedicated coherent-downmix axis above and Main's own source is unaligned.",
+      "scope": "/composition/stages/3",
+      "values": [
+        {
+          "label": "select",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/3/strategy", "value": "select"},
+            {"op": "add", "path": "/composition/stages/3/leftChannel", "value": 0},
+            {"op": "add", "path": "/composition/stages/3/rightChannel", "value": 1}
+          ]
+        },
+        {
+          "label": "halves",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/3/strategy", "value": "halves"}
+          ]
+        },
+        {
+          "label": "alternating",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/3/strategy", "value": "alternating"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "channel-pair",
+      "hypothesis": "select's own Channel pair changes which two of the N Channels carry the Early image, independently of Downmix strategy (stage 08: select).",
+      "scope": "/composition/early/downmix",
+      "values": [
+        {
+          "label": "channels-2-3",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/downmix/leftChannel", "value": 2},
+            {"op": "replace", "path": "/composition/early/downmix/rightChannel", "value": 3}
+          ]
+        },
+        {
+          "label": "channels-4-5",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/downmix/leftChannel", "value": 4},
+            {"op": "replace", "path": "/composition/early/downmix/rightChannel", "value": 5}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "early-width",
+      "hypothesis": "Early Width moves independently of Main Width (stage 08: each branch's Width is independent).",
+      "scope": "/composition/early/downmix/widthDeg",
+      "values": [
+        {
+          "label": "mono",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/downmix/widthDeg", "value": 0}
+          ]
+        },
+        {
+          "label": "wide",
+          "overrides": [
+            {"op": "replace", "path": "/composition/early/downmix/widthDeg", "value": 180}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "main-width",
+      "hypothesis": "Main Width moves independently of Early Width (stage 08: each branch's Width is independent).",
+      "scope": "/composition/stages/3/widthDeg",
+      "values": [
+        {
+          "label": "mono",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/3/widthDeg", "value": 0}
+          ]
+        },
+        {
+          "label": "wide",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/3/widthDeg", "value": 180}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "n",
+      "hypothesis": "Channel count changes Echo density and Downmix row shape without changing onset structure (stage 01/08).",
+      "scope": "/composition/stages/0/channels",
+      "values": [
+        {
+          "label": "n-4",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/0/channels", "value": 4}
+          ]
+        },
+        {
+          "label": "n-16",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/0/channels", "value": 16}
+          ]
+        }
+      ]
+    }
+  ]
+}

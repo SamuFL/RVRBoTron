@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RVRBoTron Research Bench</title>
+<link rel="stylesheet" href="bench.css?token=__BENCH_TOKEN__">
+</head>
+<body>
+
+<h1>RVRBoTron Research Bench</h1>
+<p class="sub">Pick a source, edit the request, render, listen. Local and disposable.</p>
+
+<section>
+  <label for="source">Audition source</label>
+  <div class="row">
+    <input type="file" id="source" accept=".wav,audio/wav,audio/x-wav">
+    <span id="source-name"></span>
+  </div>
+</section>
+
+<section>
+  <label for="template">Request template</label>
+  <div class="row">
+    <select id="template">
+      <option value="simple">Simple</option>
+      <option value="full">Full</option>
+      <option value="modulated">Modulated</option>
+      <option value="spatial">Spatial</option>
+    </select>
+  </div>
+  <p class="hint">
+    Full field reference:
+    <a href="https://github.com/SamuFL/RVRBoTron/blob/develop/docs/guides/configure-the-composition.md"
+       target="_blank" rel="noopener noreferrer">configure-the-composition.md</a>
+  </p>
+</section>
+
+<section>
+  <label id="request-label">Requested configuration</label>
+  <div id="request-editor" aria-labelledby="request-label"></div>
+</section>
+
+<section>
+  <div class="row">
+    <button id="render" type="button">Render</button>
+    <button id="format" type="button">Format JSON</button>
+    <button id="download-request" type="button">Download request.json</button>
+    <a id="download" hidden download="output.wav">Download output.wav</a>
+  </div>
+</section>
+
+<section>
+  <div id="status" role="status" aria-live="polite"></div>
+  <p id="facts"></p>
+  <audio id="player" controls preload="none" hidden></audio>
+</section>
+
+<!-- Ace 1.44.0, vendored under vendor/ace/ -- see VENDORING.md there. -->
+<script src="vendor/ace/ace.js?token=__BENCH_TOKEN__"></script>
+<script src="vendor/ace/mode-json.js?token=__BENCH_TOKEN__"></script>
+<script src="vendor/ace/theme-tomorrow_night.js?token=__BENCH_TOKEN__"></script>
+<script src="bench.js?token=__BENCH_TOKEN__"></script>
+
+</body>
+</html>

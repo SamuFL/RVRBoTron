@@ -20,15 +20,15 @@ No decay, no feedback. The diffuser changes *when* sound happens, never *how muc
 
 ## What it does mathematically
 
-A sequence of *k* all-pass steps, so the chain is all-pass by composition. Aligned in, aligned out.
+A sequence of *k* all-pass steps, so the chain is all-pass by composition. Dense Hadamard diffusion preserves shared arrival support absent cancellation; Alignment score measures matrix and collision edge cases rather than assuming them away.
 
 ### Density
 
-Each step multiplies echo count by N:
+Each step multiplies structural Echo-path count by N:
 
-    density ≈ Nᵏ / T   echoes per second
+    path rate ≈ Nᵏ / T   paths per second
 
-with fusion into continuous sound around 2000–4000/s. This is the design equation — it says whether a configuration can work before you render it.
+Timing collisions and cancellation mean Nᵏ is not an exact count of Distinct arrivals. The diffusion analyzer measures actual arrival density from the impulse response in 10 ms bins. The path-rate equation remains a useful upper-bound design estimate before rendering; continuous sound typically emerges around 2000–4000 Distinct arrivals/s.
 
 Note the asymmetry: density scales as a *power* of step count and only linearly in 1/T. One extra step at N=8 multiplies density by eight; halving the length only doubles it. Step count is the strong lever.
 
@@ -43,6 +43,8 @@ Step *i* of *k*, total length *T*:
 | `explicit` | given | Manual control. |
 
 `doubling` is the default: short early steps reach useful density quickly so the onset is smooth, and the long final step spreads the tail end instead of stopping abruptly. The difference is subtle but visible in the echo-density curve.
+
+Time conversion uses one resolved integer-sample budget for T. Step budgets are apportioned by largest remainder with step index as the deterministic tie-breaker, so their sample counts sum exactly to the resolved total.
 
 ### Onset
 
@@ -70,9 +72,10 @@ With `segmented-random`, each step's first segment starts at zero, so the shorte
 |---|---|---|
 | `steps` | ≥ 1 | *k*. The strong density lever. |
 | `totalMs` | > 0 | *T*. Sum of all step lengths. |
-| `distribution` | `doubling` / `even` / `explicit` | |
-| `lengths` | array | `explicit` only; replaces `totalMs` + `distribution`. |
+| `distribution` | `doubling` / `even` | Used with `steps` and `totalMs`. |
+| `lengthsMs` | array | Defines explicit distribution, step count, and total; mutually exclusive with `steps`, `totalMs`, and `distribution`. |
 | `step` | — | Defaults inherited by every step; individual steps may override any field. |
+| `stepOverrides` | array | Sparse zero-based indexed exceptions to inherited step settings. |
 
 Step settings are given once and inherited. Repeating them *k* times would obscure which differences are deliberate.
 
@@ -91,7 +94,14 @@ Length resolution happens at configuration; `Diffuser` holds resolved lengths, n
 
 ## What this forces on the architecture
 
-**Resolved configuration is an output artifact.** Every render emits `resolved.json` beside its WAV — actual step lengths, per-channel delay times, polarity patterns. Analysis needs to know what was built rather than what was requested, and recomputing a doubling distribution by hand while reading a plot weeks later is exactly the friction that stops people using their own tools.
+**Resolved configuration is an output artifact.** Every render emits `resolved.json` beside its WAV — actual step lengths, per-channel delay times, permutations, polarity patterns, and every resolved matrix coefficient. Analysis needs to know what was built rather than what was requested, and recomputing a doubling distribution by hand while reading a plot weeks later is exactly the friction that stops people using their own tools.
+
+**Configured post-step values are an output seam.** The Diffuser accepts an
+optional caller-provided tap accumulator while processing. After each requested
+zero-based step index, it exposes that step's completed N-Channel frame for
+read-only accumulation. The accumulator cannot modify the Diffuser's main
+output, register callbacks, or allocate while audio flows. Stage capture remains
+a separate evidence seam and can record every post-step signal independently.
 
 **The step-count sweep is the canonical experiment**, and it means nothing without the positional seeding rule from Stage 2.
 
@@ -100,10 +110,13 @@ Length resolution happens at configuration; `Diffuser` holds resolved lengths, n
 ## Invariants
 
 - **All-pass** for any *k* and distribution.
-- **Density.** An impulse produces Nᵏ echoes per output channel.
+- **Echo paths.** k steps create Nᵏ structural paths before timing collisions and cancellation.
+- **Density.** Distinct-arrival count and density are measured from the rendered impulse response.
 - **Length conservation.** Resolved step lengths sum to `totalMs`, within sample rounding.
 - **Seed stability.** Increasing `steps` leaves preceding steps unchanged.
-- **Alignment.** Output echoes share the same times across channels.
+- **Alignment.** Hadamard cases have perfect arrival-support overlap absent cancellation; every matrix reports Alignment score.
+- **Tap non-interference.** Configuring or accumulating taps leaves the main
+  Diffuser output bit-identical.
 - **No feedback.** Block-size independent.
 
 ---

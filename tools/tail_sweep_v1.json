@@ -1,0 +1,121 @@
+{
+  "formatVersion": 1,
+  "reference": {
+    "formatVersion": 2,
+    "seed": 42,
+    "composition": {
+      "stages": [
+        {
+          "type": "split",
+          "channels": 8,
+          "strategy": "duplicate",
+          "normalisation": "energy"
+        },
+        {
+          "type": "feedback-loop",
+          "delayMinMs": 100,
+          "delayMaxMs": 200,
+          "delayStrategy": "segmented-random",
+          "rt60Sec": 2.4,
+          "mix": "householder",
+          "gainMode": "per-channel"
+        },
+        {
+          "type": "downmix",
+          "strategy": "select",
+          "leftChannel": 0,
+          "rightChannel": 1,
+          "normalisation": "energy"
+        }
+      ]
+    }
+  },
+  "axes": [
+    {
+      "name": "delay-range",
+      "hypothesis": "Delay range reads as room size, independent of decay (stage 04: 'Delay range at fixed rt60Sec -- confirms size and decay are perceptually independent').",
+      "values": [
+        {
+          "label": "small",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/delayMinMs", "value": 20},
+            {"op": "replace", "path": "/composition/stages/1/delayMaxMs", "value": 60}
+          ]
+        },
+        {
+          "label": "large",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/delayMinMs", "value": 150},
+            {"op": "replace", "path": "/composition/stages/1/delayMaxMs", "value": 300}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rt60",
+      "hypothesis": "RT60 reads as decay, independent of size (stage 04's companion to delay-range).",
+      "values": [
+        {
+          "label": "short",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/rt60Sec", "value": 0.8}
+          ]
+        },
+        {
+          "label": "long",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/rt60Sec", "value": 6.0}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mix",
+      "hypothesis": "Matrix choice affects eigentone clustering (stage 04: 'tests the eigentone-clustering claim, the one piece of reference advice given without a demonstration').",
+      "values": [
+        {
+          "label": "hadamard",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/mix", "value": "hadamard"}
+          ]
+        },
+        {
+          "label": "random-orthogonal",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/mix", "value": "random-orthogonal"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delay-strategy",
+      "hypothesis": "Regular delay spacing produces flutter on purpose (stage 04: 'delayStrategy: even -- flutter on purpose').",
+      "values": [
+        {
+          "label": "uniform-random",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/delayStrategy", "value": "uniform-random"}
+          ]
+        },
+        {
+          "label": "even",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/delayStrategy", "value": "even"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gain-mode",
+      "hypothesis": "Per-Channel gain vs. one shared gain measurably changes RT60 accuracy at a wide delay spread (stage 04, issue #56).",
+      "values": [
+        {
+          "label": "uniform",
+          "overrides": [
+            {"op": "replace", "path": "/composition/stages/1/gainMode", "value": "uniform"}
+          ]
+        }
+      ]
+    }
+  ]
+}

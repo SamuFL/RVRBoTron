@@ -1,0 +1,235 @@
+{
+  "formatVersion": 1,
+  "reference": {
+    "formatVersion": 2,
+    "seed": 42,
+    "composition": {
+      "stages": [
+        {
+          "type": "split",
+          "channels": 8,
+          "strategy": "duplicate",
+          "normalisation": "energy"
+        },
+        {
+          "type": "diffuser",
+          "steps": 4,
+          "totalMs": 300,
+          "distribution": "doubling",
+          "step": {
+            "delayStrategy": "segmented-random",
+            "mix": "hadamard",
+            "shuffle": true,
+            "polarity": "seeded-random"
+          }
+        },
+        {
+          "type": "downmix",
+          "strategy": "select",
+          "leftChannel": 0,
+          "rightChannel": 1,
+          "normalisation": "energy"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "reference",
+      "source": "mono",
+      "overrides": []
+    },
+    {
+      "name": "n-4",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/channels", "value": 4}
+      ]
+    },
+    {
+      "name": "n-16",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/channels", "value": 16}
+      ]
+    },
+    {
+      "name": "n-20",
+      "source": "mono",
+      "note": "not a pure single-axis case: also overrides mix to householder, since the Reference's hadamard requires a power-of-two Channel count and 20 is not one",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/channels", "value": 20},
+        {"op": "replace", "path": "/composition/stages/1/step/mix", "value": "householder"}
+      ]
+    },
+    {
+      "name": "split-stereo-halves",
+      "source": "stereo",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/strategy", "value": "stereo-halves"}
+      ]
+    },
+    {
+      "name": "split-stereo-interleave",
+      "source": "stereo",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/strategy", "value": "stereo-interleave"}
+      ]
+    },
+    {
+      "name": "split-normalisation-none",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/normalisation", "value": "none"}
+      ]
+    },
+    {
+      "name": "total-30ms",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/totalMs", "value": 30}
+      ]
+    },
+    {
+      "name": "total-3000ms",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/totalMs", "value": 3000}
+      ]
+    },
+    {
+      "name": "steps-1",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 1}
+      ]
+    },
+    {
+      "name": "steps-2",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 2}
+      ]
+    },
+    {
+      "name": "steps-3",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 3}
+      ]
+    },
+    {
+      "name": "steps-5",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 5}
+      ]
+    },
+    {
+      "name": "steps-6",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 6}
+      ]
+    },
+    {
+      "name": "distribution-even",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/distribution", "value": "even"}
+      ]
+    },
+    {
+      "name": "distribution-explicit",
+      "source": "mono",
+      "overrides": [
+        {"op": "remove", "path": "/composition/stages/1/steps"},
+        {"op": "remove", "path": "/composition/stages/1/totalMs"},
+        {"op": "remove", "path": "/composition/stages/1/distribution"},
+        {"op": "add", "path": "/composition/stages/1/lengthsMs", "value": [75, 75, 75, 75]}
+      ]
+    },
+    {
+      "name": "delay-even",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/delayStrategy", "value": "even"}
+      ]
+    },
+    {
+      "name": "delay-uniform-random",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/delayStrategy", "value": "uniform-random"}
+      ]
+    },
+    {
+      "name": "matrix-householder",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/mix", "value": "householder"}
+      ]
+    },
+    {
+      "name": "matrix-random-orthogonal",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/mix", "value": "random-orthogonal"}
+      ]
+    },
+    {
+      "name": "shuffle-false",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/shuffle", "value": false}
+      ]
+    },
+    {
+      "name": "polarity-none",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/1/step/polarity", "value": "none"}
+      ]
+    },
+    {
+      "name": "equal-path-n4-k6",
+      "source": "mono",
+      "overrides": [
+        {"op": "replace", "path": "/composition/stages/0/channels", "value": 4},
+        {"op": "replace", "path": "/composition/stages/1/steps", "value": 6}
+      ]
+    }
+  ],
+  "listeningCases": [
+    {
+      "name": "split-wide-stereo",
+      "sample": "StereoWidePingPong.wav",
+      "hypothesis": "Split strategy and stereo preservation",
+      "pairedQuantitativeCase": "split-stereo-interleave"
+    },
+    {
+      "name": "percussion-density",
+      "sample": "DryHomePercussions.wav",
+      "hypothesis": "step count and Echo density",
+      "pairedQuantitativeCase": "steps-6"
+    },
+    {
+      "name": "piano-matrix-coloration",
+      "sample": "PianoDry.wav",
+      "hypothesis": "matrix choice and Coloration",
+      "pairedQuantitativeCase": "matrix-householder"
+    },
+    {
+      "name": "pad-shuffle-polarity",
+      "sample": "PadDry.wav",
+      "hypothesis": "shuffle/polarity symmetry-breaking",
+      "pairedQuantitativeCase": "shuffle-false"
+    },
+    {
+      "name": "vocal-total-length",
+      "sample": "VocalsHmmDry.wav",
+      "hypothesis": "total length",
+      "pairedQuantitativeCase": "total-3000ms"
+    }
+  ]
+}

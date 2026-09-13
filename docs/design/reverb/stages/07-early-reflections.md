@@ -13,7 +13,10 @@ The feedback loop's shortest delay is the earliest moment any tail energy exists
 Real rooms fill that window with reflections off nearby surfaces, and those carry most of the spatial information. Two perceptual facts shape the design:
 
 - Reflections arriving within roughly 50ms **fuse with the direct sound**, registering as presence and position rather than as echoes. Past roughly 80ms they detach into audible repeats.
-- The **ratio of early energy to direct sound** is the dominant distance cue — more early energy reads as further away, independent of tail level.
+- The **ratio of early energy to direct sound** is a dominant distance cue. Stage
+7 controls Early Reflections against the Main wet path; the final Composition
+milestone adds the dry level and pre-delay needed to expose the complete
+distance relationship.
 
 The useful window is about 5–80ms, and it does the spatial work.
 
@@ -37,13 +40,48 @@ A parallel path: tapped signal scaled and summed into the output alongside the t
 
 The diffuser's output is **aligned** — all N channels carry echoes at the same times, differing only in sign. Summing all N reinforces coherently and produces a peaky, comb-flavoured result.
 
-So don't sum. **Take one or two channels.** The mixing has already distributed every echo into every channel, so a single channel holds the complete pattern; two different channels give a decorrelated stereo pair for free, because their sign patterns differ.
+The ordinary strategy is therefore to **take one or two Channels**. The mixing
+has already distributed every echo into every Channel, so a single Channel
+holds the complete pattern; two different Channels give a stereo pair whose
+sign patterns differ. `sum-all` remains available as a Coherent Downmix
+ablation. It is structurally valid and never rejected merely because it may
+sound coloured; analysis tags and measures the experiment.
 
 The feedback loop's output is unaligned, so summing is safe there. Two signals, two rules — which is why alignment is tracked.
 
-### Energy
+### Early envelope
 
-Not all-pass and not claiming to be. This is a mix of dry, early, and tail with independent gains; the only invariant worth holding is that no path is counted twice.
+Early Reflections have no feedback RT60. Their **Early envelope** is shaped by
+the tap positions and gains:
+
+    tapShapeDb = tap.gainDb - decayDbPerSec × nominalSupportEndSec
+
+`decayDbPerSec` is finite and non-negative. Zero leaves the automatic envelope
+flat; signed per-tap offsets can still form arbitrary or rising envelopes. The
+N-Channel taps are shaped and summed, Downmixed once, then `levelDb` is applied
+once to the stereo branch. The nominal endpoint deliberately drives shaping:
+changing Modulation may move possible or measured support, but never changes a
+tap's resolved envelope gain.
+
+Not all-pass and not claiming to be. The exact invariant is superposition:
+combined output equals the sample-wise sum of separately captured Early
+Reflections and Main wet path contributions. Their scalar energies need not add
+because overlapping signals have a cross term.
+
+### Tap support
+
+A tap has no single arrival time. For a tap at zero-based `stepIndex`, Resolved
+Configuration records:
+
+- nominal support bounds from the summed minimum and maximum nominal delays
+  through that step;
+- conservative modulated support bounds including every contributing
+  Modulation's Excursion and interpolation stencil reach; and
+- the cumulative nominal endpoint as a plot landmark.
+
+Analysis records measured first and last non-zero samples, plus peak and
+centroid when useful. Cancellation may make measured support narrower than its
+structural bound.
 
 ---
 
@@ -51,24 +89,32 @@ Not all-pass and not claiming to be. This is a mix of dry, early, and tail with 
 
 ```json
 "early": {
+  "enabled": true,
+  "levelDb": -6,
+  "decayDbPerSec": 0,
   "taps": [
-    { "afterStep": 1, "gainDb": -3 },
-    { "afterStep": 2, "gainDb": -6 }
+    { "stepIndex": 0, "gainDb": 0 },
+    { "stepIndex": 1, "gainDb": 0 }
   ],
-  "channelSelect": "first-two",
-  "mixDb": -6
+  "downmix": {
+    "strategy": "select",
+    "leftChannel": 0,
+    "rightChannel": 1,
+    "widthDeg": 90,
+    "normalisation": "energy"
+  }
 }
 ```
 
 | Parameter | Value | Notes |
 |---|---|---|
-| `taps` | list | Step index and gain. Empty list disables. |
-| `afterStep` | 1…k | The character control. |
-| `gainDb` | — | Level of this tap. |
-| `channelSelect` | `first-two` | Stereo pair. Default. |
-| | `single` | Mono early field. |
-| | `sum-all` | Diagnostic — demonstrates the coherent-summing problem. |
-| `mixDb` | — | Early level against the tail. The distance cue. |
+| `enabled` | boolean | Exact branch ablation; resolved structure remains recorded. |
+| `levelDb` | finite number | Early level against the Main wet path. |
+| `decayDbPerSec` | finite number ≥ 0 | Automatic Early-envelope slope. |
+| `taps` | list | Unique zero-based step indices and gain offsets. Empty or omitted means no branch. |
+| `stepIndex` | 0…k−1 | The character control. |
+| `gainDb` | finite number | This tap's offset before the branch level. |
+| `downmix` | object | Dedicated aligned-source Downmix; defaults to Channels 0/1 selection. |
 
 Pre-delay is not this: it shifts the whole wet path including the early reflections, and belongs to Stage 9.
 
@@ -78,16 +124,26 @@ Pre-delay is not this: it shifts the whole wet path including the early reflecti
 
 ```
 EarlyReflections
-  taps : step index, gain, channel selection
+  taps        : canonical step index, resolved shaping gain
+  accumulator : one N-Channel frame
 ```
 
 ---
 
 ## What this forces on the architecture
 
-**The diffuser must expose intermediate outputs.** `Diffuser` can no longer be a black box. The clean form: it holds a list of tap indices resolved at configuration, and its process call fills a caller-provided tap buffer alongside its normal output. No callbacks, no observers, no inversion of control — those would obscure the signal flow the code exists to make visible. Taps are read-only and must not perturb the main path.
+**The diffuser must expose intermediate outputs.** `Diffuser` can no longer be
+a black box. `EarlyReflections` owns the canonically sorted tap set and one
+N-Channel accumulator. The Diffuser's process call offers the completed
+post-step frame to that caller-provided accumulator alongside its normal
+output. No callback registration, observers, retained per-tap audio, or
+allocation in processing. Taps are read-only and must not perturb the main
+path.
 
-**Tap timing is derived, not specified.** A tap after step *i* arrives at the sum of resolved step lengths up to *i*, so tap times are an output of configuration and belong in `resolved.json` for marking on plots.
+**Tap timing is bounded, not specified as one arrival.** Nominal and modulated
+Tap support are derived from the resolved Diffusion Steps and belong in
+`resolved.json`. The existing per-step Stage capture supplies individual tap
+audio when analysis needs it; DSP retains only the combined branch.
 
 ---
 
@@ -95,15 +151,22 @@ EarlyReflections
 
 - **Identity when empty.** An empty tap list gives output bit-identical to early reflections disabled.
 - **Non-interference.** The diffuser's own output is bit-identical with and without taps configured.
-- **Tap timing.** An impulse appears at tap *i* at the sum of resolved step lengths up to *i*, within one sample.
-- **No double counting.** Total output energy equals dry plus early plus tail at their configured gains.
-- **Stereo decorrelation.** Under `first-two`, the two early channels are not identical.
+- **Tap support.** No tap energy occurs outside its conservative resolved
+  support; measured support is reported separately.
+- **Superposition.** Combined stereo output is sample-identical to the sum of
+  its captured Early Reflections and Main wet path branches.
+- **Stereo evidence.** Two-Channel `select` reports Output correlation and
+  inter-channel level difference; no acoustic threshold rejects a render.
 
 ---
 
 ## Worth sweeping early
 
-- `afterStep` 1 through k at fixed gain — tap depth as a character control.
-- `mixDb` across a wide range on a dry vocal — the distance cue.
-- `channelSelect` `first-two` against `sum-all` — makes the alignment problem audible rather than theoretical.
+- `stepIndex` 0 through k−1 at fixed gain — tap depth as a character control.
+- `levelDb` and `decayDbPerSec` independently — branch balance against Early-envelope shape.
+- `select` against `sum-all` — makes the alignment problem audible rather than theoretical.
+- Selected Channel pair at fixed taps — tests whether sign patterns materially
+  change the image.
+- Early width independently of Main width — separates the spatial onset cue
+  from the sustained image.
 - Early reflections off entirely at long RT60 — hear the gap before deciding how much to fill it.

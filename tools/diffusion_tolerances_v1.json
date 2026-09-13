@@ -1,0 +1,98 @@
+{
+  "formatVersion": 1,
+  "rationale": "Tightened from provisional placeholders after reviewing real cross-platform CI evidence for issue #37: PR #48, CI run https://github.com/SamuFL/RVRBoTron/actions/runs/33086622559 (macOS arm64 clang, macOS Intel clang, Windows x86_64 MSVC, both float32 and float64 presets), comparing every platform's compact diffusion-equivalence summary of the same compact Reference impulse tracer against a zero-tolerance probe. Observed: energy, orthogonality, Correlation, Alignment, and density metrics reproduced with exactly zero delta on every platform and precision -- these values come either from fixed canonical matrix construction (Hadamard) or from a tiny, simple audio computation, with no measurable compiler/architecture floating-point divergence at this scale. Only Coloration (whose FFT/dB math in tools/analyze_diffusion.py always runs in float64 via NumPy regardless of DSP sample precision -- see numpy_frames()) showed nonzero cross-platform deltas, at the 1e-16-to-1e-15 scale, consistent with FFT/log10 summation-order differences across platforms' NumPy/BLAS builds. Each committed value below states its own observed evidence and headroom.",
+  "byPrecision": {
+    "float32": {
+      "energyRelativeError": {
+        "absoluteTolerance": 1e-6,
+        "rationale": "Observed: exactly 0 delta across macOS arm64, macOS Intel, and Windows x86_64 (CI run 33086622559) for the compact tracer's 8-channel sumOfSquares. Committed non-zero, ~8x the single-machine float32 energy tolerance (2e-7, tests/test_diffusion_analyzer_cli.py), as headroom for larger/less-trivial Diffuser configurations not exercised by this tiny tracer."
+      },
+      "orthogonalityMaximumAbsoluteError": {
+        "absoluteTolerance": 1e-8,
+        "rationale": "Observed: exactly 0 delta on all three platforms. The 8x8 Hadamard matrix's +-1/sqrt(2)-scaled entries are a fixed canonical construction (ADR-0002), reproduced identically by math.fsum on every platform. Committed non-zero as headroom for libm sqrt() ULP differences that could appear for Householder/RandomOrthogonal matrices, which this Hadamard-only CI tracer does not exercise."
+      },
+      "orthogonalityRmsError": {
+        "absoluteTolerance": 1e-8,
+        "rationale": "Observed: exactly 0 delta on all three platforms; same basis and headroom reasoning as orthogonalityMaximumAbsoluteError."
+      },
+      "correlationMeanAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-6,
+        "rationale": "Observed: exactly 0 delta on all three platforms for the compact tracer's Correlation matrix. Committed non-zero as headroom for NumPy matmul summation-order differences on larger Channel counts not exercised by this tiny tracer."
+      },
+      "correlationMaxAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-6,
+        "rationale": "Observed: exactly 0 delta on all three platforms; same basis as meanAbsoluteOffDiagonal."
+      },
+      "alignmentMinimum": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Observed: exactly 0 delta (identical Jaccard scores) on all three platforms, confirming the design expectation -- Alignment is a discrete overlap of active-frame sets, not a floating-point accumulation, and the tracer's active samples sit far above the -120 dB activity floor."
+      },
+      "alignmentMean": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Observed: exactly 0 delta on all three platforms; same basis as alignmentMinimum."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Observed max delta 2.66e-15 (macOS Intel vs. macOS arm64 baseline, combined-Channel scope, CI run 33086622559). Committed at ~1e-12, roughly 375x that observed delta, since Coloration's FFT/dB math always runs in float64 via NumPy regardless of DSP sample precision."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed max delta 9.36e-16 (Windows vs. macOS arm64 baseline, combined-Channel scope). Committed at ~1e-13, roughly 100x that observed delta."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed max delta 1.11e-16 (Windows vs. macOS arm64 baseline, diagnostic stereo scope). Committed at ~1e-14, roughly 90x that observed delta."
+      },
+      "densityCount": {
+        "absoluteTolerance": 0,
+        "rationale": "Observed: exactly 0 delta (identical total and per-bin Distinct-arrival counts) on all three platforms, confirming the design expectation -- the tracer's active samples sit far above the -120 dB activity floor, so no sample crosses it differently across platforms."
+      }
+    },
+    "float64": {
+      "energyRelativeError": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64 (macOS Intel does not build the double preset) for the compact tracer's 8-channel sumOfSquares. Committed non-zero, ~10x the single-machine float64 energy tolerance (1e-14, tests/test_diffusion_analyzer_cli.py), as headroom for larger/less-trivial Diffuser configurations not exercised by this tiny tracer."
+      },
+      "orthogonalityMaximumAbsoluteError": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64. Same basis as the float32 entry: committed non-zero as headroom for libm sqrt() ULP differences on Householder/RandomOrthogonal matrices this Hadamard-only CI tracer does not exercise."
+      },
+      "orthogonalityRmsError": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64; same basis as orthogonalityMaximumAbsoluteError."
+      },
+      "correlationMeanAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64. Committed non-zero as headroom for NumPy matmul summation-order differences on larger Channel counts not exercised by this tiny tracer."
+      },
+      "correlationMaxAbsoluteOffDiagonal": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64; same basis as meanAbsoluteOffDiagonal."
+      },
+      "alignmentMinimum": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64, confirming the design expectation -- Alignment is a discrete overlap of active-frame sets, not a floating-point accumulation."
+      },
+      "alignmentMean": {
+        "absoluteTolerance": 0.0,
+        "rationale": "Observed: exactly 0 delta between macOS arm64 and Windows x86_64; same basis as alignmentMinimum."
+      },
+      "colorationPeakToPeakDb": {
+        "absoluteTolerance": 1e-12,
+        "rationale": "Observed max delta 7.11e-15 (Windows vs. macOS arm64 baseline, diagnostic stereo scope, CI run 33086622559). Committed at ~1e-12, roughly 140x that observed delta."
+      },
+      "colorationRmsDb": {
+        "absoluteTolerance": 1e-13,
+        "rationale": "Observed max delta 4.44e-16 (Windows vs. macOS arm64 baseline, diagnostic stereo scope). Committed at ~1e-13, roughly 225x that observed delta."
+      },
+      "colorationSpectralFlatness": {
+        "absoluteTolerance": 1e-14,
+        "rationale": "Observed max delta 2.22e-16 (Windows vs. macOS arm64 baseline, both combined and stereo scope). Committed at ~1e-14, roughly 45x that observed delta."
+      },
+      "densityCount": {
+        "absoluteTolerance": 0,
+        "rationale": "Observed: exactly 0 delta (identical total and per-bin Distinct-arrival counts) between macOS arm64 and Windows x86_64, confirming the design expectation."
+      }
+    }
+  }
+}
