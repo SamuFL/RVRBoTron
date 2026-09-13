@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(RVRBoTron VERSION 0.1.0 LANGUAGES CXX)
+project(RVRBoTron VERSION 1.0.0 LANGUAGES CXX)
 
 option(BUILD_TESTING "Build tests" ON)
 option(RVRBOTRON_SAMPLE_DOUBLE "Use double-precision DSP samples" OFF)
