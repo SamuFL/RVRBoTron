@@ -150,9 +150,6 @@ const char* splitStrategyName(const dsp::SplitStrategyType strategy) {
       "unsupported Split strategy");
 }
 
-// Shared by the Feedback Loop and each Diffusion Step (issues #89/#91):
-// the two modulated stages must serialize identically so a comparison
-// between them is a comparison of values, not of schema.
 Json modulationJson(const dsp::ResolvedModulation& modulation) {
   return {
       {"depthMs", modulation.depthMs},
@@ -209,9 +206,6 @@ Json diffuserJson(const dsp::ResolvedDiffuser& diffuser) {
         {"mix", mixMatrixTypeName(step.mix)},
         {"matrix", std::move(matrix)},
     };
-    // Omitted entirely (rather than emitted as null) when disabled, so a
-    // step with no Modulation configured remains byte-identical to one
-    // written before Diffusion Step Modulation existed (see issue #91).
     if (step.modulation.has_value()) {
       stepJson["modulation"] = modulationJson(*step.modulation);
     }
@@ -258,10 +252,6 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
        loop.silenceFloorDb.has_value() ? Json(*loop.silenceFloorDb)
                                         : Json(nullptr)},
   };
-  // Omitted entirely (rather than emitted as null) when disabled, so an
-  // existing format-version-1 Resolved Configuration written before
-  // Damping existed remains byte-identical to one produced with it
-  // disabled today, and loads back as disabled (see issue #75).
   if (loop.damping.has_value()) {
     const auto& damping = *loop.damping;
     document["damping"] = {
@@ -287,10 +277,6 @@ Json feedbackLoopJson(const dsp::ResolvedFeedbackLoop& loop) {
         {"slowestResolvedRt60Sec", damping.slowestResolvedRt60Sec},
     };
   }
-  // Omitted entirely (rather than emitted as null) when disabled, so an
-  // existing format-version-1 Resolved Configuration written before
-  // Modulation existed remains byte-identical to one produced with it
-  // disabled today, and loads back as disabled (see issue #89).
   if (loop.modulation.has_value()) {
     document["modulation"] = modulationJson(*loop.modulation);
   }
@@ -314,10 +300,6 @@ Json downmixJson(const dsp::ResolvedDownmix& downmix) {
       {"widthMatrix", downmix.widthMatrix},
       {"coherentDownmixAblation", downmix.coherentDownmixAblation},
   };
-  // leftChannel/rightChannel are `select`-specific (issue #108) and,
-  // within `select`, an omitted rightChannel means mono duplication
-  // (issue #107) -- both omitted entirely rather than emitted null/equal,
-  // so neither shape is confused with a coincidentally-equal Channel pair.
   if (downmix.leftChannel.has_value()) {
     document["leftChannel"] = *downmix.leftChannel;
   }
@@ -379,31 +361,18 @@ Json compositionJson(const dsp::ResolvedComposition& composition) {
         stage));
   }
   Json document{{"stages", std::move(stages)}};
-  // mainEnabled/mainLevelDb/mainGain are moot, and omitted, on the empty
-  // identity Composition (issue #109) -- mirroring how leftChannel/
-  // rightChannel are omitted for a non-`select` Downmix.
   if (!composition.stages.empty()) {
     document["mainEnabled"] = composition.mainEnabled;
     document["mainLevelDb"] = composition.mainLevelDb;
     document["mainGain"] = composition.mainGain;
-    // The Composition's own dry/wet envelope (issue #114, ADR-0007):
-    // newly emitted Resolved configurations always record the complete
-    // set, never a subset -- a partial set on load is hand-corrupted or
-    // truncated evidence (see parseResolvedComposition in ConfigJson.cpp).
     document["dryDb"] = composition.dryDb;
     document["wetDb"] = composition.wetDb;
     document["wetOnly"] = composition.wetOnly;
     document["dryGain"] = composition.dryGain;
     document["wetGain"] = composition.wetGain;
-    // Pre-delay (issue #133) completes the envelope set above.
     document["preDelayMs"] = composition.preDelayMs;
     document["preDelaySamples"] = composition.preDelaySamples;
   }
-  // Omitted entirely (rather than emitted as null) when no branch is
-  // configured (issue #111), mirroring mainEnabled/mainLevelDb/mainGain
-  // above -- an existing Resolved Configuration written before Early
-  // Reflections existed remains byte-identical to one produced with no
-  // branch configured today, and loads back as no branch.
   if (composition.early.has_value()) {
     document["early"] = earlyJson(*composition.early);
   }

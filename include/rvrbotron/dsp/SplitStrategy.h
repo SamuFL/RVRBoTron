@@ -38,9 +38,6 @@ private:
   Sample channelGain_;
 };
 
-// Feeds the first half of the Channels from the left input and the second
-// half from the right input, at the resolved Channel gain (energy or none).
-// Requires stereo input and an even Channel count.
 class StereoHalvesSplitStrategy final : public SplitStrategy {
 public:
   explicit StereoHalvesSplitStrategy(const ResolvedSplit& config);
@@ -58,9 +55,6 @@ private:
   Sample channelGain_;
 };
 
-// Feeds even-indexed Channels from the left input and odd-indexed Channels
-// from the right input, at even energy-normalized gain. Requires stereo
-// input and an even Channel count.
 class StereoInterleaveSplitStrategy final : public SplitStrategy {
 public:
   explicit StereoInterleaveSplitStrategy(const ResolvedSplit& config);

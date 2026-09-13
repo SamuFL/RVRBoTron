@@ -26,55 +26,17 @@ namespace {
 constexpr std::uint64_t kDiffusionDelayUsage = 0x445354455044454cULL;
 constexpr std::uint64_t kDiffusionShuffleUsage = 0x4453544550534846ULL;
 constexpr std::uint64_t kDiffusionPolarityUsage = 0x4453544550504f4cULL;
-// Feedback Loop delays are derived from (seed, Channel index) alone -- there
-// is one loop, not a chain of indexed steps -- so this usage tag's itemIndex
-// argument is always the fixed constant 0 (see resolveFeedbackLoop).
 constexpr std::uint64_t kFeedbackLoopDelayUsage = 0x464c4f4f5044454cULL;
-// Per-Channel Modulation trajectory seeds are derived from (seed,
-// itemIndex, Channel index): itemIndex is the fixed constant 0 for the
-// Feedback Loop, mirroring kFeedbackLoopDelayUsage's own convention above
-// (see resolveFeedbackLoop). Unchanged from issue #89/#90 -- existing
-// resolved.json files and their rendered audio must not shift.
 constexpr std::uint64_t kFeedbackLoopModulationSeedUsage =
     0x4d4f44554c534544ULL;
-// The Modulation channel-selection permutation (issue #90's
-// channelFraction) gets its own usage tag, per the design doc's "Phase,
-// rate spread and Channel selection each get their own usage tag" --
-// distinct from every other Modulation draw above and from delay
-// derivation, so selection never correlates with delay ordering.
-// Unchanged from issue #90, for the same reason as the seed tag above.
 constexpr std::uint64_t kFeedbackLoopModulationChannelSelectionUsage =
     0x4d4f44434853454cULL;
-// A Diffusion Step's own Modulation seed and channel-selection tags
-// (issue #91): distinct constants from the Feedback Loop's own above --
-// not the same tag with a repurposed itemIndex -- mirroring how
-// kDiffusionDelayUsage is already a separate tag from
-// kFeedbackLoopDelayUsage for delay derivation. This is what lets a
-// Diffusion Step's itemIndex be its own plain step index: a Diffusion
-// Step and the Feedback Loop can both resolve itemIndex 0 without ever
-// drawing the same value, since they read from different usage-tag
-// domains entirely (see rvrbotron::config::ModulationOwner in
-// ModulationResolution.h, which selects between these two domains for
-// every other per-Channel Modulation draw too).
 constexpr std::uint64_t kDiffusionModulationSeedUsage =
     0x44535445504d5344ULL;
 constexpr std::uint64_t kDiffusionModulationChannelSelectionUsage =
     0x44535445504d4353ULL;
-// The Main Downmix's own domain-separated RandomOrthogonal usage tag
-// ("MAINDNMX", ADR-0002, issue #108) -- distinct from
-// kMixMatrixRandomOrthogonalUsage ("MIXORTHO"), which the Diffuser and
-// Feedback Loop's own `random-orthogonal` mix continues to use unchanged,
-// so the two domains never draw the same value for the same (seed,
-// row/column). The future Early Reflections Downmix gets its own
-// "EARLDNMX" tag rather than reusing this one.
 constexpr std::uint64_t kMainDownmixRandomOrthogonalUsage =
     0x4d41494e444e4d58ULL;
-// The Early Downmix's own domain-separated RandomOrthogonal usage tag
-// ("EARLDNMX", issue #111, ADR-0002): distinct from both
-// kMainDownmixRandomOrthogonalUsage and kMixMatrixRandomOrthogonalUsage, so
-// Early's Downmix never draws the same value as Main's for the same
-// (seed, row/column) -- see docs/design/reverb/stages/09-composition.md's
-// seeding table.
 constexpr std::uint64_t kEarlyDownmixRandomOrthogonalUsage =
     0x4541524c444e4d58ULL;
 
@@ -86,11 +48,6 @@ constexpr std::uint64_t kEarlyDownmixRandomOrthogonalUsage =
       std::string(path));
 }
 
-// A Diffuser and a Feedback Loop are each positionally independent: neither
-// hardcodes its own stage index, since the Feedback Loop lands at index 1
-// when it is the sole middle stage but index 2 when it follows a Diffuser
-// (see docs/design/reverb/stages/09-composition.md's valid Composition
-// shapes).
 std::string stagePath(const std::size_t stageIndex) {
   return "/composition/stages/" + std::to_string(stageIndex);
 }
@@ -117,9 +74,6 @@ struct DiffuserDerivation {
   double totalMs = kDefaultDiffuserTotalMs;
   SampleBudget sampleBudget;
   bool deriveChannelValues = true;
-  // Per-step sample lengths apportioned from the total sample budget by
-  // largest remainder; empty when the plan could not be computed (for
-  // example an unsupported distribution or non-finite weights).
   std::vector<std::uint64_t> expectedStepLengths;
 };
 
@@ -151,18 +105,12 @@ SampleBudget deriveSampleBudget(const double totalMs,
   return {SampleBudgetStatus::valid, samples};
 }
 
-// Only segmented-random and even require N distinct sample positions:
-// uniform-random deliberately samples with replacement, so it only needs at
-// least one position to draw from (always true once the sample budget
-// itself is valid).
 bool requiresDistinctChannelPositions(
     const dsp::DelayStrategy strategy) noexcept {
   return strategy == dsp::DelayStrategy::segmentedRandom ||
          strategy == dsp::DelayStrategy::even;
 }
 
-// Segmented-random and even delay strategies each require one distinct
-// integer sample position per Channel within a step's own sample budget.
 bool hasEnoughPositionsForChannels(
     const std::uint64_t lengthSamples,
     const std::uint32_t channels) noexcept {
@@ -185,25 +133,6 @@ std::optional<std::uint64_t> checkedAdd(
   return a + b;
 }
 
-// Conservative (worst-case double-precision Sample) estimate of the
-// DSP-owned bytes a resolved Diffuser will occupy: one delay line per
-// Channel sized to `maxBufferSamples`, plus a full NxN matrix and small
-// per-Channel metadata for every step, plus `modulationBytes` for every
-// active Diffusion Step Modulation's own owned per-Channel vectors
-// (channelSeeds/channelTargetsPerSample/channelPhases/channelModulated;
-// see issue #91) -- nullopt (from estimateDiffuserModulationBytes's own
-// overflow) propagates as an unrepresentable, and therefore rejected,
-// estimate, exactly like every other overflow below. `maxBufferSamples`
-// is the nominal shared sample budget before any step is resolved (the
-// caller has nothing better yet), or the largest actually-resolved
-// per-Channel buffer size across every step once resolved -- Diffusion
-// Step Modulation's Excursion and Interpolation margin can grow a
-// Channel's buffer past the nominal budget (see docs/design/reverb/
-// stages/06-modulation.md's "Delay buffers need headroom"), so a
-// post-resolution caller must pass whichever of the two is larger to
-// keep this estimate conservative (mirrors
-// estimateFeedbackLoopMemoryBytes's own `max(delayMaxSamples,
-// maxResolvedBufferSamples)` pattern).
 std::optional<std::uint64_t> estimateDiffuserMemoryBytes(
     const std::uint32_t channels,
     const std::uint64_t maxBufferSamples,
@@ -254,23 +183,8 @@ void checkDiffuserMemoryBudget(
   }
 }
 
-// Conservative per-Channel byte estimate for one active Modulation
-// object's own owned vectors (see dsp::Modulation::ownedBytes(), which
-// this deliberately over-approximates rather than imports exactly, to
-// keep this estimator's own arithmetic simple and self-contained):
-// channelSeeds (uint64_t), channelTargetsPerSample and channelPhases
-// (double each), and channelModulated (rounded up to a full byte per
-// Channel even though std::vector<bool> packs bits).
 constexpr std::uint64_t kModulationBytesPerChannel = 25;
 
-// Sums `kModulationBytesPerChannel * channels` for every Diffusion Step
-// whose own Modulation actually moved at least one Channel (empty
-// `channelModulated` is the resolved bypass -- no vectors allocated; see
-// docs/design/reverb/stages/06-modulation.md's "Identity is guaranteed by
-// construction, not by arithmetic"). Returns nullopt on overflow, treated
-// by `checkDiffuserMemoryBudget`'s caller the same as any other
-// unrepresentable estimate -- conservatively rejected rather than
-// silently underestimated.
 std::optional<std::uint64_t> estimateDiffuserModulationBytes(
     const std::uint32_t channels,
     const std::vector<dsp::ResolvedDiffusionStep>& steps) noexcept {
@@ -291,10 +205,6 @@ std::optional<std::uint64_t> estimateDiffuserModulationBytes(
   return total;
 }
 
-// Conservative estimate of the DSP-owned bytes a resolved Feedback Loop
-// will occupy: one delay line per Channel sized to the longest resolved
-// delay, plus a full NxN mixing matrix and small per-Channel metadata.
-// There is no step multiplier -- one loop, not a chain of steps.
 std::optional<std::uint64_t> estimateFeedbackLoopMemoryBytes(
     const std::uint32_t channels,
     const std::uint64_t maxDelaySamples) noexcept {
@@ -333,17 +243,6 @@ void checkFeedbackLoopMemoryBudget(
   }
 }
 
-// Apportions `totalSamples` across `weights.size()` steps by largest
-// remainder: each step first receives the floor of its ideal (weighted)
-// share, then the leftover samples are distributed one at a time to the
-// steps with the largest fractional remainder, using ascending step index
-// to break ties. The result always sums exactly to `totalSamples`.
-//
-// Precondition: `weights` sums to a finite, strictly positive value (see
-// `diffuserStepWeights`, this function's only caller, which enforces that
-// before ever reaching here). A non-finite or non-positive sum would make
-// every step's ideal share divide out to zero, leaving `remaining` far
-// larger than `stepCount` and reading past the end of `order` below.
 std::vector<std::uint64_t> apportionStepSamples(
     const std::uint64_t totalSamples,
     const std::vector<long double>& weights) {
@@ -380,16 +279,6 @@ std::vector<std::uint64_t> apportionStepSamples(
   return base;
 }
 
-// Computes the relative per-step weight used for largest-remainder
-// apportionment: explicit `lengthsMs` values when present, otherwise an
-// even split or a doubling (2^index) split of the shared total. Returns
-// nullopt if any individual weight, or their sum, is not a finite positive
-// value -- for example an unreasonably large doubling step count, or
-// `lengthsMs` entries large enough that their sum overflows. Validating the
-// sum here (not just each weight) matters because `apportionStepSamples`
-// divides by it: a non-finite or non-positive sum would make every step's
-// share round down to zero, leaving far more "remaining" samples than
-// there are steps to distribute them to.
 std::optional<std::vector<long double>> diffuserStepWeights(
     const DiffuserConfig& requested,
     const std::uint32_t stepCount) {
@@ -478,21 +367,6 @@ std::vector<std::uint32_t> seededPermutation(
   return permutation;
 }
 
-// The Modulation per-Channel bypass mask (issue #90's channelFraction,
-// see docs/design/reverb/stages/06-modulation.md's "Trajectories are
-// seeded positionally"): the first ceil(channelFraction * channels)
-// entries of a fixed permutation, seeded independently of delay
-// derivation and of `channelFraction` itself, so raising
-// `channelFraction` only lengthens the prefix taken from the *same*
-// permutation -- never reshuffling a Channel that was already
-// modulating -- and selection never correlates with delay ordering.
-// `channelFraction` must already be finite and in [0, 1]; `channels`
-// must be > 0. `owner` selects between the Feedback Loop's and a
-// Diffusion Step's own separate usage-tag domain (see ModulationOwner in
-// ModulationResolution.h); `itemIndex` is 0 for the Feedback Loop (one
-// loop, not a chain of steps) and the step index for a Diffusion Step
-// (issue #91), so two modulated steps never select the same Channels
-// from the same permutation.
 std::vector<bool> resolveModulationChannelMask(
     const std::uint64_t seed,
     const ModulationOwner owner,
@@ -504,16 +378,6 @@ std::vector<bool> resolveModulationChannelMask(
       : kDiffusionModulationChannelSelectionUsage;
   const auto permutation =
       seededPermutation(seed, usage, itemIndex, channels);
-  // ceil(channelFraction * channels), with a small absolute tolerance
-  // subtracted first: multiplying by an integer can round the exact
-  // product a few ULPs above the intended integer (0.14 * 100 ==
-  // 14.000000000000002 in binary64), which would otherwise ceil to one
-  // Channel more than documented (PR #98 review). The tolerance is far
-  // too small to swallow any fractional intent a human would actually
-  // type. `std::max(1, ...)` keeps any non-zero fraction modulating at
-  // least one Channel even for a channelFraction small enough that the
-  // tolerance would otherwise round it below one; channelFraction ==
-  // 1.0 still modulates exactly `channels`.
   constexpr double kChannelFractionTolerance = 1e-9;
   const auto rawCount = channelFraction * static_cast<double>(channels);
   const auto modulatedCount = std::min(
@@ -529,21 +393,6 @@ std::vector<bool> resolveModulationChannelMask(
   return mask;
 }
 
-// Resolves one Modulation object: shared by the Feedback Loop and each
-// Diffusion Step (see docs/design/reverb/stages/06-modulation.md, issues
-// #89 and #91) so seeds, rates, phases, channel selection, the Excursion
-// rejection rule, and buffer headroom can never drift between the two
-// modulated stages. `owner` selects the caller's own usage-tag domain
-// (see ModulationOwner in ModulationResolution.h); `itemIndex` is the
-// positional-seeding item index for every per-Channel draw below -- 0 for
-// the Feedback Loop (one loop, not a chain of steps) and the step index
-// for a Diffusion Step, so two modulated steps never share a trajectory.
-// `delaysSamples` is that stage's own already-resolved per-Channel delay;
-// `bufferSizes` is mutated in place, gaining headroom only for the
-// Channels actually modulated -- every other Channel's buffer size is
-// left exactly as the caller passed it in. `rejectionPath` names the
-// responsible parameter (that stage's own `.../modulation/depthMs`) if
-// the Excursion rejection rule fires.
 dsp::ResolvedModulation resolveModulation(
     const ModulationConfig& requested,
     const std::uint32_t channels,
@@ -579,11 +428,6 @@ dsp::ResolvedModulation resolveModulation(
   modulation.excursionSamples =
       resolveExcursionSamples(modulation.depthMs, sampleRate);
 
-  // depthMs of 0 and channelFraction of 0 are both resolved bypasses (see
-  // docs/design/reverb/stages/06-modulation.md's "Identity is guaranteed
-  // by construction, not by arithmetic"): no seeds, no rates, no phases,
-  // no bypass mask, no buffer headroom, so an explicit zero of either one
-  // and an omitted Modulation object leave every other field identical.
   if (!(modulation.depthMs > 0.0 && modulation.channelFraction > 0.0)) {
     return modulation;
   }
@@ -608,9 +452,6 @@ dsp::ResolvedModulation resolveModulation(
         resolveModulationPhase(seed, owner, itemIndex, channel));
   }
 
-  // The Excursion rejection rule applies to modulated Channels only: a
-  // Channel channelFraction excludes never moves, so it can never
-  // overrun regardless of how short its delay is.
   for (std::uint32_t channel = 0; channel < channels; ++channel) {
     if (!modulation.channelModulated[channel]) {
       continue;
@@ -625,11 +466,6 @@ dsp::ResolvedModulation resolveModulation(
     }
   }
 
-  // Delay buffers reserve Excursion plus the fixed Interpolation margin,
-  // added only to the Channels channelFraction actually selected -- an
-  // unmodulated Channel, or every Channel when Modulation is absent or
-  // fully bypassed, keeps its buffer size exactly equal to its delay, as
-  // today.
   const auto headroomSamples =
       resolveModulationHeadroomSamples(modulation.excursionSamples);
   for (std::uint32_t channel = 0; channel < channels; ++channel) {
@@ -676,9 +512,6 @@ dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
       requested.strategy.value_or(dsp::SplitStrategyType::duplicate);
   const auto normalisation = requested.normalisation.value_or(
       dsp::EnergyNormalisation::energy);
-  // Stereo-preserving strategies only diverge from duplicate's mono-summed
-  // mapping when the source itself is stereo; mono input always resolves to
-  // the same mono duplication mapping regardless of the requested strategy.
   const auto stereoPreserving =
       inputChannels == 2 && isStereoPreservingSplit(strategy);
   const auto sourceGain =
@@ -707,19 +540,6 @@ dsp::ResolvedSplit resolveSplit(const SplitConfig& requested,
   };
 }
 
-// The additional finite-response reach Diffusion Step Modulation adds to
-// the Diffuser's own resolved totalSamples (PR review on #112): beyond a
-// step's own nominal length, a modulated Channel's read can still
-// reference live content up to that step's own resolved Excursion
-// (rounded up) plus the fixed Interpolation margin further out --
-// resolveModulationHeadroomSamples, the same reach already used to size
-// that Channel's own delay-line buffer (issue #91's "Delay buffers need
-// headroom"), applied here to the Diffuser's own overall drain length
-// instead. Summed once per actively modulated step, regardless of
-// Channel count, so the Diffuser's own drain -- and therefore Early
-// Reflections' conservative Tap support, which is bounded only by that
-// same drain -- never truncates real energy. Shared by resolveDiffuser
-// and validateDiffuserStage so the two never drift on the formula.
 std::uint64_t resolveDiffuserModulationReachSamples(
     const std::vector<dsp::ResolvedDiffusionStep>& steps) {
   std::uint64_t reach = 0;
@@ -748,10 +568,6 @@ dsp::ResolvedDiffuser resolveDiffuser(
   }
 
   const auto matrixElements = matrixElementCount(channels);
-  // A matrix of a given type is deterministic for a given Channel count, so
-  // it is shared across every step that resolves to that type (computed
-  // once per type) even though it is fully serialized per step. Indexed by
-  // the MixMatrixType enum's underlying value.
   std::array<std::optional<std::vector<double>>, static_cast<std::size_t>(dsp::MixMatrixType::randomOrthogonal) + 1> sharedMatrixByType;
 
   diffuser.steps.reserve(derivation.stepCount);
@@ -783,11 +599,6 @@ dsp::ResolvedDiffuser resolveDiffuser(
             ? *stepOverride->polarity
             : stepDefaults.polarity.value_or(
                   dsp::PolarityStrategy::seededRandom);
-    // Modulation follows the same override-wins-over-defaults precedence
-    // as every field above, but -- unlike them -- presence itself is the
-    // decision: omitted from both the override and the shared defaults
-    // means Modulation stays disabled for this step (see docs/design/
-    // reverb/stages/06-modulation.md's "Placement" and issue #91).
     const auto* const stepModulationRequested =
         (stepOverride != nullptr && stepOverride->modulation.has_value())
             ? &*stepOverride->modulation
@@ -923,11 +734,6 @@ dsp::ResolvedDiffuser resolveDiffuser(
   return diffuser;
 }
 
-// The Tail budget: an RT60 (either rt60Sec alone, or -- with boosted
-// Damping, #77 -- the slower of rt60Sec, each boosted shelf's own
-// conservative feedback-decay estimate, and its state-settling time)
-// multiplied by decayMargin, rounded up to frames. Zero when any input is
-// non-finite/non-positive, or the exact product doesn't fit a uint64_t.
 std::uint64_t resolveTailBudgetSamples(
     const double rt60Sec,
     const double decayMargin,
@@ -942,31 +748,12 @@ std::uint64_t resolveTailBudgetSamples(
     return 0;
   }
   const auto ceiledSamples = std::ceil(exactSamples);
-  // 2^64, not uint64_t::max(), as the exclusive upper bound: uint64_t::max()
-  // (2^64 - 1) is not exactly representable in a `long double` narrower than
-  // 64 mantissa bits -- as on this codebase's macOS/ARM64 build, where
-  // `long double` is `double` -- so comparing against it directly rejects
-  // (or, with the wrong relational operator, admits) the wrong boundary
-  // depending on platform. 2^64 is an exact power of two and therefore
-  // exactly representable at any precision, making this comparison correct
-  // on every supported platform: ceiledSamples strictly below it always
-  // fits in a uint64_t.
   if (ceiledSamples >= 0x1p64L) {
     return 0;
   }
   return static_cast<std::uint64_t>(ceiledSamples);
 }
 
-// A Feedback Loop has one delay/gain/mix per Channel rather than a chain of
-// indexed steps: delays derive positionally from (seed, Channel index) per
-// ADR-0002, decay gain is solved per `gainMode` (#56) -- `perChannel` from
-// that Channel's own loop time so every Channel decays at the requested
-// rate regardless of delay spread, `uniform` from one shared gain solved
-// from the mean loop time instead (see docs/design/reverb/stages/
-// 04-feedback-loop.md) -- and the resolved Tail budget is an upper bound
-// derived from rt60Sec and decayMargin -- never zero once
-// rt60Sec/decayMargin/sampleRate are all valid, independent of whether
-// per-Channel delay/gain/matrix derivation itself succeeds.
 dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
     const FeedbackLoopConfig& requested,
     const std::uint32_t channels,
@@ -1020,12 +807,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   loop.delayMinSamples = delayMinSamples;
   loop.delayMaxSamples = delayMaxSamples;
 
-  // Checked only after delayMinSamples/delayMaxSamples are already set
-  // above -- consistent with how the Diffuser always resolves
-  // lengthSamples before its own mix-validity check ever runs -- so a
-  // Hadamard request at a non-power-of-two Channel count fails validation
-  // on its own specific check rather than on an unrelated
-  // "delayMinSamples/delayMaxSamples derived from ms" mismatch.
   if (!isValidChannelCountForMix(loop.mix, channels)) {
     return loop;
   }
@@ -1073,11 +854,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
 
   loop.gains.reserve(channels);
   if (loop.gainMode == dsp::GainMode::uniform) {
-    // One shared gain solved from the mean loop time across Channels
-    // (docs/design/reverb/stages/04-feedback-loop.md's "Solving RT60 into
-    // gain"): the mean is deliberate rather than, say, the extremes, so
-    // the resulting per-Channel RT60 error is symmetric around the
-    // requested value rather than biased toward one end of the spread.
     double meanLoopTimeSec = 0.0;
     for (std::uint32_t channel = 0; channel < channels; ++channel) {
       meanLoopTimeSec +=
@@ -1125,10 +901,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
         requested.damping->lowRatio.value_or(kDefaultDampingLowRatio);
     damping.lowHz = requested.damping->lowHz.value_or(kDefaultDampingLowHz);
 
-    // Per-Channel shelf gains, coefficients, and expected decay are only
-    // solvable once every Channel's own decay gain is known (see
-    // resolveShelfGain); finiteness/range validation of the four requested
-    // fields runs regardless, in validateFeedbackLoopStage below.
     if (std::isfinite(damping.highRatio) && damping.highRatio > 0.0 &&
         std::isfinite(damping.highHz) && damping.highHz > 0.0 &&
         damping.highHz < sampleRate / 2.0 &&
@@ -1157,10 +929,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
           channels, std::numeric_limits<float>::epsilon());
       const auto matrixBoundFloat64 = resolveMatrixContractionBound(
           channels, std::numeric_limits<double>::epsilon());
-      // Only a boosted shelf (ratio > 1.0) can push decay slower than
-      // rt60Sec; an attenuating or bypassed shelf never lengthens it, so
-      // undamped and attenuation-only Tail budgets stay exactly rt60Sec *
-      // decayMargin (see ResolvedDamping's declaration).
       auto slowestResolvedRt60Sec = loop.rt60Sec;
       for (std::uint32_t channel = 0; channel < channels; ++channel) {
         const auto channelGain = loop.gains[channel];
@@ -1184,10 +952,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
         damping.lowShelfB1.push_back(lowCoefficients.b1);
         damping.lowShelfA1.push_back(lowCoefficients.a1);
 
-        // Each shelf's isolated asymptotic prediction: ratio times this
-        // Channel's own implied undamped RT60 (see ResolvedDamping's
-        // declaration) -- not a coupled solve, matching the design's
-        // documented decision not to compensate for shelf interaction.
         const auto impliedUndampedRt60Sec = -60.0 * loopTimeSec / lossDb;
         damping.expectedLowRt60Sec.push_back(
             damping.lowRatio * impliedUndampedRt60Sec);
@@ -1247,11 +1011,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
         loop.bufferSizes,
         stagePath(stageIndex) + "/modulation/depthMs");
 
-    // The Block-size bound becomes modulation-aware: the shortest
-    // *instantaneous* per-Channel delay across every Channel, moved or
-    // not (see "What this forces on the architecture") -- only once
-    // Modulation actually moved at least one Channel (a Diffusion Step
-    // has no equivalent bound; see resolveModulation's own bypass).
     if (!loop.modulation->channelModulated.empty()) {
       loop.blockSizeBoundSamples = resolveModulationBlockSizeBoundSamples(
           loop.delaysSamples,
@@ -1263,9 +1022,6 @@ dsp::ResolvedFeedbackLoop resolveFeedbackLoop(
   return loop;
 }
 
-// Named for error messages naming the actual requested strategy (issue
-// #110) rather than a name hardcoded from when `select` had only one
-// alternative.
 const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
   switch (strategy) {
   case dsp::DownmixStrategy::select:
@@ -1282,11 +1038,6 @@ const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
   fail("/composition", "unsupported Downmix strategy");
 }
 
-// A `select` Downmix's unit-norm intrinsic row: a single 1.0 at `channel`
-// over `channels` total positions. Left with no 1.0 entry (norm zero, not
-// unit) when `channel` is out of range or `channels` is zero -- resolution
-// runs before validateResolvedConfig can reject either, and this helper
-// must not throw or index out of bounds on the way there.
 std::vector<double> selectRow(
     const std::uint32_t channel, const std::uint32_t channels) {
   std::vector<double> row(channels, 0.0);
@@ -1296,12 +1047,6 @@ std::vector<double> selectRow(
   return row;
 }
 
-// `halves`' intrinsic row (issue #110): equal `1/sqrt(groupSize)`
-// coefficients over the first `ceil(N/2)` Channels (`leftGroup`) or the
-// remainder. Both groups are non-empty for every `channels >= 2`, but this
-// defensively returns an all-zero row rather than dividing by zero below
-// that floor -- resolution runs before validateResolvedConfig can reject a
-// shorter N, mirroring `orthogonal-rows`' own defensive placeholder.
 std::vector<double> halvesRow(
     const std::uint32_t channels, const bool leftGroup) {
   std::vector<double> row(channels, 0.0);
@@ -1319,9 +1064,6 @@ std::vector<double> halvesRow(
   return row;
 }
 
-// `alternating`'s intrinsic row (issue #110): equal `1/sqrt(groupSize)`
-// coefficients over even Channel indices (`leftGroup`) or odd indices.
-// Same N>=2 defensive placeholder as `halvesRow` above.
 std::vector<double> alternatingRow(
     const std::uint32_t channels, const bool leftGroup) {
   std::vector<double> row(channels, 0.0);
@@ -1340,12 +1082,6 @@ std::vector<double> alternatingRow(
   return row;
 }
 
-// `sum-all`'s intrinsic row (issue #114): equal `1/sqrt(channels)`
-// coefficients over every Channel, the same row duplicated to both L and
-// R -- the diagnostic Coherent Downmix ablation (docs/design/reverb/
-// stages/08-downmix.md). Unlike halvesRow/alternatingRow, this supports
-// N>=1 like selectRow: at channels==0 it defensively returns an empty
-// row rather than dividing by zero, mirroring their own placeholder.
 std::vector<double> sumAllRow(const std::uint32_t channels) {
   std::vector<double> row(channels, 0.0);
   if (channels == 0) {
@@ -1356,12 +1092,6 @@ std::vector<double> sumAllRow(const std::uint32_t channels) {
   return row;
 }
 
-// True only for `sum-all` on an aligned source (issue #114's Coherent
-// Downmix ablation tag) -- derived from strategy *and* resolved
-// Alignment together, never the strategy name alone. Shared by
-// resolveDownmix and validateResolvedDownmixFields so the two never
-// drift on the derivation, mirroring downmixStrategyLabel/sumAllRow's
-// own sharing above.
 bool resolveCoherentDownmixAblation(
     const dsp::DownmixStrategy strategy,
     const dsp::DownmixAlignment alignment) noexcept {
@@ -1383,10 +1113,6 @@ struct DownmixRowPair {
   std::vector<double> right;
 };
 
-// `orthogonal-rows`' intrinsic rows: rows 0 and 1 of a resolved dense
-// N-by-N matrix (ADR-0002). Shared by resolveDownmix and
-// validateResolvedConfig so the two never drift on how a row pair is cut
-// from the flat row-major matrix.
 DownmixRowPair extractDownmixRows(
     const std::vector<double>& matrix, const std::uint32_t channels) {
   return {
@@ -1396,12 +1122,6 @@ DownmixRowPair extractDownmixRows(
   };
 }
 
-// Conservative estimate of the transient N-by-N matrix that
-// `orthogonal-rows` resolution allocates (ADR-0002) before any row is cut
-// from it -- the same shape of estimate checkDiffuserMemoryBudget and
-// checkFeedbackLoopMemoryBudget make for their own mix matrices, applied
-// here so a large Channel count fails as a structured configuration error
-// instead of an uncontrolled allocation.
 std::optional<std::uint64_t> estimateDownmixOrthogonalMatrixBytes(
     const std::uint32_t channels) noexcept {
   constexpr std::uint64_t kSampleBytes = 8;
@@ -1410,15 +1130,6 @@ std::optional<std::uint64_t> estimateDownmixOrthogonalMatrixBytes(
                         : std::nullopt;
 }
 
-// The Width stage's resolved 2x2 mid/side matrix (docs/design/reverb/
-// stages/08-downmix.md's "Width as a constant-power mid/side law"),
-// applied to the pre-Width [left, right] vector as row-major
-// [[m00, m01], [m10, m11]]. Exact endpoint matrices at 0/90/180 degrees
-// bypass the general trig formula: 90 degrees genuinely needs its own
-// case, since cos(pi/4) and sin(pi/4), though mathematically equal, are
-// not guaranteed bit-identical from libm, and the design doc requires
-// 90 degrees to be an exact identity bypass. Shared by resolveDownmix and
-// validateResolvedConfig so the two never drift on the formula.
 std::vector<double> resolveWidthMatrix(const double widthDeg) {
   const auto half = 1.0 / std::sqrt(2.0);
   if (widthDeg == 0.0) {
@@ -1478,11 +1189,6 @@ dsp::ResolvedDownmix resolveDownmix(
   std::vector<double> rightRow;
 
   if (strategy == dsp::DownmixStrategy::select) {
-    // No fallback: `select` has no implicit Channel choice (issue #107),
-    // so a caller that reaches this without the JSON boundary's
-    // requireField (e.g. a direct C++ ReverbConfig construction) must
-    // still be rejected here rather than silently resolving to the
-    // archived Channel-0 default.
     if (!requested.leftChannel.has_value()) {
       fail(path + "/leftChannel", "required field is missing");
     }
@@ -1493,9 +1199,6 @@ dsp::ResolvedDownmix resolveDownmix(
         ? selectRow(*rightChannel, channels)
         : leftRow;
   } else {
-    // leftChannel/rightChannel are `select`-specific (issue #108): a
-    // direct C++ construction that sets either alongside another
-    // strategy is rejected here too, mirroring the JSON boundary.
     if (requested.leftChannel.has_value()) {
       fail(
           path + "/leftChannel",
@@ -1508,18 +1211,10 @@ dsp::ResolvedDownmix resolveDownmix(
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(strategy));
     }
-    // `sum-all` supports N>=1 like `select` (issue #114): unlike the
-    // remaining strategies below, it never needs a distinct row 1, so it
-    // is resolved before the N>=2 guard those require.
     if (strategy == dsp::DownmixStrategy::sumAll) {
       leftRow = sumAllRow(channels);
       rightRow = leftRow;
     } else if (channels < 2) {
-      // Every remaining non-select strategy requires N >= 2 to have a
-      // distinct row 1 (issue #108/#110); resolution runs before
-      // validateResolvedConfig can reject a shorter N, so this
-      // defensively resolves an all-zero placeholder rather than
-      // indexing past a too-short row.
       leftRow.assign(channels, 0.0);
       rightRow.assign(channels, 0.0);
     } else if (strategy == dsp::DownmixStrategy::halves) {
@@ -1567,27 +1262,10 @@ dsp::ResolvedDownmix resolveDownmix(
   };
 }
 
-// A wet branch's requested level, converted to a linear multiplier (issue
-// #109; shared by the Early branch's own `levelDb`, issue #111) --
-// resolved once, before construction, so Reverb's audio processing never
-// computes `pow`. Shared by resolveConfig and validateResolvedConfig so
-// the two never drift on the formula.
 double resolveLinearGainFromDb(const double levelDb) noexcept {
   return std::pow(10.0, levelDb / 20.0);
 }
 
-// A resolved gain must be finite, strictly positive, and representable as
-// a non-zero finite float regardless of this build's own Sample type
-// (issue #109's mainGain, #111's early/tap gain, #114's dryGain/wetGain):
-// a resolved.json is meant to give float and double DSP the same
-// structure, and float has the narrower range -- an extreme but finite
-// double gain (e.g. 1e50 from a +1000 dB level) silently becomes infinity
-// when narrowed to float, and a tiny one silently becomes exact zero,
-// either way diverging from the resolved value DSP construction actually
-// reads (see Downmix's own effectiveLeftRow/effectiveRightRow for the
-// same double-resolved/Sample-applied split). Shared so every gain field
-// fails with identical wording rather than a fourth (or fifth) copy of
-// this check drifting from the others.
 void validateFloatRepresentableGain(
     const std::string_view path, const double gain) {
   const auto gainAtFloatPrecision = static_cast<float>(gain);
@@ -1601,18 +1279,6 @@ void validateFloatRepresentableGain(
   }
 }
 
-// Pre-delay's own ms-to-samples resolution (issue #133): the established
-// nearest-frame rule (`floor(exactSamples + 0.5)`) already used by the
-// Diffuser's own sample-budget derivation (deriveSampleBudget above) and
-// the Feedback Loop's own delay resolution -- written once here so
-// resolveConfig's derivation and validateResolvedConfig's independent
-// re-derivation cannot drift from each other. Returns 0 for a
-// non-finite preDelayMs or one whose exact-samples value would not fit
-// in a std::uint64_t, rather than converting either directly (undefined
-// behavior for NaN or an out-of-range value): both are already invalid
-// on their own terms and rejected by validateResolvedConfig's own
-// finite-range check, so an exact 0 here is immaterial rather than
-// silently wrong.
 std::uint64_t resolvePreDelaySamples(
     const double preDelayMs, const std::uint32_t sampleRate) noexcept {
   if (!std::isfinite(preDelayMs) || preDelayMs < 0.0) {
@@ -1628,14 +1294,6 @@ std::uint64_t resolvePreDelaySamples(
   return static_cast<std::uint64_t>(std::floor(exactSamples + 0.5L));
 }
 
-// Early's own `select` Downmix default (issue #111, docs/design/reverb/
-// stages/09-composition.md's "A present Early Reflections branch defaults
-// to ... select Channels 0/1 (or Channel 0 duplicated at N=1)"), unlike
-// the Main Downmix's own `select`, which has no implicit Channel choice
-// (issue #107) and is rejected outright when omitted. Only fills
-// leftChannel/rightChannel when the caller supplied neither -- an
-// explicit leftChannel with no rightChannel still means mono duplication,
-// exactly like every other `select` Downmix.
 DownmixConfig withEarlyDownmixDefaults(
     DownmixConfig requested, const std::uint32_t channels) {
   const auto strategy =
@@ -1658,22 +1316,6 @@ struct TapSupportBounds {
   std::uint64_t conservativeSupportMaxSamples = 0;
 };
 
-// Nominal and conservative Tap support bounds through `stepIndex`
-// inclusive (issue #112, docs/design/reverb/stages/
-// 07-early-reflections.md's "Tap support"): nominal sums each
-// contributing step's own minimum/maximum resolved per-Channel delay;
-// conservative additionally widens every step whose own Modulation is
-// active by that step's resolved Excursion (rounded up) plus the fixed
-// Interpolation margin, applied symmetrically as a conservative (never
-// underestimating) reach on both sides -- the same reach
-// resolveModulationHeadroomSamples already uses to size delay-line
-// buffers, applied here to bound arrival time instead. Shared by
-// resolveConfig and validateResolvedConfig so the two never drift on the
-// formula. Defensive: an out-of-range stepIndex or an unresolved step
-// (empty delaysSamples, e.g. an invalid mix/Channel-count combination the
-// Diffuser's own validation rejects separately) contributes nothing
-// rather than indexing out of bounds -- resolution runs before
-// validateResolvedConfig can reject either.
 TapSupportBounds resolveTapSupport(
     const dsp::ResolvedDiffuser& diffuser, const std::uint32_t stepIndex) {
   TapSupportBounds bounds;
@@ -1703,22 +1345,6 @@ TapSupportBounds resolveTapSupport(
   return bounds;
 }
 
-// Resolves one Early tap: its own gain offset, nominal/conservative
-// support bounds (in samples and milliseconds), and its shaping gain --
-// gainDb minus decayDbPerSec times the nominal support end in seconds
-// (docs/design/reverb/stages/07-early-reflections.md's "Early envelope"),
-// converted to a linear multiplier. Takes already-resolved-shaped values
-// (`stepIndex`, `gainDb`) rather than a Requested-layer EarlyTapConfig,
-// so validateResolvedConfig can recompute the same expected tap from
-// resolved fields alone -- mirroring how validateResolvedDownmixFields
-// and validateResolvedModulation each recompute their own expected
-// values from resolved data only, never by reassembling a config-layer
-// request struct. `decayDbPerSec` is used as given when finite and
-// non-negative; otherwise 0.0 keeps this defensively computable,
-// mirroring resolveModulation's own bypass on invalid requested values --
-// validateResolvedConfig rejects an actually invalid `decayDbPerSec` from
-// the caller's own recorded field, not from this function's internal
-// fallback.
 dsp::ResolvedEarlyTap resolveEarlyTap(
     const std::uint32_t stepIndex,
     const double gainDb,
@@ -1812,11 +1438,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
   ResolutionEvidence resolutionEvidence;
   if (requestedComposition != nullptr &&
       requestedComposition->stages.empty()) {
-    // resolveConfig is a public non-JSON entry point too (issue #109,
-    // mirroring #107/#108's own direct-construction checks): the JSON
-    // boundary's own rejection is not the only place this contract has to
-    // hold for a caller that skips it (e.g. a direct C++ ReverbConfig
-    // construction).
     if (requestedComposition->mainEnabled.has_value()) {
       fail(
           "/composition/mainEnabled",
@@ -1861,10 +1482,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         requestedComposition->mainLevelDb.value_or(0.0);
     resolved.composition.mainGain =
         resolveLinearGainFromDb(resolved.composition.mainLevelDb);
-    // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb
-    // default to 0 dB and wetOnly defaults to true, reproducing every
-    // existing non-empty format-v2 request's wet-only output exactly
-    // when all three are omitted.
     resolved.composition.dryDb = requestedComposition->dryDb.value_or(0.0);
     resolved.composition.dryGain =
         resolveLinearGainFromDb(resolved.composition.dryDb);
@@ -1873,10 +1490,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         resolveLinearGainFromDb(resolved.composition.wetDb);
     resolved.composition.wetOnly =
         requestedComposition->wetOnly.value_or(true);
-    // Pre-delay (issue #133): defaults to 0 (no delay), completing the
-    // Composition envelope. resolvePreDelaySamples above recorded
-    // explicitly as `preDelaySamples` so rerendering never repeats the
-    // floating-point conversion.
     resolved.composition.preDelayMs =
         requestedComposition->preDelayMs.value_or(0.0);
     resolved.composition.preDelaySamples = resolvePreDelaySamples(
@@ -1903,10 +1516,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         inputChannels > 0 &&
         inputChannels <= 2 &&
         canonicalShape;
-    // The Main Downmix's Alignment expectation: unaligned when its source
-    // includes a Feedback Loop, aligned otherwise (Diffuser-only) -- see
-    // docs/design/reverb/stages/08-downmix.md and issue #107. Requested
-    // configuration cannot set this directly.
     const auto hasFeedbackLoop = std::any_of(
         requestedComposition->stages.begin(),
         requestedComposition->stages.end(),
@@ -1955,12 +1564,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
                     stageConfig, derivation.stepCount);
                 if (weights.has_value() &&
                     weights->size() == derivation.stepCount) {
-                  // Fast, approximate pre-resolution gate: no step is
-                  // resolved yet, so no Modulation headroom is known
-                  // (modulationBytes = 0) -- the authoritative,
-                  // headroom-aware check runs post-resolution in
-                  // validateDiffuserStage, which always runs before this
-                  // Diffuser reaches DSP construction.
                   checkDiffuserMemoryBudget(
                       channels,
                       derivation.sampleBudget.samples,
@@ -2005,14 +1608,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
           stage);
     }
 
-    // The parallel Early Reflections branch (issues #111/#112): resolved
-    // once every Main wet path stage above is resolved, since its own
-    // taps and Downmix both need the Composition's own `channels` --
-    // the same N the Main Downmix resolves against -- and each tap's own
-    // support bounds need the Main wet path's own resolved Diffuser.
-    // Omitted `early`, an included but empty `early`, and
-    // `early: {"taps": []}` all mean no branch; a non-empty `taps`
-    // resolves one (see EarlyConfig's own declaration).
     if (requestedComposition->early.has_value()) {
       const auto& earlyRequested = *requestedComposition->early;
       const auto hasTaps =
@@ -2034,10 +1629,6 @@ dsp::ResolvedConfig resolveConfig(const ReverbConfig& requested,
         early.gain = resolveLinearGainFromDb(early.levelDb);
         early.decayDbPerSec = earlyRequested.decayDbPerSec.value_or(0.0);
 
-        // Unique stepIndex per tap, sorted ascending (canonical order,
-        // issue #112): a Requested tap-list permutation must resolve and
-        // render identically, so order is normalized here rather than
-        // preserved, and a duplicate index is rejected outright.
         auto sortedTaps = *earlyRequested.taps;
         std::sort(
             sortedTaps.begin(),
@@ -2096,9 +1687,6 @@ void validateResolvedConfig(const dsp::ResolvedConfig& resolved,
 
 namespace {
 
-// Shared canonical-coefficient / orthogonality check for a resolved mixing
-// matrix, used by both a Diffusion Step and a Feedback Loop: every mixing
-// matrix satisfies MMT = I (Part IV, standing invariant 4).
 void validateResolvedMixMatrix(
     const dsp::MixMatrixType mix,
     const std::uint32_t channels,
@@ -2138,10 +1726,6 @@ void validateResolvedMixMatrix(
     break;
   }
   case dsp::MixMatrixType::randomOrthogonal: {
-    // Property-checked from the resolved coefficients themselves
-    // (MM^T = I) rather than by recomputing and trusting the seeded
-    // construction that produced them -- a hand-authored ablation may
-    // substitute any valid orthogonal matrix.
     constexpr double kOrthogonalityTolerance = 1e-9;
     for (std::uint32_t rowA = 0; rowA < channels; ++rowA) {
       for (std::uint32_t rowB = 0; rowB < channels; ++rowB) {
@@ -2163,19 +1747,6 @@ void validateResolvedMixMatrix(
   }
 }
 
-// Validates one resolved Modulation object: shared by the Feedback Loop
-// and each Diffusion Step (see docs/design/reverb/stages/06-modulation.md,
-// issues #89/#91) so the property checks -- Excursion rejection, buffer
-// headroom, and every per-Channel derived value -- can never drift
-// between the two modulated stages. `owner` selects the caller's own
-// usage-tag domain (see ModulationOwner in ModulationResolution.h);
-// `itemIndex` is the positional-seeding item index resolution used for
-// every per-Channel draw -- 0 for the Feedback Loop (one loop, not a
-// chain of steps) and the step index for a Diffusion Step.
-// `delaysSamples` and `bufferSizes` must already be validated to carry
-// one entry per Channel. Does not check a Block-size bound: the Feedback
-// Loop's own caller does that afterward, from its own already-computed
-// `modulationActive`, since a Diffusion Step has none.
 void validateResolvedModulation(
     const dsp::ResolvedConfig& resolved,
     const dsp::ResolvedModulation& modulation,
@@ -2235,12 +1806,6 @@ void validateResolvedModulation(
         "expected depthMs resolved to samples at this Composition's "
         "sample rate");
   }
-  // `modulationActive` (computed here from channelModulated's own
-  // emptiness) and "depthMs and channelFraction both positive" must
-  // agree -- resolution's own invariant -- so a hand-authored
-  // resolved.json that decouples the two is caught explicitly here
-  // rather than silently taking whichever branch one of the two
-  // predicates happens to select.
   const auto modulationActive = !modulation.channelModulated.empty();
   if (modulationActive !=
       (modulation.depthMs > 0.0 && modulation.channelFraction > 0.0)) {
@@ -2364,9 +1929,6 @@ void validateResolvedModulation(
   }
 }
 
-// Validates one resolved Diffuser stage. `stageIndex` is always 1: a
-// Diffuser is either the composition's sole middle stage or the first of
-// two, since a Feedback Loop (when present) always follows it.
 void validateDiffuserStage(
     const dsp::ResolvedConfig& resolved,
     const dsp::ResolvedDiffuser& diffuser,
@@ -2406,13 +1968,6 @@ void validateDiffuserStage(
   if (diffuser.totalSamples == 0) {
     fail(path + "/totalSamples", "expected value greater than zero");
   }
-  // Diffusion Step Modulation's Excursion and Interpolation margin can
-  // grow a Channel's resolved buffer past the nominal shared sample
-  // budget (see docs/design/reverb/stages/06-modulation.md's "Delay
-  // buffers need headroom"); take whichever bound is larger so an
-  // unmodulated Diffuser's check is unchanged from before Modulation
-  // existed (mirrors validateFeedbackLoopStage's own
-  // `maxResolvedBufferSamples` pattern).
   auto maxResolvedBufferSamples = diffuser.totalSamples;
   for (const auto& step : diffuser.steps) {
     if (!step.bufferSizes.empty()) {
@@ -2519,17 +2074,11 @@ void validateDiffuserStage(
     requireChannelValues(step.permutation.size(), "/permutation");
     requireChannelValues(step.polaritySigns.size(), "/polaritySigns");
 
-    // Modulation-aware once this step's own Modulation actually moves at
-    // least one Channel (see "Delay buffers need headroom"); checked
-    // instead, against the Excursion-plus-margin expectation, once
-    // Modulation is validated below.
     const auto stepModulationActive = step.modulation.has_value() &&
         !step.modulation->channelModulated.empty();
 
     auto sortedDelays = step.delaysSamples;
     std::sort(sortedDelays.begin(), sortedDelays.end());
-    // Uniform-random deliberately samples with replacement, so clumping and
-    // collisions are a permitted ablation rather than a validation failure.
     if (step.delayStrategy != dsp::DelayStrategy::uniformRandom &&
         std::adjacent_find(sortedDelays.begin(), sortedDelays.end()) !=
             sortedDelays.end()) {
@@ -2693,10 +2242,6 @@ void validateFeedbackLoopStage(
         path,
         "expected delayMaxSamples at least delayMinSamples");
   }
-  // Modulation's Excursion and Interpolation margin can grow a Channel's
-  // resolved buffer past delayMaxSamples; take whichever bound is larger
-  // so an unmodulated Feedback Loop's check is unchanged from before
-  // Modulation existed.
   const auto maxResolvedBufferSamples = feedbackLoop.bufferSizes.empty()
       ? feedbackLoop.delayMaxSamples
       : *std::max_element(
@@ -2722,12 +2267,6 @@ void validateFeedbackLoopStage(
       !std::isfinite(*feedbackLoop.silenceFloorDb)) {
     fail(path + "/silenceFloorDb", "expected a finite value when present");
   }
-  // With Damping disabled, this is the exact, authoritative check: the
-  // Tail budget is derived from rt60Sec and decayMargin alone. With
-  // Damping enabled, the budget instead follows the slowest resolved RT60
-  // (rt60Sec, or slower when a shelf boosts) -- checked exactly once every
-  // Channel's resolved gain and shelf coefficients are validated, further
-  // below.
   if (!feedbackLoop.damping.has_value() &&
       feedbackLoop.tailBudgetSamples !=
           resolveTailBudgetSamples(
@@ -2772,10 +2311,6 @@ void validateFeedbackLoopStage(
   requireChannelValues(feedbackLoop.bufferSizes.size(), "/bufferSizes");
   requireChannelValues(feedbackLoop.gains.size(), "/gains");
 
-  // Modulation-aware once Modulation actually moves delays (see "The
-  // Block-size bound becomes modulation-aware"); checked instead, against
-  // the Excursion-adjusted expectation, once Modulation is validated
-  // below.
   const auto modulationActive = feedbackLoop.modulation.has_value() &&
       !feedbackLoop.modulation->channelModulated.empty();
   if (!modulationActive) {
@@ -2845,11 +2380,6 @@ void validateFeedbackLoopStage(
           path + "/delaysMs",
           "expected milliseconds derived from integer delays");
     }
-    // Modulation-aware once active for this specific Channel (see
-    // "Delay buffers need headroom"); checked instead, against the
-    // Excursion-plus-margin expectation, once Modulation is validated
-    // below. Guards the mask index defensively rather than trusting its
-    // size yet -- that size is itself checked in the same place.
     const auto channelIsModulated = modulationActive &&
         channel < feedbackLoop.modulation->channelModulated.size() &&
         feedbackLoop.modulation->channelModulated[channel];
@@ -2963,11 +2493,6 @@ void validateFeedbackLoopStage(
         damping.contractionMarginFloat64.size(),
         "/contractionMarginFloat64");
 
-    // A relative tolerance, not a tight fixed epsilon: the gain
-    // (log10/pow), the coefficients (tan/sqrt/pow), and the expected decay
-    // (those plus cos/sin) all chain transcendental functions, so a
-    // resolved.json produced on another platform (see ADR-0001) may differ
-    // by a few ULPs once rerendered here.
     const auto relativeTolerance = [](const double expected) noexcept {
       return 1e-9 * std::max(1.0, std::abs(expected));
     };
@@ -3089,16 +2614,6 @@ void validateFeedbackLoopStage(
             "at 1 kHz");
       }
 
-      // The Reference band's distance from `rt60Sec` is not itself a
-      // rejection reason (see ADR-0004, docs/adr/0004-validate-structure-
-      // not-acoustics.md): a gentle one-pole shelf's transition band is
-      // wide by design, so even the research-baseline default leaks
-      // noticeably into 1 kHz -- a real, verified property of the filter,
-      // not a bug. `expectedReferenceRt60Sec` above already records the
-      // actual implied decay, which is what a later analysis/report layer
-      // (not resolution) flags when it lands more than 10% from
-      // `rt60Sec`.
-
       const auto expectedBoundFloat32 = resolveChannelContractionBound(
           channelGain,
           damping.lowShelfGains[channel],
@@ -3138,14 +2653,6 @@ void validateFeedbackLoopStage(
           damping.contractionMarginFloat64[channel],
           expectedBoundFloat64,
           "/contractionBoundFloat64");
-      // The accept/reject gate for boosting (#77): a conservative
-      // structural proof, not a frequency grid or complete FDN pole solve
-      // (see docs/design/reverb/stages/05-damping.md's "Stability"). Every
-      // Channel's bound must remain strictly below unity at both realized
-      // precisions; this may conservatively reject an overlapping
-      // boost-and-cut combination that an exact modal analysis could prove
-      // safe (see ADR-0004) -- an accepted trade-off for a cheap,
-      // deterministic proof.
       if (!(damping.contractionBoundFloat32[channel] < 1.0) ||
           !(damping.contractionBoundFloat64[channel] < 1.0)) {
         fail(
@@ -3209,11 +2716,6 @@ void validateFeedbackLoopStage(
         path + "/modulation",
         path + "/bufferSizes");
     if (modulationActive) {
-      // The Block-size bound becomes modulation-aware: the shortest
-      // *instantaneous* per-Channel delay across every Channel, moved or
-      // not (see "What this forces on the architecture"). A Diffusion
-      // Step has no equivalent bound, so this check stays here rather
-      // than in the shared validateResolvedModulation.
       const auto expectedBlockSizeBound =
           resolveModulationBlockSizeBoundSamples(
               feedbackLoop.delaysSamples,
@@ -3229,12 +2731,6 @@ void validateFeedbackLoopStage(
   }
 }
 
-// Validates one resolved Downmix's field-level contract: dimensions,
-// strategy/Channel selection, compensation, rows, its Alignment
-// expectation, and Width -- shared by the Main Downmix stage and the
-// Early Downmix (issue #111), which resolve independently (their own
-// `path` and domain-separated `orthogonalUsage` tag) but must never drift
-// on what a resolved Downmix is allowed to look like.
 void validateResolvedDownmixFields(
     const dsp::ResolvedConfig& resolved,
     const dsp::ResolvedDownmix& downmix,
@@ -3278,9 +2774,6 @@ void validateResolvedDownmixFields(
           std::string("not applicable to strategy ") +
               downmixStrategyLabel(downmix.strategy));
     }
-    // `sum-all` supports N>=1 like `select` (issue #114), so it is
-    // exempted first here, mirroring resolveDownmix's own early
-    // dedicated branch for the same rule above.
     if (downmix.strategy != dsp::DownmixStrategy::sumAll && channels < 2) {
       fail(
           path + "/strategy",
@@ -3392,27 +2885,11 @@ void validateResolvedConfig(
   }
   validateShape(resolved.composition);
   if (resolved.composition.stages.empty()) {
-    // Branch controls are invalid on the empty identity Composition
-    // (docs/design/reverb/stages/09-composition.md). mainEnabled/
-    // mainLevelDb are inert booleans/doubles Reverb never reads once
-    // stages are empty, but this public validator is also a direct,
-    // non-JSON entry point (see ResolveConfig.h) -- a populated `early`
-    // here would contradict the same invariant already enforced at the
-    // Requested/JSON boundaries, so it is rejected here too rather than
-    // silently accepted (issue #111).
     if (resolved.composition.early.has_value()) {
       fail(
           "/composition/early",
           "not applicable to the empty identity Composition");
     }
-    // The Composition's own dry/wet envelope (issue #131) is a plain,
-    // always-present scalar set on dsp::ResolvedComposition, unlike
-    // `early`'s std::optional -- so a hand-built empty Composition
-    // cannot omit it, only set it to something other than ADR-0007's
-    // legacy neutral reading. Reject exactly that, mirroring `early`
-    // above, so this direct entry point cannot silently accept a
-    // non-neutral envelope Reverb would never read once stages are
-    // empty (PR review on #131, echoing the same finding on #111).
     if (resolved.composition.dryDb != 0.0) {
       fail(
           "/composition/dryDb",
@@ -3438,8 +2915,6 @@ void validateResolvedConfig(
           "/composition/wetOnly",
           "not applicable to the empty identity Composition");
     }
-    // Pre-delay (issue #133) completes the envelope set above; the same
-    // reasoning applies.
     if (resolved.composition.preDelayMs != 0.0) {
       fail(
           "/composition/preDelayMs",
@@ -3453,9 +2928,6 @@ void validateResolvedConfig(
     return;
   }
 
-  // The Main wet path's own enablement and level (issue #109): moot, and
-  // never serialized, on the empty identity Composition handled by the
-  // early return above.
   if (!std::isfinite(resolved.composition.mainLevelDb)) {
     fail("/composition/mainLevelDb", "expected a finite value");
   }
@@ -3468,9 +2940,6 @@ void validateResolvedConfig(
         "expected gain derived from mainLevelDb");
   }
 
-  // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb
-  // must be finite, and dryGain/wetGain must be derived and float-
-  // representable, exactly like mainLevelDb/mainGain above.
   if (!std::isfinite(resolved.composition.dryDb)) {
     fail("/composition/dryDb", "expected a finite value");
   }
@@ -3490,9 +2959,6 @@ void validateResolvedConfig(
     fail("/composition/wetGain", "expected gain derived from wetDb");
   }
 
-  // Pre-delay (issue #133): finite, inclusive within 0-200 ms; the same
-  // range documented by docs/design/reverb/stages/09-composition.md's
-  // "Pre-delay and dry/wet" and by ADR-0007's envelope-completion note.
   if (!std::isfinite(resolved.composition.preDelayMs) ||
       resolved.composition.preDelayMs < 0.0 ||
       resolved.composition.preDelayMs > 200.0) {
@@ -3500,9 +2966,6 @@ void validateResolvedConfig(
         "/composition/preDelayMs",
         "expected a finite value within 0-200 ms");
   }
-  // preDelaySamples must be derived from preDelayMs by resolvePreDelaySamples
-  // above -- the same helper resolveConfig itself uses, so the two
-  // cannot drift.
   const auto expectedPreDelaySamples = resolvePreDelaySamples(
       resolved.composition.preDelayMs, resolved.sampleRate);
   if (resolved.composition.preDelaySamples != expectedPreDelaySamples) {
@@ -3587,9 +3050,6 @@ void validateResolvedConfig(
   const auto matrixElements = matrixElementCount(channels);
 
   auto containsFeedbackLoop = false;
-  // Captured for the Early Reflections branch below (issue #111): the
-  // Main wet path's own Diffuser, if any -- there is at most one per the
-  // shapes validateShape admits, so this pointer is unambiguous.
   const dsp::ResolvedDiffuser* diffuserStage = nullptr;
   for (std::size_t stageIndex = 1; stageIndex < downmixIndex; ++stageIndex) {
     std::visit(
@@ -3635,15 +3095,6 @@ void validateResolvedConfig(
       expectedAlignment,
       stagePath(downmixIndex));
 
-  // The parallel Early Reflections branch (issues #111/#112): valid only
-  // when the Main wet path contains a Diffuser (docs/design/reverb/
-  // stages/09-composition.md), every tap's own stepIndex must be unique
-  // and sorted ascending (canonical order) and reference an in-range
-  // resolved Diffusion Step, each tap's own support bounds and shaping
-  // gain must match the shared resolution formula, and its Downmix is
-  // validated by the same shared field contract as Main's -- always an
-  // aligned Alignment expectation and its own domain-separated
-  // RandomOrthogonal usage tag.
   if (resolved.composition.early.has_value()) {
     const auto& early = *resolved.composition.early;
     if (diffuserStage == nullptr) {

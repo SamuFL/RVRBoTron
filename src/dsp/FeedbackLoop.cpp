@@ -11,16 +11,6 @@
 namespace rvrbotron::dsp {
 namespace {
 
-// Explicit, portable denormal flush for the feedback write path (see
-// docs/design/reverb/stages/04-feedback-loop.md and issue #54): a long
-// decaying tail must not stall on denormals, but a CPU flush-to-zero mode
-// would be platform-specific behaviour inside the DSP, in conflict with the
-// cross-platform equivalence tolerances already committed (ADR-0001). A
-// plain magnitude comparison against the smallest normal value is
-// deterministic and identical on every supported platform instead. This is
-// unconditional and independent of the still-dormant `silenceFloorDb` seam
-// (see ResolvedConfig.h), which will one day raise the flush to an audible
-// threshold rather than merely a numerically clean one.
 constexpr Sample kDenormalFlushThreshold =
     std::numeric_limits<Sample>::min();
 
@@ -67,13 +57,6 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
           "Feedback Loop requires one resolved Damping coefficient set per "
           "Channel");
     }
-    // A unity ratio bypasses its own section rather than processing it (see
-    // docs/design/reverb/stages/05-damping.md's invariants): the
-    // coefficients below do not simplify to identity under floating-point
-    // rounding, so skipping the arithmetic entirely is what makes an
-    // explicit unity Damping bit-identical to Damping disabled -- and each
-    // section's bypass is independent, so a unity high ratio alongside an
-    // active low ratio only skips the high shelf.
     const auto loadShelf =
         [this](
             const std::vector<double>& gains,
@@ -102,11 +85,6 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
                   "coefficients");
             }
             const auto sampleA1 = static_cast<Sample>(coefficientA);
-            // A one-pole section's own state is stable only while its pole
-            // magnitude |a1| stays below one (#77); resolution never emits
-            // such a value for this stage's canonical shelf coefficients,
-            // so a violation here means deliberately unstable or corrupted
-            // resolved data, rejected before it can ever process a sample.
             if (!(std::abs(sampleA1) < Sample{1})) {
               throw std::invalid_argument(
                   "Feedback Loop requires a stable resolved Damping shelf "
@@ -143,15 +121,6 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
         lowShelfPrevOutput_);
   }
 
-  // Resolution's own bypass (config::modulationFitsDelay et al.): an
-  // omitted Modulation object, an explicit zero depth, and a zero
-  // channelFraction are three different resolved representations, but
-  // they all share the same runtime outcome here -- `modulation_` stays
-  // unconstructed whenever resolution found no Channel to actually move
-  // (config.modulation->channelModulated empty), exactly like Damping's
-  // unity-ratio bypasses above. Every read/write below asks
-  // `modulation_` (and, per Channel, its own isModulated()) directly
-  // rather than tracking a second, always-consistent bool.
   if (config.modulation.has_value() &&
       !config.modulation->channelModulated.empty()) {
     const auto& modulation = *config.modulation;
@@ -166,13 +135,6 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
     modulation_.emplace(modulation);
     interpolation_ = modulation.interpolation;
 
-    // Allpass interpolator state is allocated only for the Channels
-    // this Modulation actually moves, and only when allpass is the
-    // chosen method -- see FeedbackLoop.h's own `allpassState_` and
-    // "no allpass state at all" for a bypassed Channel. Every unmodulated
-    // Channel's own `allpassStateIndex_` entry is left at its default
-    // and never read, since every read site below is already guarded by
-    // `isModulated()`.
     if (interpolation_ == ModulationInterpolation::allpass) {
       buildAllpassState(
           modulation.channelModulated, allpassState_, allpassStateIndex_);
@@ -210,11 +172,6 @@ void FeedbackLoop::processFrame(const Sample* const inputs,
     fedBack_[channel] = delayed * gains_[channel];
   }
 
-  // Two-shelf Damping runs after decay gain and before mixing, on every
-  // circulation, high shelf then low shelf (see docs/design/reverb/stages/
-  // 05-damping.md's "Structural note"); each section is skipped
-  // independently when bypassed (unity ratio, or Damping disabled --
-  // `highShelfBypassed_`/`lowShelfBypassed_` default true).
   if (!highShelfBypassed_) {
     for (std::size_t channel = 0; channel < channels_; ++channel) {
       const auto input = fedBack_[channel];

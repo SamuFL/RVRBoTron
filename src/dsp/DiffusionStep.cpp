@@ -41,14 +41,6 @@ DiffusionStep::DiffusionStep(const ResolvedDiffusionStep& config)
   }
   mix_ = makeMixMatrix(config.mix, channels_, config.matrix);
 
-  // Resolution's own bypass (config::modulationFitsDelay et al.): an
-  // omitted Modulation object, an explicit zero depth, and a zero
-  // channelFraction are three different resolved representations, but
-  // they all share the same runtime outcome here -- `modulation_` stays
-  // unconstructed whenever resolution found no Channel to actually move
-  // (config.modulation->channelModulated empty). Every read below asks
-  // `modulation_` (and, per Channel, its own isModulated()) directly
-  // rather than tracking a second, always-consistent bool.
   if (config.modulation.has_value() &&
       !config.modulation->channelModulated.empty()) {
     const auto& modulation = *config.modulation;
@@ -63,9 +55,6 @@ DiffusionStep::DiffusionStep(const ResolvedDiffusionStep& config)
     modulation_.emplace(modulation);
     interpolation_ = modulation.interpolation;
 
-    // Allpass interpolator state is allocated only for the Channels
-    // this Modulation actually moves, and only when allpass is the
-    // chosen method (mirrors FeedbackLoop's own construction).
     if (interpolation_ == ModulationInterpolation::allpass) {
       buildAllpassState(
           modulation.channelModulated, allpassState_, allpassStateIndex_);

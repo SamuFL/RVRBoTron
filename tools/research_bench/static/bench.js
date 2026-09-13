@@ -13,12 +13,6 @@
   var player = document.getElementById("player");
   var download = document.getElementById("download");
 
-  // The JSON editing surface (issue #138). Ace text APIs only -- no HTML
-  // annotations, tooltips, or completion markup: request text and renderer
-  // diagnostics are untrusted content, and the one status panel is where
-  // they are shown, as text. Workers are disabled before the mode is
-  // attached, not left to the Content-Security-Policy to block; the
-  // renderer remains the sole validator.
   var editor = ace.edit("request-editor");
   editor.session.setOption("useWorker", false);
   editor.session.setMode("ace/mode/json");
@@ -30,8 +24,6 @@
     wrap: false
   });
 
-  // The editor's current string is the one request source of truth, for
-  // both Render and Download -- never a separate parsed/re-serialized copy.
   function getRequestText() {
     return editor.getValue();
   }
@@ -44,10 +36,6 @@
     return path + "?token=" + encodeURIComponent(token);
   }
 
-  // The four committed Request templates (issue #140), executable
-  // documentation rendered through the real renderer in tests -- discover
-  // the editable structure here, not from memory. Labels match the option
-  // text exactly, for status messages and the confirmation prompt.
   var TEMPLATE_LABELS = {
     simple: "Simple",
     full: "Full",
@@ -55,20 +43,10 @@
     spatial: "Spatial"
   };
 
-  // The two checkpoints a template load never needs confirmation against:
-  // whatever was last loaded, and whatever last rendered successfully.
-  // Editing away from both, then trying to switch templates, is the one
-  // case that can lose work -- and the only one that asks first.
   var lastLoadedTemplateText = null;
   var lastRenderedText = null;
   var activeTemplateKey = "simple";
 
-  // Bumped by every loadTemplate call, and captured per call as
-  // requestId: a fetch whose id no longer matches this counter when it
-  // resolves has been superseded by a later load (the user switching
-  // again before the first fetch settles, or startup's own load losing
-  // to an early click) and applies nothing, so an out-of-order response
-  // can never silently overwrite a more recent selection.
   var templateRequestId = 0;
 
   function fetchTemplateText(key) {
@@ -90,14 +68,6 @@
   function loadTemplate(key, loadedMessage) {
     templateRequestId += 1;
     var requestId = templateRequestId;
-    // The confirmation prompt (or its absence, when nothing is at risk)
-    // only accounts for edits that already existed when this load began.
-    // Typing during the fetch itself -- brief, but real on a slow
-    // loopback connection or a large template -- gets nothing to compare
-    // against there, so it is checked again here: if the editor no longer
-    // reads the way it did when the request started, something changed
-    // out from under this load, and applying the fetched text would
-    // silently discard it without ever asking.
     var textBeforeFetch = getRequestText();
     fetchTemplateText(key).then(function (text) {
       if (requestId !== templateRequestId) { return; }
@@ -119,9 +89,6 @@
     });
   }
 
-  // Startup always loads Simple fresh over the network, never from a
-  // cache, cookie, or local storage -- reloading the page is the only
-  // reset this bench has, and it must actually reset (issue #140).
   loadTemplate("simple", "Loaded the Simple template. Choose an Audition source to begin.");
 
   templateSelect.addEventListener("change", function () {
@@ -138,8 +105,6 @@
     loadTemplate(key);
   });
 
-  // Every message is assigned as text, never as markup: filenames,
-  // requests, and renderer diagnostics are all untrusted content.
   function say(message, kind) {
     statusBox.textContent = message;
     statusBox.className = kind || "";
@@ -168,9 +133,6 @@
     });
   }
 
-  // Triggers a real browser download of in-memory text -- on explicit
-  // request only, and never through a plain <a href> the browser might
-  // just navigate to instead of saving.
   function downloadText(filename, text, mimeType) {
     var blob = new Blob([text], { type: mimeType });
     var url = URL.createObjectURL(blob);
@@ -186,13 +148,8 @@
   sourceInput.addEventListener("change", function () {
     var file = sourceInput.files && sourceInput.files[0];
     if (!file) { return; }
-    // Selecting is asynchronous. Until the server has accepted the bytes,
-    // Render would run against whatever source is still active, and a
-    // second selection could land out of order and win. Hold both shut.
     setBusy(true);
     say("Reading " + file.name + "…");
-    // The browser sends the selected bytes. The server is never given a
-    // filesystem path -- the name travels only as a display label.
     file.arrayBuffer().then(function (bytes) {
       return send("/api/source", {
         method: "POST",
@@ -208,8 +165,6 @@
         facts.sampleRate + " Hz, " + facts.durationSeconds + " s";
       say("Source ready. Press Render.", "ok");
     }).catch(function (error) {
-      // A refused selection never replaced the source on the server, so
-      // the label must keep naming the one Render will actually use.
       var active = sourceName.textContent;
       say(
         String(error.message || error) +
@@ -224,9 +179,6 @@
   renderButton.addEventListener("click", function () {
     setBusy(true);
     say("Rendering…");
-    // Captured once, not re-read after the request settles: what counts
-    // as "last successfully rendered" (issue #140's template dirty-check)
-    // is the text actually sent, regardless of anything typed meanwhile.
     var sentText = getRequestText();
     send("/api/render", {
       method: "POST",
@@ -237,7 +189,6 @@
       factsBox.textContent =
         facts.sourceFilename + " — " + facts.durationSeconds + " s, " +
         facts.sampleRate + " Hz, " + facts.channels + " ch";
-      // Cache-busted so a new render replaces the previous audio.
       var url = api("/api/output.wav") + "&n=" + Date.now();
       player.src = url;
       player.hidden = false;
@@ -252,14 +203,6 @@
     });
   });
 
-  // A JSON pretty-printer that never routes numbers through a JavaScript
-  // Number: the renderer accepts the full uint64 seed range
-  // (tests/test_configuration_cli.py:343-378), which exceeds 2^53, and
-  // JSON.parse/JSON.stringify would silently round such a seed to the
-  // nearest double. Numeric and string lexemes are re-emitted verbatim;
-  // only whitespace and structure change. Layout matches
-  // JSON.stringify(_, null, 2): two-space indents, ": " after keys, no
-  // trailing commas, "{}"/"[]" for empty containers.
   function formatJsonPreservingLexemes(text) {
     var i = 0;
     var n = text.length;
@@ -394,8 +337,6 @@
     return serialize(root, 0);
   }
 
-  // Explicit action, and the only one that ever rewrites the editor text.
-  // Malformed JSON is reported and the text is left exactly as it was.
   formatButton.addEventListener("click", function () {
     var formatted;
     try {
@@ -408,8 +349,6 @@
     say("Formatted.", "ok");
   });
 
-  // The current editor string, regardless of validity or render status --
-  // never the last-rendered or reformatted text -- on explicit request only.
   downloadRequestButton.addEventListener("click", function () {
     downloadText("request.json", getRequestText(), "application/json");
   });

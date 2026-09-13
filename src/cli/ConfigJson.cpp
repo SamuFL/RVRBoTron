@@ -330,9 +330,6 @@ dsp::DownmixStrategy parseDownmixStrategy(
       "expected select, orthogonal-rows, halves, alternating, or sum-all");
 }
 
-// Named for error messages naming the actual requested strategy (issue
-// #110) rather than a stale strategy name hardcoded from when `select`
-// had only one alternative.
 const char* downmixStrategyLabel(const dsp::DownmixStrategy strategy) {
   switch (strategy) {
   case dsp::DownmixStrategy::select:
@@ -624,12 +621,6 @@ config::FeedbackLoopConfig parseRequestedFeedbackLoop(
   return loop;
 }
 
-// `select`'s own leftChannel has no implicit default for the Main Downmix
-// (issue #107), so omitting it there is rejected right at this JSON
-// boundary. The Early Downmix instead defaults `select` to Channels 0/1
-// (issue #111, docs/design/reverb/stages/09-composition.md), so its own
-// caller passes `requireExplicitSelectChannel` false here and leaves
-// resolveConfig's own withEarlyDownmixDefaults to fill the omission.
 config::DownmixConfig parseRequestedDownmix(
     const Json& value,
     const std::string_view path,
@@ -700,28 +691,6 @@ config::EarlyTapConfig parseRequestedEarlyTap(
   return tap;
 }
 
-// The parallel Early Reflections branch (issue #111): `taps` is required
-// -- an entirely empty `early: {}` request, with no taps key at all,
-// still means no branch (see parseRequestedComposition), but a present
-// `early` object with an omitted `taps` key would otherwise be
-// indistinguishable from one whose taps are simply empty, so this
-// requires the key explicitly rather than defaulting it.
-// Early's own `downmix` (issue #111) is parsed by the same
-// parseRequestedDownmix/parseResolvedDownmix used for the `downmix` stage
-// in composition.stages, but -- unlike that stage array -- it never
-// passes through the dispatcher in parseRequestedComposition/
-// parseResolvedComposition that requires and checks a stage's own `type`
-// before ever calling into either parser. Skipping this check would let
-// an Early `downmix` whose `type` names a different stage entirely (or,
-// on replay, omits `type` where a Main Downmix's own serialized form
-// never would) be silently accepted as a Downmix regardless of what it
-// claims to be. `requireType` mirrors the stage dispatcher's own
-// `requireField(stage, "type", path)` for replay, where resolved.json
-// always serializes `type` (see ResolvedConfigJson.cpp's downmixJson);
-// the requested JSON schema has no such guarantee -- Early's own
-// `downmix` object in a request never carries `type` at all in the
-// documented examples -- so a requested `downmix` only has its `type`
-// checked when present, not required.
 void checkNestedDownmixType(
     const Json& value, const std::string_view path, const bool requireType) {
   requireObject(value, path);
@@ -824,11 +793,6 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
     }
   }
 
-  // mainEnabled/mainLevelDb control the serial Main wet path (issue
-  // #109): moot, and rejected, on the empty identity Composition, since
-  // there is no branch for them to affect (docs/design/reverb/stages/
-  // 09-composition.md's "Branch controls are invalid on the empty
-  // identity Composition").
   if (composition.stages.empty()) {
     if (value.contains("mainEnabled")) {
       fail(
@@ -880,8 +844,6 @@ config::CompositionConfig parseRequestedComposition(const Json& value) {
     composition.early =
         parseRequestedEarly(value.at("early"), "/composition/early");
   }
-  // The Composition's own dry/wet envelope (issue #114): dryDb/wetDb/
-  // wetOnly, mirroring mainEnabled/mainLevelDb above.
   if (value.contains("dryDb")) {
     composition.dryDb =
         parseNumber(value.at("dryDb"), "/composition/dryDb");
@@ -1129,9 +1091,6 @@ dsp::ResolvedDiffusionStep parseResolvedStep(
       value.at("polaritySigns"), std::string(path) + "/polaritySigns");
   step.mix = parseMix(value.at("mix"), std::string(path) + "/mix");
   step.matrix = std::move(matrix);
-  // Omitted entirely (rather than emitted as null) when disabled, so a
-  // resolved.json written before Diffusion Step Modulation existed
-  // remains loadable, and loads back as disabled (see issue #91).
   if (value.contains("modulation")) {
     step.modulation = parseResolvedModulation(
         value.at("modulation"), std::string(path) + "/modulation");
@@ -1647,15 +1606,6 @@ dsp::ResolvedComposition parseResolvedComposition(const Json& value) {
         parseResolvedEarly(value.at("early"), "/composition/early");
   }
 
-  // The Composition's own dry/wet envelope, completed by Pre-delay
-  // (issues #114/#133, ADR-0007): a non-empty format-v2 Resolved
-  // Composition may omit the complete envelope set entirely as legacy
-  // neutral behavior (the defaults dsp::ResolvedComposition already
-  // carries: wetOnly true, dryDb/wetDb/preDelayMs 0, dryGain/wetGain 1.0,
-  // preDelaySamples 0) -- so accumulated evidence predating this
-  // envelope needs no migration. A partial set is hand-corrupted or
-  // truncated evidence, never a legitimate complete artifact, and is
-  // rejected outright rather than guessed at.
   const char* const envelopeFields[]{
       "dryDb",
       "wetDb",

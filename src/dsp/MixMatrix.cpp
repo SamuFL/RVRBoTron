@@ -115,10 +115,6 @@ HouseholderMixMatrix::HouseholderMixMatrix(
       }
     }
   }
-  // Derived from the validated resolved diagonal (1 - 2/N), not
-  // recomputed from the Channel count, so float and double builds mix
-  // from the same resolved coefficients rather than two independent
-  // recomputations that merely happen to agree within tolerance.
   twoOverChannels_ = static_cast<Sample>(1.0 - resolvedCoefficients.front());
 }
 
@@ -143,9 +139,6 @@ std::size_t HouseholderMixMatrix::ownedBytes() const noexcept {
 
 namespace {
 
-// Generous but non-arbitrary: double-precision Householder QR reaches
-// orthogonality error on the order of N times machine epsilon, far below
-// this, for every Channel count this instrument constructs matrices at.
 constexpr double kRandomOrthogonalTolerance = 1e-9;
 
 } // namespace
@@ -163,9 +156,6 @@ RandomOrthogonalMixMatrix::RandomOrthogonalMixMatrix(
         "RandomOrthogonal MixMatrix requires an N by N coefficient matrix");
   }
 
-  // Property-checked from the resolved coefficients themselves (MM^T = I)
-  // rather than by trusting the construction that produced them -- a hand-
-  // authored ablation is free to substitute any valid orthogonal matrix.
   for (std::size_t rowA = 0; rowA < channels_; ++rowA) {
     for (std::size_t rowB = 0; rowB < channels_; ++rowB) {
       double dot = 0.0;

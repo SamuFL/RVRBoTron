@@ -22,33 +22,13 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   std::size_t outputChannels = 0;
   std::size_t channels = 0;
   std::uint64_t tailFrames = 0;
-  // The Feedback Loop's shortest resolved delay, in samples: the maximum
-  // legal block size (see CONTEXT.md's Block-size bound entry). Zero when
-  // no Feedback Loop is present, meaning no bound applies.
   std::uint64_t blockSizeBound = 0;
   StageCaptureSink* captureSink = nullptr;
-  // The Main wet path's own enablement and level (issue #109). Moot while
-  // `identity` is true. Disabled skips the Downmix call entirely below,
-  // contributing exact stereo zero rather than a zero-multiplied value.
   bool mainEnabled = true;
   Sample mainGain{1};
-  // The Composition's own dry/wet envelope (issue #114). Moot while
-  // `identity` is true. `dryEnabled` is the exact-gate reading of the
-  // Resolved `wetOnly` flag (issue #114's "wetOnly is an exact dry-path
-  // gate"): false skips dry mapping and dry summation entirely below,
-  // rather than multiplying by a zero gain, mirroring how a disabled
-  // Main wet path skips its own Downmix above. Unity `wetGain` still
-  // multiplies (issue #114 requires no *hidden* bypass beyond neutral
-  // dry-path gating; the multiply itself is cheap and always exact for
-  // 1.0).
   bool dryEnabled = false;
   Sample dryGain{1};
   Sample wetGain{1};
-  // Pre-delay (issue #133): the single delay before Split. Moot while
-  // `identity` is true. Null when preDelaySamples is zero -- DelayLine's
-  // own read()/write() are only valid for a Channel with delaySamples()
-  // > 0, and zero Pre-delay must bypass delay processing entirely
-  // rather than construct a degenerate zero-length buffer.
   std::uint64_t preDelaySamples = 0;
   std::unique_ptr<DelayLine> preDelayLine;
 
@@ -56,19 +36,10 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   std::unique_ptr<Diffuser> diffuser;
   std::unique_ptr<FeedbackLoop> feedbackLoop;
   std::unique_ptr<Downmix> downmix;
-  // The parallel Early Reflections branch (issue #111). Null when no
-  // branch is configured; valid only when `diffuser` is also non-null
-  // (validated upstream in resolveConfig/validateResolvedConfig).
   std::unique_ptr<EarlyReflections> early;
 
   std::vector<Sample> splitValues;
-  // Whatever the last middle stage (Diffuser or Feedback Loop) writes: the
-  // aligned diffused signal, or the unaligned circulating tail.
   std::vector<Sample> midStageValues;
-  // Only sized/used when both a Diffuser and a Feedback Loop are present:
-  // the Diffuser's aligned output, which becomes the loop's input. Kept
-  // distinct from midStageValues because FeedbackLoop::processFrame does
-  // not support processing in place.
   std::vector<Sample> diffuserOutputValues;
 
   void captureDiffusionStepFrame(
@@ -110,21 +81,12 @@ Reverb::Reverb(const ResolvedConfig& config,
   state.wetGain = static_cast<Sample>(config.composition.wetGain);
   state.preDelaySamples = config.composition.preDelaySamples;
   if (state.preDelaySamples > 0) {
-    // Sized exactly to the resolved delay, no headroom: Pre-delay is a
-    // single fixed integer-sample delay, never modulated or fractionally
-    // read (issue #133), unlike the Feedback Loop/Diffusion Step's own
-    // DelayLine usage.
     state.preDelayLine = std::make_unique<DelayLine>(
         std::vector<std::uint64_t>(state.inputChannels, state.preDelaySamples),
         std::vector<std::uint64_t>(state.inputChannels, state.preDelaySamples));
   }
   state.split = std::make_unique<Split>(split);
 
-  // Middle stages: none, a Diffuser alone, a Feedback Loop alone, or a
-  // Diffuser followed by a Feedback Loop (see validateShape in
-  // ResolveConfig.cpp for the shapes this can be). Total drain is the
-  // Diffuser's own finite response plus the loop's Tail budget when both
-  // are present.
   const auto downmixIndex = config.composition.stages.size() - 1;
   for (std::size_t stageIndex = 1; stageIndex < downmixIndex; ++stageIndex) {
     if (const auto* diffuser = std::get_if<ResolvedDiffuser>(
@@ -178,25 +140,10 @@ void Reverb::process(const Sample* const* inputs,
     return;
   }
 
-  // Debug-only: the CLI is the enforcement point for the block-size bound
-  // (see main.cpp), rejecting an oversized block size before Reverb is ever
-  // constructed. This assert documents and catches a violation of that
-  // contract from any other caller, without making processing itself
-  // validating in release builds.
   assert(
       state.blockSizeBound == 0 ||
       frameCount <= state.blockSizeBound);
 
-  // Pre-delay (issue #133): a single delay before Split, applied to the
-  // source feeding the wet path only -- dry keeps reading `inputs`
-  // directly below, undelayed. Read before write per Channel, mirroring
-  // FeedbackLoop's own DelayLine usage, though Pre-delay has no cross-
-  // Channel coupling for that ordering to protect. Declared once outside
-  // the frame loop; only its contents change per frame, never its shape,
-  // so this allocates nothing regardless of preDelayLine's presence.
-  // Fixed at 2 (state.inputChannels is validated elsewhere to be 1 or
-  // 2, mono or stereo source) rather than sized from inputChannelCount,
-  // since sizing it would itself need an allocation.
   Sample preDelayedFrame[2]{};
   const Sample* const preDelayedFramePointers[]{
       &preDelayedFrame[0], &preDelayedFrame[1]};
@@ -223,13 +170,6 @@ void Reverb::process(const Sample* const* inputs,
           state.channels);
     }
 
-    // The Early Reflections taps (issues #111/#112): a caller-owned,
-    // caller-sorted array handed to the Diffuser below, populated as a
-    // side effect of its normal per-step processing -- never perturbing
-    // the Diffuser's own Main output, and never entering the Feedback
-    // Loop. A disabled Early branch skips this setup entirely (issue
-    // #113): otherwise the Diffuser would still run its per-tap
-    // accumulation loop for taps whose result is never read.
     const DiffuserEarlyTap* earlyTaps = nullptr;
     std::size_t earlyTapCount = 0;
     if (state.early != nullptr && state.early->enabled()) {
@@ -259,16 +199,6 @@ void Reverb::process(const Sample* const* inputs,
           state.splitValues.data(), state.midStageValues.data());
     }
 
-    // Each branch computes its own stereo pair locally -- not directly
-    // into `outputs` -- so it can be captured at the summation boundary
-    // (issue #113's early-stereo/main-stereo captures) before the two
-    // are superposed. A disabled Main wet path skips its own Downmix
-    // (and Width, and level) processing entirely and contributes exact
-    // stereo zero (issue #109), rather than a zero-multiplied value.
-    // Split/Diffuser/Feedback Loop above run unconditionally regardless
-    // of mainEnabled: they are shared interior signal, not
-    // Main-branch-specific -- the Early Reflections branch (#111) taps
-    // the same Diffuser's per-step output even when Main is disabled.
     Sample mainLeft{0};
     Sample mainRight{0};
     if (state.mainEnabled) {
@@ -283,10 +213,6 @@ void Reverb::process(const Sample* const* inputs,
           StageCaptureBoundary::mainStereo, 0, mainStereoFrame, 2);
     }
 
-    // Early's own stereo pair, captured the same way -- disabled
-    // contributes exact zero, matching Main's own convention above.
-    // Only computed/captured at all when an Early branch is configured;
-    // there is nothing to capture otherwise.
     Sample wetLeft{0};
     Sample wetRight{0};
     if (state.early != nullptr) {
@@ -300,9 +226,6 @@ void Reverb::process(const Sample* const* inputs,
         state.captureSink->captureFrame(
             StageCaptureBoundary::earlyStereo, 0, earlyStereoFrame, 2);
       }
-      // Superposition (issue #111): the Wet sum equals the two
-      // branches' own captured signals summed sample-for-sample, before
-      // the Composition's own global wet gain below (issue #114).
       wetLeft = mainLeft + earlyLeft;
       wetRight = mainRight + earlyRight;
     } else {
@@ -310,28 +233,11 @@ void Reverb::process(const Sample* const* inputs,
       wetRight = mainRight;
     }
 
-    // The Composition's own global wet gain (issue #114), applied
-    // exactly once to the complete Wet sum. Unity gain bypasses the
-    // multiply entirely, so a Requested Composition that omits the
-    // envelope renders output exact by construction rather than merely
-    // approximately equal to the pre-envelope wet-only behavior
-    // (docs/design/reverb/stages/09-composition.md's Composition
-    // envelope).
     if (state.wetGain != Sample{1}) {
       wetLeft *= state.wetGain;
       wetRight *= state.wetGain;
     }
 
-    // Dry contribution (issue #114): stereo input maps channel-for-
-    // channel; mono input duplicates to both output channels at the
-    // same gain, without energy compensation. `wetOnly` (state.
-    // dryEnabled false) is an exact gate -- it bypasses dry mapping and
-    // summation entirely below, mirroring how a disabled Main wet path
-    // skips its own Downmix above, rather than multiplying by zero.
-    // Whatever `inputs` holds at EOF and during Tail-budget drain is the
-    // CLI's responsibility (main.cpp feeds zeroed input past source
-    // EOF), so dry contribution is exact zero there without Reverb
-    // itself tracking source position.
     Sample dryLeft{0};
     Sample dryRight{0};
     if (state.dryEnabled) {
@@ -341,13 +247,6 @@ void Reverb::process(const Sample* const* inputs,
       dryRight *= state.dryGain;
     }
 
-    // Fixed-order final addition (issue #114): the dry contribution
-    // first, then the scaled Wet sum -- so final output remains
-    // reconstructable from the dry input, the Main/Early stereo
-    // captures, and the Resolved envelope values. `wetOnly` skips the
-    // addition itself rather than relying on dryLeft/dryRight already
-    // being exact zero, so summation is genuinely bypassed rather than
-    // merely a neutral no-op operand.
     if (state.dryEnabled) {
       outputs[0][frame] = dryLeft + wetLeft;
       outputs[1][frame] = dryRight + wetRight;
@@ -380,15 +279,6 @@ std::size_t Reverb::ownedBytes() const noexcept {
                       ownedVectorBytes(state.midStageValues) +
                       ownedVectorBytes(state.diffuserOutputValues);
   if (state.preDelayLine != nullptr) {
-    // DelayLine::ownedStorageBytes() is deliberately the backing-vector
-    // allocations only (see its own doc comment): FeedbackLoop embeds
-    // its DelayLine by value, so FeedbackLoop's own sizeof(*this)
-    // already covers DelayLine's object storage there. Reverb instead
-    // holds Pre-delay's DelayLine behind a unique_ptr -- a second heap
-    // allocation neither sizeof(state) above nor ownedStorageBytes()
-    // accounts for -- so sizeof(DelayLine) itself must be added here
-    // explicitly, mirroring how Split::ownedBytes() covers its own
-    // heap-held SplitStrategy.
     total += sizeof(DelayLine) + state.preDelayLine->ownedStorageBytes();
   }
   if (state.split != nullptr) {
