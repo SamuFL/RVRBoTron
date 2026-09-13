@@ -324,6 +324,52 @@ the bench holds a copy but does not tell you where it came from.
 
 ---
 
+## Applying one request to a whole folder
+
+Auditioning one note and wanting the same reverb across every note and round
+robin of a sampled instrument is common enough to have its own tool:
+
+```bash
+python3 tools/render_folder.py \
+  --renderer build/default/rvrbotron \
+  --source-dir ~/samples/piano-raw \
+  --dest-dir ~/samples/piano-hall \
+  --config ~/Downloads/request.json
+```
+
+It renders every `.wav` in the source directory — not recursively — through
+that one request, writing `<stem>.wav` into the destination. Add
+`--suffix=-hall` to tag the outputs, remembering the equals sign, or argparse
+reads a leading dash as another flag.
+
+Three things it does that the single-file command above does not:
+
+- **Converts to PCM.** The renderer writes IEEE float; samplers often will
+  not load it. `--bit-depth` takes 16 or 24, and defaults to 24.
+- **Reports clipping instead of hiding it.** Nothing in the renderer clamps,
+  and dry plus wet routinely passes full scale — the bench's own Spatial
+  template does on real material. Output is clamped, and every clipped file
+  is named with its overage, because a distorted velocity layer you discover
+  weeks later in the sampler is the expensive kind of surprise.
+- **Records what it did.** The request is copied to `<dest>/request.json`
+  once every render has succeeded, so its presence means the folder is
+  complete and describes the audio beside it.
+
+What it deliberately does not do: keep Render Results. These are bare WAVs
+with no `resolved.json`, so they carry **no reproducibility claim** — the
+copied request is a convenience for answering "which patch made this
+library?", not evidence. It also does not preserve `smpl` loop points, root
+notes or cue markers; the renderer writes a fresh file, so sampler metadata
+in the sources does not survive. Fine for one-shots, wrong for looped
+sustains.
+
+It stops at the first failure rather than collecting them, since in a
+uniformly recorded folder a bad request fails on every file alike. It
+overwrites existing outputs, but refuses to render into the source directory
+at all — raw recorded material is not recoverable.
+
+---
+
 ## What the bench will not do
 
 **No float64 playback or transcoding.** Point `--renderer` at a `double`

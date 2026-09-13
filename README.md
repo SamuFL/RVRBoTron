@@ -150,7 +150,7 @@ someone else.
 
 | Guide | Read it when |
 | --- | --- |
-| [Run the Research bench](docs/guides/run-the-research-bench.md) | You want to hear a Composition now — launch, audition, render, listen |
+| [Run the Research bench](docs/guides/run-the-research-bench.md) | You want to hear a Composition now — launch, audition, render, listen, apply one request to a whole sample folder |
 | [Configure the Composition](docs/guides/configure-the-composition.md) | You are writing a request — every field, default, and shape, with examples |
 | [Render and analyze evidence](docs/guides/render-and-analyze-evidence.md) | You have a Render Result — captures, the analyzers, benchmarks, diagnostics |
 | [Run experiments](docs/guides/run-experiments.md) | You want to sweep an axis — catalogs, sweeps, and listening material |
