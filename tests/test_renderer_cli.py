@@ -117,7 +117,7 @@ def main():
             "aarch64": "arm64",
         }.get(machine, machine),
         "formatVersion": 1,
-        "rendererVersion": "0.1.0",
+        "rendererVersion": "1.0.0",
         "platform": {
             "Darwin": "macos",
             "Windows": "windows",

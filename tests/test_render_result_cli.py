@@ -157,7 +157,7 @@ def main():
     metadata = json.loads((result / "render.json").read_text())
     expected_metadata = {
         "formatVersion": 1,
-        "rendererVersion": "0.1.0",
+        "rendererVersion": "1.0.0",
         "platform": platform_name,
         "architecture": architecture,
         "samplePrecision": f"float{sample_bits}",
