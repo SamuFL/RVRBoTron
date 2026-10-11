@@ -140,8 +140,8 @@ jobs:
     name: Windows x86_64 (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 15
-    # Without a developer environment, CMake finds the runner's MinGW GCC
-    # instead of MSVC (issue #162).
+    # Pin cl: the runner's MinGW GCC stays on PATH after the MSVC developer
+    # environment is set up, and CMake would otherwise pick it (issue #162).
     env:
       CC: cl
       CXX: cl
@@ -156,6 +156,7 @@ jobs:
       - name: Install Ninja
         run: choco install ninja --no-progress -y
 
+      # Puts cl, link, and the Windows SDK on PATH for the Ninja presets.
       - name: Set up MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
 
