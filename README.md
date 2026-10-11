@@ -207,10 +207,10 @@ Active implementation work lives in this repository's GitHub Issues.
 
 ## Platform support
 
-CI runs the complete command-level suite on macOS arm64, macOS Intel, and
-Windows x86_64 for float32 builds, plus macOS arm64 and Windows x86_64 for
-float64. Each job proves exact identity from its own committed fixtures;
-nothing is transferred between machines.
+CI runs the complete command-level suite on macOS arm64 and macOS Intel with
+Apple Clang, and on Windows x86_64 with MSVC, for float32 builds, plus macOS
+arm64 and Windows x86_64 for float64. Each job proves exact identity from its
+own committed fixtures; nothing is transferred between machines.
 
 The committed fixtures cover mono and stereo PCM16, PCM24, PCM32, IEEE
 float32, and IEEE float64 WAV at 44.1, 48, and 96 kHz. Regenerate them with:
