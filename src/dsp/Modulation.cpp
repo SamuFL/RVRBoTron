@@ -33,20 +33,6 @@ double catmullRom(
        (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
-double smoothedRandomTrajectory(
-    const std::uint64_t channelSeed, const double t) noexcept {
-  const auto base = std::floor(t);
-  const auto frac = t - base;
-  constexpr double kMaxTargetIndex = 9.0e18;
-  const auto index = static_cast<std::int64_t>(
-      std::clamp(base, -kMaxTargetIndex, kMaxTargetIndex));
-  const auto p0 = targetValue(channelSeed, index - 1);
-  const auto p1 = targetValue(channelSeed, index);
-  const auto p2 = targetValue(channelSeed, index + 1);
-  const auto p3 = targetValue(channelSeed, index + 2);
-  return std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
-}
-
 double sineTrajectory(const double t) noexcept {
   const auto phase = t - std::floor(t);
   return std::sin(2.0 * kPi * phase);
@@ -66,21 +52,45 @@ Modulation::Modulation(const ResolvedModulation& config)
       channelPhases_(config.channelPhases),
       channelModulated_(config.channelModulated),
       shape_(config.shape),
-      excursionSamples_(config.excursionSamples) {}
+      excursionSamples_(config.excursionSamples),
+      smoothedRandomTargets_(
+          config.shape == ModulationShape::smoothedRandom
+              ? config.channelSeeds.size()
+              : 0) {}
 
 bool Modulation::isModulated(const std::size_t channel) const noexcept {
   return channelModulated_[channel];
 }
 
+double Modulation::smoothedRandomTrajectory(
+    const std::size_t channel, const double t) noexcept {
+  const auto base = std::floor(t);
+  const auto frac = t - base;
+  constexpr double kMaxTargetIndex = 9.0e18;
+  const auto index = static_cast<std::int64_t>(
+      std::clamp(base, -kMaxTargetIndex, kMaxTargetIndex));
+  auto& targets = smoothedRandomTargets_[channel];
+  if (!targets.valid || targets.index != index) {
+    for (std::int64_t point = 0; point < 4; ++point) {
+      targets.points[point] =
+          targetValue(channelSeeds_[channel], index - 1 + point);
+    }
+    targets.index = index;
+    targets.valid = true;
+  }
+  const auto* const p = targets.points;
+  return std::clamp(catmullRom(p[0], p[1], p[2], p[3], frac), -1.0, 1.0);
+}
+
 double Modulation::lookbackSamples(
-    const std::size_t channel, const std::uint64_t nominalDelaySamples) const noexcept {
+    const std::size_t channel, const std::uint64_t nominalDelaySamples) noexcept {
   const auto t =
       static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
       channelPhases_[channel];
   double trajectory;
   switch (shape_) {
   case ModulationShape::smoothedRandom:
-    trajectory = smoothedRandomTrajectory(channelSeeds_[channel], t);
+    trajectory = smoothedRandomTrajectory(channel, t);
     break;
   case ModulationShape::sine:
     trajectory = sineTrajectory(t);
