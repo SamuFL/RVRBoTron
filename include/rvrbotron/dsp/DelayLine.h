@@ -31,12 +31,69 @@ public:
     positions_[channel] = (positions_[channel] + 1) % ring;
   }
 
+  // Writes `frames` consecutive samples, as `frames` calls to write().
+  void writeBlock(const std::size_t channel,
+                  const Sample* const values,
+                  const std::size_t frames) noexcept {
+    const auto ring = static_cast<std::size_t>(bufferSizes_[channel]);
+    auto* const storage = storage_.data() + offsets_[channel];
+    auto position = positions_[channel];
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      storage[position] = values[frame];
+      if (++position == ring) {
+        position = 0;
+      }
+    }
+    positions_[channel] = position;
+  }
+
+  // Reads the `frames` samples that read() would return over the next
+  // `frames` frames, without writing. Exact only while every one of them
+  // is already in the ring: frames <= delaySamples(channel).
+  void readBlock(const std::size_t channel,
+                 Sample* const values,
+                 const std::size_t frames) const noexcept {
+    const auto ring = static_cast<std::size_t>(bufferSizes_[channel]);
+    const auto delay = static_cast<std::size_t>(delays_[channel]);
+    const auto* const storage = storage_.data() + offsets_[channel];
+    const auto position = positions_[channel];
+    auto readPosition =
+        position >= delay ? position - delay : ring - (delay - position);
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      values[frame] = storage[readPosition];
+      if (++readPosition == ring) {
+        readPosition = 0;
+      }
+    }
+  }
+
+  // Delays `frames` samples by the Channel's fixed delay, as `frames`
+  // read()-then-write() pairs: output frames older than the chunk come
+  // from the ring, the rest straight from `input`. `input` and `output`
+  // must not overlap.
+  void delayBlock(const std::size_t channel,
+                  const Sample* const input,
+                  Sample* const output,
+                  const std::size_t frames) noexcept {
+    const auto delay = static_cast<std::size_t>(delays_[channel]);
+    const auto fromRing = frames < delay ? frames : delay;
+    readBlock(channel, output, fromRing);
+    for (std::size_t frame = fromRing; frame < frames; ++frame) {
+      output[frame] = input[frame - delay];
+    }
+    writeBlock(channel, input, frames);
+  }
+
+  // The fractional reads take `frameOffset` to read as if that many
+  // frames had already been written, without writing them: the ring index
+  // wraps through the same `% ring` either way.
   [[nodiscard]] Sample readFraction(
       const std::size_t channel,
-      const double lookbackSamples) const noexcept {
+      const double lookbackSamples,
+      const std::size_t frameOffset = 0) const noexcept {
     const auto ring = bufferSizes_[channel];
     const auto offset = offsets_[channel];
-    const auto position = positions_[channel];
+    const auto position = positions_[channel] + frameOffset;
     const auto base = std::floor(lookbackSamples);
     const auto frac = static_cast<Sample>(lookbackSamples - base);
     const auto baseLookback = static_cast<std::int64_t>(base);
@@ -67,10 +124,11 @@ public:
 
   [[nodiscard]] Sample readFractionLinear(
       const std::size_t channel,
-      const double lookbackSamples) const noexcept {
+      const double lookbackSamples,
+      const std::size_t frameOffset = 0) const noexcept {
     const auto ring = bufferSizes_[channel];
     const auto offset = offsets_[channel];
-    const auto position = positions_[channel];
+    const auto position = positions_[channel] + frameOffset;
     const auto base = std::floor(lookbackSamples);
     const auto frac = static_cast<Sample>(lookbackSamples - base);
     const auto baseLookback = static_cast<std::int64_t>(base);
@@ -88,10 +146,11 @@ public:
   [[nodiscard]] Sample readFractionAllpass(
       const std::size_t channel,
       const double lookbackSamples,
-      Sample& state) const noexcept {
+      Sample& state,
+      const std::size_t frameOffset = 0) const noexcept {
     const auto ring = bufferSizes_[channel];
     const auto offset = offsets_[channel];
-    const auto position = positions_[channel];
+    const auto position = positions_[channel] + frameOffset;
     const auto base = std::floor(lookbackSamples);
     const auto frac = static_cast<Sample>(lookbackSamples - base);
     const auto baseLookback = static_cast<std::int64_t>(base);

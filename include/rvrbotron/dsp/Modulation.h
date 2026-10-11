@@ -15,12 +15,16 @@ public:
 
   [[nodiscard]] bool isModulated(std::size_t channel) const noexcept;
 
-  // Not const: smoothed-random trajectories cache their Catmull-Rom
-  // targets per Channel.
+  // The lookback `frameOffset` frames after the current frame. Not const:
+  // smoothed-random trajectories cache their Catmull-Rom targets per
+  // Channel.
   [[nodiscard]] double lookbackSamples(
-      std::size_t channel, std::uint64_t nominalDelaySamples) noexcept;
+      std::size_t channel,
+      std::uint64_t nominalDelaySamples,
+      std::uint64_t frameOffset = 0) noexcept;
 
   void advanceFrame() noexcept;
+  void advanceFrames(std::uint64_t frames) noexcept;
 
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
 

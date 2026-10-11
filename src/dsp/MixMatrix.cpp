@@ -1,6 +1,7 @@
 #include "rvrbotron/dsp/MixMatrix.h"
 
 #include "rvrbotron/dsp/OwnedBytes.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,20 +60,29 @@ HadamardMixMatrix::HadamardMixMatrix(
   scale_ = static_cast<Sample>(resolvedScale);
 }
 
-void HadamardMixMatrix::mix(Sample* const channels) const noexcept {
+void HadamardMixMatrix::mixBlock(Sample* const channels,
+                                 const std::size_t frames) const noexcept {
+  // Each butterfly runs across the whole chunk, so it vectorises over
+  // time while every sample sees the same operations, in the same order,
+  // as a frame-by-frame transform.
   for (std::size_t width = 1; width < channels_; width *= 2) {
     const auto stride = width * 2;
     for (std::size_t offset = 0; offset < channels_; offset += stride) {
       for (std::size_t index = 0; index < width; ++index) {
-        const auto left = channels[offset + index];
-        const auto right = channels[offset + width + index];
-        channels[offset + index] = left + right;
-        channels[offset + width + index] = left - right;
+        auto* const lefts = channels + (offset + index) * frames;
+        auto* const rights = channels + (offset + width + index) * frames;
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          const auto left = lefts[frame];
+          const auto right = rights[frame];
+          lefts[frame] = left + right;
+          rights[frame] = left - right;
+        }
       }
     }
   }
-  for (std::size_t channel = 0; channel < channels_; ++channel) {
-    channels[channel] *= scale_;
+  const auto samples = channels_ * frames;
+  for (std::size_t sample = 0; sample < samples; ++sample) {
+    channels[sample] *= scale_;
   }
 }
 
@@ -118,14 +128,26 @@ HouseholderMixMatrix::HouseholderMixMatrix(
   twoOverChannels_ = static_cast<Sample>(1.0 - resolvedCoefficients.front());
 }
 
-void HouseholderMixMatrix::mix(Sample* const channels) const noexcept {
-  Sample sum = 0;
+void HouseholderMixMatrix::mixBlock(Sample* const channels,
+                                    const std::size_t frames) const noexcept {
+  // Sums the Channels of each frame in Channel order, as the
+  // frame-by-frame reflection does, so the result is bit-identical.
+  Sample sums[kMaxChunkFrames];
+  std::fill_n(sums, frames, Sample{0});
   for (std::size_t channel = 0; channel < channels_; ++channel) {
-    sum += channels[channel];
+    const auto* const values = channels + channel * frames;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      sums[frame] += values[frame];
+    }
   }
-  const auto term = twoOverChannels_ * sum;
+  for (std::size_t frame = 0; frame < frames; ++frame) {
+    sums[frame] = twoOverChannels_ * sums[frame];
+  }
   for (std::size_t channel = 0; channel < channels_; ++channel) {
-    channels[channel] -= term;
+    auto* const values = channels + channel * frames;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      values[frame] -= sums[frame];
+    }
   }
 }
 
@@ -146,7 +168,7 @@ constexpr double kRandomOrthogonalTolerance = 1e-9;
 RandomOrthogonalMixMatrix::RandomOrthogonalMixMatrix(
     const std::size_t channels,
     const std::vector<double>& resolvedCoefficients)
-    : channels_(channels), scratch_(channels, Sample{0}) {
+    : channels_(channels), scratch_(channels * kMaxChunkFrames, Sample{0}) {
   if (channels_ == 0) {
     throw std::invalid_argument(
         "RandomOrthogonal MixMatrix requires at least one Channel");
@@ -179,18 +201,24 @@ RandomOrthogonalMixMatrix::RandomOrthogonalMixMatrix(
   }
 }
 
-void RandomOrthogonalMixMatrix::mix(Sample* const channels) const noexcept {
+void RandomOrthogonalMixMatrix::mixBlock(
+    Sample* const channels, const std::size_t frames) const noexcept {
+  // Each row accumulates its frames in column order. As in Downmix, the
+  // product is its own statement so it is never fused into the sum.
   for (std::size_t row = 0; row < channels_; ++row) {
-    Sample sum = 0;
+    auto* const sums = scratch_.data() + row * frames;
+    std::fill_n(sums, frames, Sample{0});
     const auto rowOffset = row * channels_;
     for (std::size_t column = 0; column < channels_; ++column) {
-      sum += matrix_[rowOffset + column] * channels[column];
+      const auto coefficient = matrix_[rowOffset + column];
+      const auto* const values = channels + column * frames;
+      for (std::size_t frame = 0; frame < frames; ++frame) {
+        const auto product = coefficient * values[frame];
+        sums[frame] += product;
+      }
     }
-    scratch_[row] = sum;
   }
-  for (std::size_t row = 0; row < channels_; ++row) {
-    channels[row] = scratch_[row];
-  }
+  std::copy_n(scratch_.data(), channels_ * frames, channels);
 }
 
 std::size_t RandomOrthogonalMixMatrix::channelCount() const noexcept {

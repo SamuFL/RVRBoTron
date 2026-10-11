@@ -6,6 +6,7 @@
 #include "rvrbotron/dsp/EarlyReflections.h"
 #include "rvrbotron/dsp/FeedbackLoop.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 #include "rvrbotron/dsp/Split.h"
 
 #include <algorithm>
@@ -38,9 +39,19 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   std::unique_ptr<Downmix> downmix;
   std::unique_ptr<EarlyReflections> early;
 
+  // Frames per chunk: kMaxChunkFrames, below the Block-size bound, or 1
+  // while capturing, so captures keep their frame-by-frame order.
+  std::size_t chunkFrames = kMaxChunkFrames;
+  // One Split frame, then planar chunks (Channel c at + c * frames): the
+  // Diffuser runs in place on splitValues, the Feedback Loop writes
+  // midStageValues.
+  std::vector<Sample> splitFrame;
   std::vector<Sample> splitValues;
   std::vector<Sample> midStageValues;
-  std::vector<Sample> diffuserOutputValues;
+  std::vector<Sample> mainLeft;
+  std::vector<Sample> mainRight;
+  std::vector<Sample> earlyLeft;
+  std::vector<Sample> earlyRight;
 
   void captureDiffusionStepFrame(
       const std::uint32_t index,
@@ -103,14 +114,32 @@ Reverb::Reverb(const ResolvedConfig& config,
   }
 
   state.downmix = std::make_unique<Downmix>(downmix);
-  state.splitValues.resize(state.channels);
-  state.midStageValues.resize(state.channels);
-  if (state.diffuser != nullptr && state.feedbackLoop != nullptr) {
-    state.diffuserOutputValues.resize(state.channels);
+  if (state.feedbackLoop != nullptr) {
+    // A Feedback Loop chunk reads before it writes, so it must end before
+    // the loop's first read of a sample written within the chunk.
+    state.chunkFrames = std::clamp<std::uint64_t>(
+        state.blockSizeBound > 0 ? state.blockSizeBound - 1 : 1,
+        1,
+        kMaxChunkFrames);
   }
+  // Sized before capturing narrows the chunk, so owned memory does not
+  // depend on whether stages are captured.
+  const auto bufferFrames = state.chunkFrames;
+  if (captureSink != nullptr) {
+    state.chunkFrames = 1;
+  }
+  state.splitFrame.resize(state.channels);
+  state.splitValues.resize(state.channels * bufferFrames);
+  if (state.feedbackLoop != nullptr) {
+    state.midStageValues.resize(state.channels * bufferFrames);
+  }
+  state.mainLeft.resize(bufferFrames);
+  state.mainRight.resize(bufferFrames);
   if (config.composition.early.has_value()) {
     state.early =
         std::make_unique<EarlyReflections>(*config.composition.early);
+    state.earlyLeft.resize(bufferFrames);
+    state.earlyRight.resize(bufferFrames);
   }
 }
 
@@ -148,111 +177,121 @@ void Reverb::process(const Sample* const* inputs,
   const Sample* const preDelayedFramePointers[]{
       &preDelayedFrame[0], &preDelayedFrame[1]};
 
-  for (std::size_t frame = 0; frame < frameCount; ++frame) {
-    const Sample* const* splitInputs = inputs;
-    std::size_t splitFrame = frame;
-    if (state.preDelayLine != nullptr) {
-      for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
-        preDelayedFrame[channel] = state.preDelayLine->read(channel);
+  for (std::size_t start = 0; start < frameCount; start += state.chunkFrames) {
+    const auto frames = std::min(state.chunkFrames, frameCount - start);
+
+    for (std::size_t offset = 0; offset < frames; ++offset) {
+      const auto frame = start + offset;
+      const Sample* const* splitInputs = inputs;
+      std::size_t splitFrame = frame;
+      if (state.preDelayLine != nullptr) {
+        for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+          preDelayedFrame[channel] = state.preDelayLine->read(channel);
+        }
+        for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
+          state.preDelayLine->write(channel, inputs[channel][frame]);
+        }
+        splitInputs = preDelayedFramePointers;
+        splitFrame = 0;
       }
-      for (std::size_t channel = 0; channel < inputChannelCount; ++channel) {
-        state.preDelayLine->write(channel, inputs[channel][frame]);
+      state.split->processFrame(
+          splitInputs, splitFrame, state.splitFrame.data());
+      if (state.captureSink != nullptr) {
+        state.captureSink->captureFrame(
+            StageCaptureBoundary::split,
+            0,
+            state.splitFrame.data(),
+            state.channels);
       }
-      splitInputs = preDelayedFramePointers;
-      splitFrame = 0;
-    }
-    state.split->processFrame(splitInputs, splitFrame, state.splitValues.data());
-    if (state.captureSink != nullptr) {
-      state.captureSink->captureFrame(
-          StageCaptureBoundary::split,
-          0,
-          state.splitValues.data(),
-          state.channels);
+      for (std::size_t channel = 0; channel < state.channels; ++channel) {
+        state.splitValues[channel * frames + offset] =
+            state.splitFrame[channel];
+      }
     }
 
     const DiffuserEarlyTap* earlyTaps = nullptr;
     std::size_t earlyTapCount = 0;
     if (state.early != nullptr && state.early->enabled()) {
-      state.early->beginFrame();
+      state.early->beginBlock(frames);
       earlyTaps = state.early->taps();
       earlyTapCount = state.early->tapCount();
     }
 
-    if (state.diffuser != nullptr && state.feedbackLoop != nullptr) {
-      state.diffuser->processFrame(
+    const Sample* midStageValues = state.splitValues.data();
+    if (state.diffuser != nullptr) {
+      state.diffuser->processBlock(
           state.splitValues.data(),
-          state.diffuserOutputValues.data(),
+          frames,
           state.captureSink != nullptr ? &state : nullptr,
           earlyTaps,
           earlyTapCount);
-      state.feedbackLoop->processFrame(
-          state.diffuserOutputValues.data(), state.midStageValues.data());
-    } else if (state.diffuser != nullptr) {
-      state.diffuser->processFrame(
-          state.splitValues.data(),
-          state.midStageValues.data(),
-          state.captureSink != nullptr ? &state : nullptr,
-          earlyTaps,
-          earlyTapCount);
-    } else {
-      state.feedbackLoop->processFrame(
-          state.splitValues.data(), state.midStageValues.data());
+    }
+    if (state.feedbackLoop != nullptr) {
+      state.feedbackLoop->processBlock(
+          state.splitValues.data(), state.midStageValues.data(), frames);
+      midStageValues = state.midStageValues.data();
     }
 
-    Sample mainLeft{0};
-    Sample mainRight{0};
+    auto* const mainLeft = state.mainLeft.data();
+    auto* const mainRight = state.mainRight.data();
     if (state.mainEnabled) {
-      Sample* const mainScratch[]{&mainLeft, &mainRight};
-      state.downmix->processFrame(state.midStageValues.data(), mainScratch, 0);
-      mainLeft *= state.mainGain;
-      mainRight *= state.mainGain;
+      state.downmix->processBlock(midStageValues, frames, mainLeft, mainRight);
+      for (std::size_t offset = 0; offset < frames; ++offset) {
+        mainLeft[offset] *= state.mainGain;
+        mainRight[offset] *= state.mainGain;
+      }
+    } else {
+      std::fill_n(mainLeft, frames, Sample{0});
+      std::fill_n(mainRight, frames, Sample{0});
     }
     if (state.captureSink != nullptr) {
-      const Sample mainStereoFrame[]{mainLeft, mainRight};
+      const Sample mainStereoFrame[]{mainLeft[0], mainRight[0]};
       state.captureSink->captureFrame(
           StageCaptureBoundary::mainStereo, 0, mainStereoFrame, 2);
     }
 
-    Sample wetLeft{0};
-    Sample wetRight{0};
+    auto* const earlyLeft = state.earlyLeft.data();
+    auto* const earlyRight = state.earlyRight.data();
     if (state.early != nullptr) {
-      Sample earlyLeft{0};
-      Sample earlyRight{0};
       if (state.early->enabled()) {
-        state.early->processFrame(&earlyLeft, &earlyRight);
+        state.early->processBlock(earlyLeft, earlyRight, frames);
+      } else {
+        std::fill_n(earlyLeft, frames, Sample{0});
+        std::fill_n(earlyRight, frames, Sample{0});
       }
       if (state.captureSink != nullptr) {
-        const Sample earlyStereoFrame[]{earlyLeft, earlyRight};
+        const Sample earlyStereoFrame[]{earlyLeft[0], earlyRight[0]};
         state.captureSink->captureFrame(
             StageCaptureBoundary::earlyStereo, 0, earlyStereoFrame, 2);
       }
-      wetLeft = mainLeft + earlyLeft;
-      wetRight = mainRight + earlyRight;
-    } else {
-      wetLeft = mainLeft;
-      wetRight = mainRight;
     }
 
-    if (state.wetGain != Sample{1}) {
-      wetLeft *= state.wetGain;
-      wetRight *= state.wetGain;
-    }
+    for (std::size_t offset = 0; offset < frames; ++offset) {
+      const auto frame = start + offset;
+      Sample wetLeft = mainLeft[offset];
+      Sample wetRight = mainRight[offset];
+      if (state.early != nullptr) {
+        wetLeft = mainLeft[offset] + earlyLeft[offset];
+        wetRight = mainRight[offset] + earlyRight[offset];
+      }
 
-    Sample dryLeft{0};
-    Sample dryRight{0};
-    if (state.dryEnabled) {
-      dryLeft = inputs[0][frame];
-      dryRight = inputChannelCount >= 2 ? inputs[1][frame] : inputs[0][frame];
-      dryLeft *= state.dryGain;
-      dryRight *= state.dryGain;
-    }
+      if (state.wetGain != Sample{1}) {
+        wetLeft *= state.wetGain;
+        wetRight *= state.wetGain;
+      }
 
-    if (state.dryEnabled) {
-      outputs[0][frame] = dryLeft + wetLeft;
-      outputs[1][frame] = dryRight + wetRight;
-    } else {
-      outputs[0][frame] = wetLeft;
-      outputs[1][frame] = wetRight;
+      if (state.dryEnabled) {
+        auto dryLeft = inputs[0][frame];
+        auto dryRight =
+            inputChannelCount >= 2 ? inputs[1][frame] : inputs[0][frame];
+        dryLeft *= state.dryGain;
+        dryRight *= state.dryGain;
+        outputs[0][frame] = dryLeft + wetLeft;
+        outputs[1][frame] = dryRight + wetRight;
+      } else {
+        outputs[0][frame] = wetLeft;
+        outputs[1][frame] = wetRight;
+      }
     }
   }
 }
@@ -275,9 +314,13 @@ std::uint64_t Reverb::preDelayFrames() const noexcept {
 
 std::size_t Reverb::ownedBytes() const noexcept {
   const auto& state = *implementation_;
-  std::size_t total = sizeof(state) + ownedVectorBytes(state.splitValues) +
+  std::size_t total = sizeof(state) + ownedVectorBytes(state.splitFrame) +
+                      ownedVectorBytes(state.splitValues) +
                       ownedVectorBytes(state.midStageValues) +
-                      ownedVectorBytes(state.diffuserOutputValues);
+                      ownedVectorBytes(state.mainLeft) +
+                      ownedVectorBytes(state.mainRight) +
+                      ownedVectorBytes(state.earlyLeft) +
+                      ownedVectorBytes(state.earlyRight);
   if (state.preDelayLine != nullptr) {
     total += sizeof(DelayLine) + state.preDelayLine->ownedStorageBytes();
   }

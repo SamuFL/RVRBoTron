@@ -13,7 +13,13 @@ class MixMatrix {
 public:
   virtual ~MixMatrix() = default;
 
-  virtual void mix(Sample* channels) const noexcept = 0;
+  // Mixes one frame of contiguous Channels.
+  void mix(Sample* const channels) const noexcept {
+    mixBlock(channels, 1);
+  }
+  // Mixes `frames` frames held planar (Channel c at channels + c * frames),
+  // each exactly as mix() would. frames <= kMaxChunkFrames.
+  virtual void mixBlock(Sample* channels, std::size_t frames) const noexcept = 0;
   [[nodiscard]] virtual std::size_t channelCount() const noexcept = 0;
   // Object storage plus any owned-container capacities on the heap block
   // this matrix occupies, in bytes.
@@ -25,7 +31,7 @@ public:
   HadamardMixMatrix(std::size_t channels,
                     const std::vector<double>& resolvedCoefficients);
 
-  void mix(Sample* channels) const noexcept override;
+  void mixBlock(Sample* channels, std::size_t frames) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
   [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
@@ -43,7 +49,7 @@ public:
   HouseholderMixMatrix(std::size_t channels,
                        const std::vector<double>& resolvedCoefficients);
 
-  void mix(Sample* channels) const noexcept override;
+  void mixBlock(Sample* channels, std::size_t frames) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
   [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 
@@ -54,14 +60,14 @@ private:
 
 // Seeded dense orthogonal matrix with no Haar-uniformity claim. Unlike
 // Hadamard and Householder, it has no fast structured transform, so it is
-// mixed by a dense multiply against the resolved coefficients, using a
-// scratch buffer allocated once at construction.
+// mixed by a dense multiply against the resolved coefficients, into a
+// planar scratch chunk allocated once at construction.
 class RandomOrthogonalMixMatrix final : public MixMatrix {
 public:
   RandomOrthogonalMixMatrix(std::size_t channels,
                             const std::vector<double>& resolvedCoefficients);
 
-  void mix(Sample* channels) const noexcept override;
+  void mixBlock(Sample* channels, std::size_t frames) const noexcept override;
   [[nodiscard]] std::size_t channelCount() const noexcept override;
   [[nodiscard]] std::size_t ownedBytes() const noexcept override;
 

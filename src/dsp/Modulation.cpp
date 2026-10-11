@@ -83,9 +83,12 @@ double Modulation::smoothedRandomTrajectory(
 }
 
 double Modulation::lookbackSamples(
-    const std::size_t channel, const std::uint64_t nominalDelaySamples) noexcept {
+    const std::size_t channel,
+    const std::uint64_t nominalDelaySamples,
+    const std::uint64_t frameOffset) noexcept {
   const auto t =
-      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
+      static_cast<double>(frameIndex_ + frameOffset) *
+          channelTargetsPerSample_[channel] +
       channelPhases_[channel];
   double trajectory;
   switch (shape_) {
@@ -105,6 +108,10 @@ double Modulation::lookbackSamples(
 
 void Modulation::advanceFrame() noexcept {
   ++frameIndex_;
+}
+
+void Modulation::advanceFrames(const std::uint64_t frames) noexcept {
+  frameIndex_ += frames;
 }
 
 std::size_t Modulation::ownedBytes() const noexcept {

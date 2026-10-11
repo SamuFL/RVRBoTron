@@ -10,6 +10,7 @@
 #include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/Modulation.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/dsp/Split.h"
 
@@ -3323,15 +3324,17 @@ int main() {
     // and only its own backing-vector allocations
     // (Downmix::ownedStorageBytes()) should be added on top. A `select`
     // Downmix's dense rows stay empty (issue #108's fast path), so its
-    // only owned storage here is the accumulator and the one-tap taps_
-    // array -- exactly sized to expose an extra, wrongly-added
-    // sizeof(Downmix) if the bug regresses.
+    // only owned storage here is the accumulator (one planar chunk of
+    // its 2 Channels, issue #163) and the one-tap taps_ array -- exactly
+    // sized to expose an extra, wrongly-added sizeof(Downmix) if the bug
+    // regresses.
     {
       const rvrbotron::dsp::EarlyReflections earlyDsp(
           *diffuserOnlyResolved.composition.early);
       const auto expectedOwnedBytes =
           sizeof(rvrbotron::dsp::EarlyReflections) +
-          2 * sizeof(rvrbotron::dsp::Sample) +
+          2 * rvrbotron::dsp::kMaxChunkFrames *
+              sizeof(rvrbotron::dsp::Sample) +
           diffuserOnlyResolved.composition.early->taps.size() *
               sizeof(rvrbotron::dsp::DiffuserEarlyTap);
       if (earlyDsp.ownedBytes() != expectedOwnedBytes) {

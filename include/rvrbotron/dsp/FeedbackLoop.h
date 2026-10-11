@@ -21,6 +21,12 @@ public:
   ~FeedbackLoop();
 
   void processFrame(const Sample* inputs, Sample* outputs) noexcept;
+  // Processes `frames` frames held planar (Channel c at + c * frames),
+  // exactly as `frames` processFrame() calls. It reads the whole chunk
+  // before writing any of it, so frames must stay below the Block-size
+  // bound (frames == 1 always works), and frames <= kMaxChunkFrames.
+  void processBlock(
+      const Sample* inputs, Sample* outputs, std::size_t frames) noexcept;
 
   [[nodiscard]] std::size_t channelCount() const noexcept;
   [[nodiscard]] std::uint64_t tailBudgetSamples() const noexcept;
@@ -37,6 +43,7 @@ private:
   std::vector<Sample> gains_;
   std::unique_ptr<MixMatrix> mix_;
 
+  // Planar chunk on its way back into the delay lines.
   std::vector<Sample> fedBack_;
 
   bool dampingEnabled_ = false;
