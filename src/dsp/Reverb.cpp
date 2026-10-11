@@ -42,10 +42,10 @@ struct Reverb::Implementation final : DiffuserCaptureSink {
   // Frames per chunk: kMaxChunkFrames, below the Block-size bound, or 1
   // while capturing, so captures keep their frame-by-frame order.
   std::size_t chunkFrames = kMaxChunkFrames;
-  // One Split frame, then planar chunks (Channel c at + c * frames): the
-  // Diffuser runs in place on splitValues, the Feedback Loop writes
+  // One Split frame, then planar chunks (Channel c at values + c * frames):
+  // the Diffuser runs in place on splitValues, the Feedback Loop writes
   // midStageValues.
-  std::vector<Sample> splitFrame;
+  std::vector<Sample> splitFrameValues;
   std::vector<Sample> splitValues;
   std::vector<Sample> midStageValues;
   std::vector<Sample> mainLeft;
@@ -128,7 +128,7 @@ Reverb::Reverb(const ResolvedConfig& config,
   if (captureSink != nullptr) {
     state.chunkFrames = 1;
   }
-  state.splitFrame.resize(state.channels);
+  state.splitFrameValues.resize(state.channels);
   state.splitValues.resize(state.channels * bufferFrames);
   if (state.feedbackLoop != nullptr) {
     state.midStageValues.resize(state.channels * bufferFrames);
@@ -195,17 +195,17 @@ void Reverb::process(const Sample* const* inputs,
         splitFrame = 0;
       }
       state.split->processFrame(
-          splitInputs, splitFrame, state.splitFrame.data());
+          splitInputs, splitFrame, state.splitFrameValues.data());
       if (state.captureSink != nullptr) {
         state.captureSink->captureFrame(
             StageCaptureBoundary::split,
             0,
-            state.splitFrame.data(),
+            state.splitFrameValues.data(),
             state.channels);
       }
       for (std::size_t channel = 0; channel < state.channels; ++channel) {
         state.splitValues[channel * frames + offset] =
-            state.splitFrame[channel];
+            state.splitFrameValues[channel];
       }
     }
 
@@ -314,7 +314,7 @@ std::uint64_t Reverb::preDelayFrames() const noexcept {
 
 std::size_t Reverb::ownedBytes() const noexcept {
   const auto& state = *implementation_;
-  std::size_t total = sizeof(state) + ownedVectorBytes(state.splitFrame) +
+  std::size_t total = sizeof(state) + ownedVectorBytes(state.splitFrameValues) +
                       ownedVectorBytes(state.splitValues) +
                       ownedVectorBytes(state.midStageValues) +
                       ownedVectorBytes(state.mainLeft) +

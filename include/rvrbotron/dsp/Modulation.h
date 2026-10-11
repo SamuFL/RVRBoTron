@@ -46,6 +46,9 @@ private:
     double points[4] = {};
   };
 
+  // The cached targets for `index`, refreshed if the Channel moved on.
+  [[nodiscard]] const double* smoothedRandomTargets(
+      std::size_t channel, std::int64_t index) noexcept;
   [[nodiscard]] double smoothedRandomTrajectory(
       std::size_t channel, double t) noexcept;
 

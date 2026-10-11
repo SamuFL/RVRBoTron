@@ -21,7 +21,8 @@ public:
   ~FeedbackLoop();
 
   void processFrame(const Sample* inputs, Sample* outputs) noexcept;
-  // Processes `frames` frames held planar (Channel c at + c * frames),
+  // Processes `frames` frames held planar (Channel c at inputs + c * frames
+  // and outputs + c * frames),
   // exactly as `frames` processFrame() calls. It reads the whole chunk
   // before writing any of it, so frames must stay below the Block-size
   // bound (frames == 1 always works), and frames <= kMaxChunkFrames.

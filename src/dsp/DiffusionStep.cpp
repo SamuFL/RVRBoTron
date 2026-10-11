@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cassert>
-
 #include <stdexcept>
 #include <vector>
 
@@ -90,28 +89,28 @@ void DiffusionStep::processBlock(Sample* const channels,
       // back: each read sees exactly the writes it would per frame.
       double lookbacks[kMaxChunkFrames];
       modulation_->lookbackBlock(channel, delay, frames, lookbacks);
+      const auto readThenWrite = [&](const auto read) noexcept {
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = read(lookbacks[frame]);
+          delayLine_.write(channel, input[frame]);
+        }
+      };
       switch (interpolation_) {
       case ModulationInterpolation::linear:
-        for (std::size_t frame = 0; frame < frames; ++frame) {
-          delayed[frame] =
-              delayLine_.readFractionLinear(channel, lookbacks[frame]);
-          delayLine_.write(channel, input[frame]);
-        }
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFractionLinear(channel, lookback);
+        });
         break;
-      case ModulationInterpolation::allpass: {
-        auto& state = allpassState_[allpassStateIndex_[channel]];
-        for (std::size_t frame = 0; frame < frames; ++frame) {
-          delayed[frame] = delayLine_.readFractionAllpass(
-              channel, lookbacks[frame], state);
-          delayLine_.write(channel, input[frame]);
-        }
+      case ModulationInterpolation::allpass:
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFractionAllpass(
+              channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+        });
         break;
-      }
       case ModulationInterpolation::lagrange3:
-        for (std::size_t frame = 0; frame < frames; ++frame) {
-          delayed[frame] = delayLine_.readFraction(channel, lookbacks[frame]);
-          delayLine_.write(channel, input[frame]);
-        }
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFraction(channel, lookback);
+        });
         break;
       }
     } else {

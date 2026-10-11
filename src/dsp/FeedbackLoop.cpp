@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cassert>
-
 #include <cmath>
 #include <limits>
 #include <stdexcept>
