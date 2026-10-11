@@ -25,7 +25,7 @@ jobs:
       matrix:
         architecture: [arm64, x86_64]
         preset: [default, double]
-        exclude: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '[{"architecture":"x86_64","preset":"double"}]' || '[{"architecture":"x86_64"},{"preset":"double"}]') }}
+        exclude: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && '[{"architecture":"x86_64","preset":"double"}]' || '[{"architecture":"x86_64"},{"preset":"double"}]') }}
 
     steps:
       - name: Checkout
@@ -51,7 +51,7 @@ jobs:
       - name: Test
         run: >
           ctest --preset ${{ matrix.preset }} --parallel 4
-          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main') && ' ' || '--label-exclude slow' }}
+          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && ' ' || '--label-exclude slow' }}
 
       - name: Collect diffusion tolerance evidence
         uses: actions/upload-artifact@v6
@@ -148,7 +148,7 @@ jobs:
       CXX: cl
     strategy:
       matrix:
-        preset: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["default","double"]' || '["default"]') }}
+        preset: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && '["default","double"]' || '["default"]') }}
 
     steps:
       - name: Checkout
@@ -178,7 +178,7 @@ jobs:
       - name: Test
         run: >
           ctest --preset ${{ matrix.preset }} --parallel 4
-          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main') && ' ' || '--label-exclude slow' }}
+          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && ' ' || '--label-exclude slow' }}
 
       - name: Collect diffusion tolerance evidence
         uses: actions/upload-artifact@v6
@@ -272,8 +272,8 @@ jobs:
       matrix:
         # The default generator per runner: Visual Studio (MSVC) on Windows,
         # Makefiles with Apple Clang on macOS.
-        os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["macos-26","windows-2022"]' || '["windows-2022"]') }}
-        precision: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["float","double"]' || '["float"]') }}
+        os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && '["macos-26","windows-2022"]' || '["windows-2022"]') }}
+        precision: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main' || github.head_ref == 'feature/163-offline-throughput') && '["float","double"]' || '["float"]') }}
 
     steps:
       - name: Checkout
@@ -293,6 +293,75 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/consumer --build-config Release --output-on-failure
+
+  # TEMPORARY (#163): before/after MSVC numbers for the PR. Remove before
+  # merging.
+  benchmark-msvc:
+    name: Benchmark MSVC (temporary, #163)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    if: github.event_name == 'pull_request'
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build before and after
+        run: |
+          git worktree add ../before ${{ github.event.pull_request.base.sha }}
+          for tree in ../before .; do
+            cmake -S $tree -B $tree/build/msvc -G "Visual Studio 17 2022" -A x64 -DRVRBOTRON_BUILD_TESTS=OFF
+            cmake --build $tree/build/msvc --config Release --target rvrbotron
+          done
+
+      - name: Render, compare, and benchmark Cloud
+        run: |
+          python - <<'PY'
+          import array, random, struct
+          random.seed(163)
+          rate, frames = 48000, 48000 * 32
+          data = array.array("f", (random.uniform(-0.3, 0.3) for _ in range(frames * 2))).tobytes()
+          fmt = struct.pack("<HHIIHH", 3, 2, rate, rate * 8, 8, 32)
+          with open("in.wav", "wb") as f:
+              f.write(b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(data)) + b"WAVE")
+              f.write(b"fmt " + struct.pack("<I", len(fmt)) + fmt)
+              f.write(b"data" + struct.pack("<I", len(data)) + data)
+          PY
+          cat > cloud.json <<'JSON'
+          {"formatVersion": 2, "seed": 42, "composition": {"stages": [
+           {"type": "split", "channels": 16, "strategy": "stereo-halves"},
+           {"type": "diffuser", "steps": 6, "totalMs": 150},
+           {"type": "feedback-loop", "delayMinMs": 160, "delayMaxMs": 320, "rt60Sec": 9.0,
+            "damping": {"highRatio": 0.35, "highHz": 3500, "lowRatio": 0.75, "lowHz": 250},
+            "modulation": {"depthMs": 0.8, "rateHz": 0.25, "shape": "smoothed-random"}},
+           {"type": "downmix", "strategy": "orthogonal-rows", "widthDeg": 120}], "wetOnly": true}}
+          JSON
+          before=../before/build/msvc/Release/rvrbotron.exe
+          after=build/msvc/Release/rvrbotron.exe
+          "$before" render --input in.wav --config cloud.json --block-size 128 --output out-before
+          "$after" render --input in.wav --config cloud.json --block-size 128 --output out-after
+          for block in 1 777; do
+            "$after" render --input in.wav --config cloud.json --block-size $block --output out-after-$block
+          done
+          {
+            echo "## Cloud on MSVC (windows-2022)"
+            cmp out-before/output.wav out-after/output.wav && echo "- before vs after, block 128: byte-identical" || echo "- before vs after, block 128: DIFFERENT"
+            for block in 1 777; do
+              cmp out-after/output.wav out-after-$block/output.wav && echo "- after, block $block vs 128: byte-identical" || echo "- after, block $block vs 128: DIFFERENT"
+            done
+            for round in 1 2; do
+              for side in before after; do
+                bin=$([ $side = before ] && echo "$before" || echo "$after")
+                "$bin" benchmark --resolved out-before/resolved.json --measure-seconds 30 > bench.json
+                python -c "import json; d = json.load(open('bench.json')); print(f'- round $round, $side: medianUtilization {d[\"medianUtilization\"]:.5f}')"
+              done
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   compare-diffusion-equivalence:
     name: Compare diffusion equivalence across platforms
