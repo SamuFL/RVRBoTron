@@ -62,27 +62,55 @@ HadamardMixMatrix::HadamardMixMatrix(
 
 void HadamardMixMatrix::mixBlock(Sample* const channels,
                                  const std::size_t frames) const noexcept {
-  // Each butterfly runs across the whole chunk, so it vectorises over
-  // time while every sample sees the same operations, in the same order,
-  // as a frame-by-frame transform.
-  for (std::size_t width = 1; width < channels_; width *= 2) {
-    const auto stride = width * 2;
-    for (std::size_t offset = 0; offset < channels_; offset += stride) {
+  // Butterfly stages of widths 1, 2, 4, ... in order. Each runs across the
+  // whole chunk, so it vectorises over time, and pairs of stages share one
+  // pass over memory (radix 4), with the scale folded into the last pass.
+  // Every sample still sees the same additions, subtractions, and final
+  // scale, in the same order, as a frame-by-frame transform.
+  std::size_t width = 1;
+  while (width < channels_) {
+    const bool radix4 = width * 4 <= channels_;
+    const auto span = width * (radix4 ? 4 : 2);
+    const bool last = span == channels_;
+    for (std::size_t offset = 0; offset < channels_; offset += span) {
       for (std::size_t index = 0; index < width; ++index) {
-        auto* const lefts = channels + (offset + index) * frames;
-        auto* const rights = channels + (offset + width + index) * frames;
+        auto* const a = channels + (offset + index) * frames;
+        auto* const b = channels + (offset + width + index) * frames;
+        if (!radix4) {
+          for (std::size_t frame = 0; frame < frames; ++frame) {
+            const auto left = a[frame];
+            const auto right = b[frame];
+            a[frame] = last ? (left + right) * scale_ : left + right;
+            b[frame] = last ? (left - right) * scale_ : left - right;
+          }
+          continue;
+        }
+        auto* const c = channels + (offset + 2 * width + index) * frames;
+        auto* const d = channels + (offset + 3 * width + index) * frames;
         for (std::size_t frame = 0; frame < frames; ++frame) {
-          const auto left = lefts[frame];
-          const auto right = rights[frame];
-          lefts[frame] = left + right;
-          rights[frame] = left - right;
+          // Stage `width` pairs (a, b) and (c, d); stage 2 * width pairs
+          // their results (a, c) and (b, d).
+          const auto ab0 = a[frame] + b[frame];
+          const auto ab1 = a[frame] - b[frame];
+          const auto cd0 = c[frame] + d[frame];
+          const auto cd1 = c[frame] - d[frame];
+          const auto outA = ab0 + cd0;
+          const auto outB = ab1 + cd1;
+          const auto outC = ab0 - cd0;
+          const auto outD = ab1 - cd1;
+          a[frame] = last ? outA * scale_ : outA;
+          b[frame] = last ? outB * scale_ : outB;
+          c[frame] = last ? outC * scale_ : outC;
+          d[frame] = last ? outD * scale_ : outD;
         }
       }
     }
+    width = span;
   }
-  const auto samples = channels_ * frames;
-  for (std::size_t sample = 0; sample < samples; ++sample) {
-    channels[sample] *= scale_;
+  if (channels_ == 1) {
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      channels[frame] *= scale_;
+    }
   }
 }
 
