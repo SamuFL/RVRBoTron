@@ -6,10 +6,30 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The DSP core is consumable as a CMake subproject. Consumers link the new
+  `rvrbotron::dsp` and `rvrbotron::config` alias targets.
+  `RVRBOTRON_BUILD_TOOLS` and `RVRBOTRON_BUILD_TESTS` both default to on only
+  when RVRBoTron is the top-level project, so a subproject fetches nothing and
+  builds no tools or tests (#161).
+- CI builds a minimal consumer from the commit's source archive with GCC,
+  Apple Clang, and MSVC (#161).
+
+### Changed
+
+- The test suite is gated by `RVRBOTRON_BUILD_TESTS` instead of
+  `BUILD_TESTING` (#161).
+- `ResolvedConfigJson` moved out of `rvrbotron_config` into a new
+  `rvrbotron_config_json` target, so `rvrbotron_config` no longer depends on
+  `nlohmann_json` (#161).
+
 ### Fixed
 
 - The DSP core compiles with MSVC: `ownedVectorBytes` is no longer
   `constexpr` (#162).
+- Every curated listening sample is restored on the Git LFS server, so
+  checking out a release with Git LFS succeeds again (#161).
 
 ## [1.0.0] - 2026-09-13
 
