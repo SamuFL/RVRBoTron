@@ -23,6 +23,13 @@ public:
       std::uint64_t nominalDelaySamples,
       std::uint64_t frameOffset = 0) noexcept;
 
+  // Writes the lookbacks of the next `frames` frames, as `frames`
+  // lookbackSamples() calls with frame offsets 0, 1, ...
+  void lookbackBlock(std::size_t channel,
+                     std::uint64_t nominalDelaySamples,
+                     std::size_t frames,
+                     double* lookbacks) noexcept;
+
   void advanceFrame() noexcept;
   void advanceFrames(std::uint64_t frames) noexcept;
 

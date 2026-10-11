@@ -165,25 +165,26 @@ void FeedbackLoop::processBlock(const Sample* const inputs,
     if (delay == 0) {
       std::fill_n(delayed, frames, Sample{0});
     } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
-      for (std::size_t frame = 0; frame < frames; ++frame) {
-        const auto lookback =
-            modulation_->lookbackSamples(channel, delay, frame);
-        switch (interpolation_) {
-        case ModulationInterpolation::linear:
-          delayed[frame] =
-              delayLine_.readFractionLinear(channel, lookback, frame);
-          break;
-        case ModulationInterpolation::allpass:
-          delayed[frame] = delayLine_.readFractionAllpass(
-              channel,
-              lookback,
-              allpassState_[allpassStateIndex_[channel]],
-              frame);
-          break;
-        case ModulationInterpolation::lagrange3:
-          delayed[frame] = delayLine_.readFraction(channel, lookback, frame);
-          break;
+      double lookbacks[kMaxChunkFrames];
+      modulation_->lookbackBlock(channel, delay, frames, lookbacks);
+      switch (interpolation_) {
+      case ModulationInterpolation::linear:
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFractionLinear(
+              channel, lookbacks[frame], frame);
         }
+        break;
+      case ModulationInterpolation::allpass: {
+        auto& state = allpassState_[allpassStateIndex_[channel]];
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFractionAllpass(
+              channel, lookbacks[frame], state, frame);
+        }
+        break;
+      }
+      case ModulationInterpolation::lagrange3:
+        delayLine_.readFractionBlock(channel, lookbacks, delayed, frames);
+        break;
       }
     } else {
       delayLine_.readBlock(channel, delayed, frames);
@@ -194,29 +195,27 @@ void FeedbackLoop::processBlock(const Sample* const inputs,
     }
   }
 
+  // Frame-major over the planar chunk: every Channel's recurrence is
+  // independent, so stepping all of them per frame lets them overlap
+  // instead of waiting on one Channel's chain.
   const auto shelve = [this, frames](
                           const std::vector<Sample>& b0,
                           const std::vector<Sample>& b1,
                           const std::vector<Sample>& a1,
                           std::vector<Sample>& prevInput,
                           std::vector<Sample>& prevOutput) noexcept {
-    for (std::size_t channel = 0; channel < channels_; ++channel) {
-      auto* const values = fedBack_.data() + channel * frames;
-      const auto coefficientB0 = b0[channel];
-      const auto coefficientB1 = b1[channel];
-      const auto coefficientA1 = a1[channel];
-      auto previousInput = prevInput[channel];
-      auto previousOutput = prevOutput[channel];
-      for (std::size_t frame = 0; frame < frames; ++frame) {
-        const auto input = values[frame];
-        const auto output = coefficientB0 * input +
-            coefficientB1 * previousInput - coefficientA1 * previousOutput;
-        previousInput = input;
-        previousOutput = output;
-        values[frame] = output;
+    auto* const values = fedBack_.data();
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      for (std::size_t channel = 0; channel < channels_; ++channel) {
+        auto& value = values[channel * frames + frame];
+        const auto input = value;
+        const auto output = b0[channel] * input +
+            b1[channel] * prevInput[channel] -
+            a1[channel] * prevOutput[channel];
+        prevInput[channel] = input;
+        prevOutput[channel] = output;
+        value = output;
       }
-      prevInput[channel] = previousInput;
-      prevOutput[channel] = previousOutput;
     }
   };
   if (!highShelfBypassed_) {

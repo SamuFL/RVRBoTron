@@ -88,22 +88,31 @@ void DiffusionStep::processBlock(Sample* const channels,
     } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
       // Channels are independent, so one Channel's frames can run back to
       // back: each read sees exactly the writes it would per frame.
-      for (std::size_t frame = 0; frame < frames; ++frame) {
-        const auto lookback =
-            modulation_->lookbackSamples(channel, delay, frame);
-        switch (interpolation_) {
-        case ModulationInterpolation::linear:
-          delayed[frame] = delayLine_.readFractionLinear(channel, lookback);
-          break;
-        case ModulationInterpolation::allpass:
-          delayed[frame] = delayLine_.readFractionAllpass(
-              channel, lookback, allpassState_[allpassStateIndex_[channel]]);
-          break;
-        case ModulationInterpolation::lagrange3:
-          delayed[frame] = delayLine_.readFraction(channel, lookback);
-          break;
+      double lookbacks[kMaxChunkFrames];
+      modulation_->lookbackBlock(channel, delay, frames, lookbacks);
+      switch (interpolation_) {
+      case ModulationInterpolation::linear:
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] =
+              delayLine_.readFractionLinear(channel, lookbacks[frame]);
+          delayLine_.write(channel, input[frame]);
         }
-        delayLine_.write(channel, input[frame]);
+        break;
+      case ModulationInterpolation::allpass: {
+        auto& state = allpassState_[allpassStateIndex_[channel]];
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFractionAllpass(
+              channel, lookbacks[frame], state);
+          delayLine_.write(channel, input[frame]);
+        }
+        break;
+      }
+      case ModulationInterpolation::lagrange3:
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFraction(channel, lookbacks[frame]);
+          delayLine_.write(channel, input[frame]);
+        }
+        break;
       }
     } else {
       delayLine_.delayBlock(channel, input, delayed, frames);

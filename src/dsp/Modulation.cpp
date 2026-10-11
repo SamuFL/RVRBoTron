@@ -106,6 +106,60 @@ double Modulation::lookbackSamples(
       trajectory * excursionSamples_;
 }
 
+void Modulation::lookbackBlock(
+    const std::size_t channel,
+    const std::uint64_t nominalDelaySamples,
+    const std::size_t frames,
+    double* const lookbacks) noexcept {
+  const auto rate = channelTargetsPerSample_[channel];
+  if (shape_ != ModulationShape::smoothedRandom || frames == 0 ||
+      !(rate >= 0.0)) {
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      lookbacks[frame] =
+          lookbackSamples(channel, nominalDelaySamples, frame);
+    }
+    return;
+  }
+
+  // Each expression below is the one lookbackSamples() and
+  // smoothedRandomTrajectory() evaluate, so every lookback is identical;
+  // only the target lookup moves out of the loop. A non-negative rate
+  // makes t non-decreasing, so equal first and last target indices mean
+  // the whole chunk shares one set of targets.
+  const auto phase = channelPhases_[channel];
+  const auto nominal = static_cast<double>(nominalDelaySamples);
+  const auto targetIndex = [](const double t) noexcept {
+    constexpr double kMaxTargetIndex = 9.0e18;
+    return static_cast<std::int64_t>(
+        std::clamp(std::floor(t), -kMaxTargetIndex, kMaxTargetIndex));
+  };
+  const auto at = [this, rate, phase](const std::size_t frame) noexcept {
+    return static_cast<double>(frameIndex_ + frame) * rate + phase;
+  };
+  const auto firstIndex = targetIndex(at(0));
+  if (firstIndex != targetIndex(at(frames - 1))) {
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      lookbacks[frame] =
+          lookbackSamples(channel, nominalDelaySamples, frame);
+    }
+    return;
+  }
+  const auto t0 = at(0);
+  (void)smoothedRandomTrajectory(channel, t0);
+  const auto* const p = smoothedRandomTargets_[channel].points;
+  const auto p0 = p[0];
+  const auto p1 = p[1];
+  const auto p2 = p[2];
+  const auto p3 = p[3];
+  for (std::size_t frame = 0; frame < frames; ++frame) {
+    const auto t = at(frame);
+    const auto frac = t - std::floor(t);
+    const auto trajectory =
+        std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
+    lookbacks[frame] = nominal + trajectory * excursionSamples_;
+  }
+}
+
 void Modulation::advanceFrame() noexcept {
   ++frameIndex_;
 }
