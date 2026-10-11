@@ -18,6 +18,8 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The Windows CI jobs build and test with MSVC instead of the runner's
+  MinGW GCC (#162).
 - The test suite is gated by `RVRBOTRON_BUILD_TESTS` instead of
   `BUILD_TESTING` (#161).
 - `ResolvedConfigJson` moved out of `rvrbotron_config` into a new

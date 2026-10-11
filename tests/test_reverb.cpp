@@ -3348,8 +3348,10 @@ int main() {
     // enough frames (this Diffuser's sample budget is 48 samples at
     // 48 kHz) that a tapped Diffusion Step's delayed output has actually
     // reached the observation window, with sustained input so energy
-    // checks are not sensitive to exactly where that delay lands.
-    constexpr std::size_t kEarlyTestFrames = 64;
+    // checks are not sensitive to exactly where that delay lands. Static
+    // so the capture-less lambdas below may use it: MSVC rejects naming a
+    // non-static local constant there (C3493, issue #162).
+    static constexpr std::size_t kEarlyTestFrames = 64;
     const auto renderFrames =
         [](const rvrbotron::dsp::ResolvedConfig& config) {
           rvrbotron::dsp::Reverb reverb(config);
