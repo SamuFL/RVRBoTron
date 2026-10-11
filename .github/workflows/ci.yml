@@ -252,6 +252,36 @@ jobs:
           name: modulation-equivalence-windows-x86_64-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/modulation-equivalence.json
 
+  consumer:
+    name: Consumer ${{ matrix.os }} (${{ matrix.precision }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        # The default generator per runner: Visual Studio (MSVC) on Windows,
+        # Makefiles with GCC on Linux and Apple Clang on macOS.
+        os: [ubuntu-latest, macos-26, windows-2022]
+        precision: [float, double]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Fetch the commit under test the way consumers fetch a release: as a
+      # GitHub source archive, so neither Git nor Git LFS is involved.
+      - name: Configure
+        run: >
+          cmake -S tests/consumer -B build/consumer
+          -DRVRBOTRON_URL=https://github.com/${{ github.repository }}/archive/${{ github.event.pull_request.head.sha || github.sha }}.tar.gz
+          -DRVRBOTRON_SAMPLE_DOUBLE=${{ matrix.precision == 'double' && 'ON' || 'OFF' }}
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/consumer --config Release
+
+      - name: Test
+        run: ctest --test-dir build/consumer --build-config Release --output-on-failure
+
   compare-diffusion-equivalence:
     name: Compare diffusion equivalence across platforms
     runs-on: ubuntu-latest
