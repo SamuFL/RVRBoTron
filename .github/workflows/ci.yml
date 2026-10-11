@@ -19,17 +19,12 @@ concurrency:
 jobs:
   macos:
     name: macOS ${{ matrix.architecture }} (${{ matrix.preset }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'x86_64' && 'macos-26-intel' || 'macos-26' }}
     timeout-minutes: 15
     strategy:
       matrix:
         architecture: [arm64, x86_64]
         preset: [default, double]
-        include:
-          - architecture: arm64
-            runner: macos-26
-          - architecture: x86_64
-            runner: macos-26-intel
         exclude: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '[{"architecture":"x86_64","preset":"double"}]' || '[{"architecture":"x86_64"},{"preset":"double"}]') }}
 
     steps:
