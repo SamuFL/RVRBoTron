@@ -16,6 +16,13 @@ public:
   void processFrame(const Sample* channels,
                     Sample* const* outputs,
                     std::size_t frame) const noexcept;
+  // Downmixes `frames` frames held planar (Channel c at
+  // channels + c * frames) into `left` and `right`, each exactly as
+  // processFrame() would.
+  void processBlock(const Sample* channels,
+                    std::size_t frames,
+                    Sample* left,
+                    Sample* right) const noexcept;
 
   [[nodiscard]] std::size_t inputChannelCount() const noexcept;
   [[nodiscard]] std::size_t outputChannelCount() const noexcept;

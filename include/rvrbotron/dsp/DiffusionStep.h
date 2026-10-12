@@ -21,6 +21,10 @@ public:
   ~DiffusionStep();
 
   void processFrame(const Sample* inputs, Sample* outputs) noexcept;
+  // Processes `frames` frames in place, held planar (Channel c at
+  // channels + c * frames), exactly as `frames` processFrame() calls.
+  // frames <= kMaxChunkFrames.
+  void processBlock(Sample* channels, std::size_t frames) noexcept;
 
   [[nodiscard]] std::size_t channelCount() const noexcept;
   [[nodiscard]] std::size_t ownedBytes() const noexcept;
@@ -34,6 +38,7 @@ private:
   std::vector<Sample> polarity_;
   std::unique_ptr<MixMatrix> mix_;
 
+  // Planar delayed chunk, before permutation and polarity.
   std::vector<Sample> delayedValues_;
 
   std::optional<Modulation> modulation_;

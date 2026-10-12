@@ -146,6 +146,44 @@ someone else.
 
 ---
 
+## Use the DSP core in your project
+
+The DSP core and its typed configuration build as a CMake subproject:
+a `ReverbConfig` goes into `resolveConfig()`, and the result constructs a
+`dsp::Reverb`. No JSON, WAV, or CLI is involved. Pull a release in through its
+source archive, which needs neither Git nor Git LFS:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+  rvrbotron
+  URL https://github.com/SamuFL/RVRBoTron/archive/refs/tags/vX.Y.Z.tar.gz
+  URL_HASH SHA256=<hash of that archive>
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(rvrbotron)
+
+target_link_libraries(your_target PRIVATE rvrbotron::config rvrbotron::dsp)
+```
+
+Fetching by `GIT_REPOSITORY` works too, but its checkout also downloads the
+curated listening samples through Git LFS.
+
+As a subproject, RVRBoTron defines only `rvrbotron::dsp` and
+`rvrbotron::config`. It fetches nothing, and it ignores the parent's
+`BUILD_TESTING`. To change that:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `RVRBOTRON_BUILD_TOOLS` | `ON` only when top-level | The CLI, WAV and JSON targets, and their fetched `dr_libs` and `nlohmann_json` |
+| `RVRBOTRON_BUILD_TESTS` | `ON` only when top-level | The test suite; requires `RVRBOTRON_BUILD_TOOLS` |
+| `RVRBOTRON_SAMPLE_DOUBLE` | `OFF` | float64 DSP samples instead of float32 |
+
+[`tests/consumer/`](tests/consumer/) is a minimal consumer, built in CI with
+GCC, Apple Clang, and MSVC.
+
+---
+
 ## Documentation
 
 | Guide | Read it when |
@@ -169,10 +207,12 @@ Active implementation work lives in this repository's GitHub Issues.
 
 ## Platform support
 
-CI runs the complete command-level suite on macOS arm64, macOS Intel, and
-Windows x86_64 for float32 builds, plus macOS arm64 and Windows x86_64 for
-float64. Each job proves exact identity from its own committed fixtures;
-nothing is transferred between machines.
+For releases, CI runs the complete command-level suite on macOS arm64 and
+macOS Intel with Apple Clang, and on Windows x86_64 with MSVC, for float32
+builds, plus macOS arm64 and Windows x86_64 for float64. Pull requests into
+`develop` run only the float32 builds on macOS arm64 and Windows, and skip the
+tests labelled `slow`. Each job proves exact identity from its own committed
+fixtures; nothing is transferred between machines.
 
 The committed fixtures cover mono and stereo PCM16, PCM24, PCM32, IEEE
 float32, and IEEE float64 WAV at 44.1, 48, and 96 kHz. Regenerate them with:

@@ -1,10 +1,16 @@
 name: CI
 
+# Pull requests into develop run the float32 suite on macOS arm64 and
+# Windows (MSVC), without the tests labelled `slow`. Releases and hotfixes
+# (pull requests into main), pushes to main, and manual runs run everything:
+# float64, macOS Intel, slow tests, and the macOS consumer. Each matrix below
+# repeats that condition, because `env` is not available in `strategy`.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [develop, main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -13,20 +19,13 @@ concurrency:
 jobs:
   macos:
     name: macOS ${{ matrix.architecture }} (${{ matrix.preset }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.architecture == 'x86_64' && 'macos-26-intel' || 'macos-26' }}
     timeout-minutes: 15
     strategy:
       matrix:
-        include:
-          - architecture: arm64
-            runner: macos-26
-            preset: default
-          - architecture: arm64
-            runner: macos-26
-            preset: double
-          - architecture: x86_64
-            runner: macos-26-intel
-            preset: default
+        architecture: [arm64, x86_64]
+        preset: [default, double]
+        exclude: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '[{"architecture":"x86_64","preset":"double"}]' || '[{"architecture":"x86_64"},{"preset":"double"}]') }}
 
     steps:
       - name: Checkout
@@ -50,7 +49,9 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: >
+          ctest --preset ${{ matrix.preset }} --parallel 4
+          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main') && ' ' || '--label-exclude slow' }}
 
       - name: Collect diffusion tolerance evidence
         uses: actions/upload-artifact@v6
@@ -140,9 +141,14 @@ jobs:
     name: Windows x86_64 (${{ matrix.preset }})
     runs-on: windows-2022
     timeout-minutes: 15
+    # Pin cl: the runner's MinGW GCC stays on PATH after the MSVC developer
+    # environment is set up, and CMake would otherwise pick it (issue #162).
+    env:
+      CC: cl
+      CXX: cl
     strategy:
       matrix:
-        preset: [default, double]
+        preset: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["default","double"]' || '["default"]') }}
 
     steps:
       - name: Checkout
@@ -150,6 +156,10 @@ jobs:
 
       - name: Install Ninja
         run: choco install ninja --no-progress -y
+
+      # Puts cl, link, and the Windows SDK on PATH for the Ninja presets.
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -166,7 +176,9 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: >
+          ctest --preset ${{ matrix.preset }} --parallel 4
+          ${{ (github.event_name != 'pull_request' || github.base_ref == 'main') && ' ' || '--label-exclude slow' }}
 
       - name: Collect diffusion tolerance evidence
         uses: actions/upload-artifact@v6
@@ -251,6 +263,36 @@ jobs:
         with:
           name: modulation-equivalence-windows-x86_64-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/modulation-equivalence.json
+
+  consumer:
+    name: Consumer ${{ matrix.os }} (${{ matrix.precision }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        # The default generator per runner: Visual Studio (MSVC) on Windows,
+        # Makefiles with Apple Clang on macOS.
+        os: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["macos-26","windows-2022"]' || '["windows-2022"]') }}
+        precision: ${{ fromJSON((github.event_name != 'pull_request' || github.base_ref == 'main') && '["float","double"]' || '["float"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Fetch the commit under test the way consumers fetch a release: as a
+      # GitHub source archive, so neither Git nor Git LFS is involved.
+      - name: Configure
+        run: >
+          cmake -S tests/consumer -B build/consumer
+          -DRVRBOTRON_URL=https://github.com/${{ github.repository }}/archive/${{ github.event.pull_request.head.sha || github.sha }}.tar.gz
+          -DRVRBOTRON_SAMPLE_DOUBLE=${{ matrix.precision == 'double' && 'ON' || 'OFF' }}
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/consumer --config Release
+
+      - name: Test
+        run: ctest --test-dir build/consumer --build-config Release --output-on-failure
 
   compare-diffusion-equivalence:
     name: Compare diffusion equivalence across platforms

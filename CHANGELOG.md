@@ -4,6 +4,46 @@ All notable changes to RVRBoTron are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-12
+
+Makes the DSP core usable inside another CMake project, builds it with MSVC,
+and renders about six times faster offline. Configuration stays at format v2;
+every 1.0.0 Requested and Resolved configuration still loads.
+
+### Added
+
+- The DSP core is consumable as a CMake subproject. Consumers link the new
+  `rvrbotron::dsp` and `rvrbotron::config` alias targets.
+  `RVRBOTRON_BUILD_TOOLS` and `RVRBOTRON_BUILD_TESTS` both default to on only
+  when RVRBoTron is the top-level project, so a subproject fetches nothing and
+  builds no tools or tests (#161).
+- CI builds a minimal consumer from the commit's source archive with Apple
+  Clang and MSVC (#161, #165).
+
+### Changed
+
+- `dsp::Reverb::process` renders about six times faster offline. It runs
+  its stages over planar chunks instead of one frame at a time, caches
+  smoothed-random Modulation targets, and tightens the delay, modulation,
+  shelf, and Hadamard loops. Cloud renders byte-identically to v1.0.0.
+  Dense mixes over a Channel count that is not a multiple of 4, or in
+  float64 builds, can differ from v1.0.0 by about one ulp. Every block size
+  still renders the same bits (ADR-0008, #163).
+- The Windows CI jobs build and test with MSVC instead of the runner's
+  MinGW GCC (#162).
+- The test suite is gated by `RVRBOTRON_BUILD_TESTS` instead of
+  `BUILD_TESTING` (#161).
+- `ResolvedConfigJson` moved out of `rvrbotron_config` into a new
+  `rvrbotron_config_json` target, so `rvrbotron_config` no longer depends on
+  `nlohmann_json` (#161).
+
+### Fixed
+
+- The DSP core compiles with MSVC: `ownedVectorBytes` is no longer
+  `constexpr` (#162).
+- Every curated listening sample is restored on the Git LFS server, so
+  checking out a release with Git LFS succeeds again (#161).
+
 ## [1.0.0] - 2026-09-13
 
 First public release. Everything below arrived across the six development
@@ -70,4 +110,5 @@ milestones that preceded it; the release itself adds no behavior.
   Resolved configurations: the loader reads absent envelope fields as the
   exact legacy behavior (ADR-0007).
 
+[1.1.0]: https://github.com/SamuFL/RVRBoTron/releases/tag/v1.1.0
 [1.0.0]: https://github.com/SamuFL/RVRBoTron/releases/tag/v1.0.0

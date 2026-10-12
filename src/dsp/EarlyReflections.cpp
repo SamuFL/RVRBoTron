@@ -1,6 +1,7 @@
 #include "rvrbotron/dsp/EarlyReflections.h"
 
 #include "rvrbotron/dsp/OwnedBytes.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -11,7 +12,7 @@ EarlyReflections::EarlyReflections(const ResolvedEarlyReflections& config)
     : enabled_(config.enabled),
       gain_(static_cast<Sample>(config.gain)),
       downmix_(config.downmix),
-      accumulator_(config.downmix.inputChannels, Sample{0}) {
+      accumulator_(config.downmix.inputChannels * kMaxChunkFrames, Sample{0}) {
   if (config.taps.empty()) {
     throw std::invalid_argument(
         "EarlyReflections requires at least one resolved tap");
@@ -26,7 +27,12 @@ EarlyReflections::EarlyReflections(const ResolvedEarlyReflections& config)
 }
 
 void EarlyReflections::beginFrame() noexcept {
-  std::fill(accumulator_.begin(), accumulator_.end(), Sample{0});
+  beginBlock(1);
+}
+
+void EarlyReflections::beginBlock(const std::size_t frames) noexcept {
+  std::fill_n(accumulator_.begin(), downmix_.inputChannelCount() * frames,
+              Sample{0});
 }
 
 const DiffuserEarlyTap* EarlyReflections::taps() const noexcept {
@@ -39,10 +45,17 @@ std::size_t EarlyReflections::tapCount() const noexcept {
 
 void EarlyReflections::processFrame(
     Sample* const left, Sample* const right) const noexcept {
-  Sample* const scratch[]{left, right};
-  downmix_.processFrame(accumulator_.data(), scratch, 0);
-  *left *= gain_;
-  *right *= gain_;
+  processBlock(left, right, 1);
+}
+
+void EarlyReflections::processBlock(
+    Sample* const left, Sample* const right, const std::size_t frames)
+    const noexcept {
+  downmix_.processBlock(accumulator_.data(), frames, left, right);
+  for (std::size_t frame = 0; frame < frames; ++frame) {
+    left[frame] *= gain_;
+    right[frame] *= gain_;
+  }
 }
 
 bool EarlyReflections::enabled() const noexcept {

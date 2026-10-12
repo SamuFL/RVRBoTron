@@ -411,7 +411,12 @@ add_test(
     ${CMAKE_SOURCE_DIR}/tools/research_bench/static/templates
 )
 
-set_tests_properties(research_bench_contract PROPERTIES TIMEOUT 180)
+set_tests_properties(
+  research_bench_contract
+  PROPERTIES
+    TIMEOUT 180
+    LABELS slow
+)
 
 add_test(
   NAME research_bench_hardening_contract
@@ -424,7 +429,12 @@ add_test(
     ${CMAKE_CURRENT_BINARY_DIR}/research-bench-hardening-contract
 )
 
-set_tests_properties(research_bench_hardening_contract PROPERTIES TIMEOUT 450)
+set_tests_properties(
+  research_bench_hardening_contract
+  PROPERTIES
+    TIMEOUT 450
+    LABELS slow
+)
 
 add_test(
   NAME research_bench_templates_contract

@@ -4,6 +4,7 @@
 #include "rvrbotron/dsp/OwnedBytes.h"
 
 #include <algorithm>
+#include <cassert>
 #include <stdexcept>
 
 namespace rvrbotron::dsp {
@@ -50,18 +51,29 @@ void Diffuser::processFrame(
   if (inputs != outputs) {
     std::copy_n(inputs, channels_, outputs);
   }
+  processBlock(outputs, 1, captureSink, earlyTaps, earlyTapCount);
+}
+
+void Diffuser::processBlock(
+    Sample* const channels,
+    const std::size_t frames,
+    DiffuserCaptureSink* const captureSink,
+    const DiffuserEarlyTap* const earlyTaps,
+    const std::size_t earlyTapCount) noexcept {
+  assert(captureSink == nullptr || frames == 1);
+  const auto samples = channels_ * frames;
   std::size_t nextTap = 0;
   for (std::size_t index = 0; index < steps_.size(); ++index) {
-    steps_[index]->processFrame(outputs, outputs);
+    steps_[index]->processBlock(channels, frames);
     if (captureSink != nullptr) {
       captureSink->captureDiffusionStepFrame(
-          stepIndices_[index], outputs, channels_);
+          stepIndices_[index], channels, channels_);
     }
     if (nextTap < earlyTapCount &&
         earlyTaps[nextTap].stepIndex == stepIndices_[index]) {
       const auto& tap = earlyTaps[nextTap];
-      for (std::size_t channel = 0; channel < channels_; ++channel) {
-        tap.accumulator[channel] += outputs[channel] * tap.gain;
+      for (std::size_t sample = 0; sample < samples; ++sample) {
+        tap.accumulator[sample] += channels[sample] * tap.gain;
       }
       ++nextTap;
     }

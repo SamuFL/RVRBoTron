@@ -2,6 +2,8 @@
 
 #include "rvrbotron/dsp/OwnedBytes.h"
 
+#include <algorithm>
+
 namespace rvrbotron::dsp {
 
 namespace {
@@ -42,30 +44,51 @@ Downmix::Downmix(const ResolvedDownmix& config)
 void Downmix::processFrame(const Sample* const channels,
                            Sample* const* const outputs,
                            const std::size_t frame) const noexcept {
-  Sample preWidthLeft;
-  Sample preWidthRight;
+  processBlock(channels, 1, outputs[0] + frame, outputs[1] + frame);
+}
+
+void Downmix::processBlock(const Sample* const channels,
+                           const std::size_t frames,
+                           Sample* const left,
+                           Sample* const right) const noexcept {
   if (strategy_ == DownmixStrategy::select) {
-    preWidthLeft = channels[leftChannel_] * compensation_;
-    preWidthRight = channels[rightChannel_] * compensation_;
-  } else {
-    Sample left{0};
-    Sample right{0};
-    for (std::size_t channel = 0; channel < inputChannels_; ++channel) {
-      left += channels[channel] * effectiveLeftRow_[channel];
-      right += channels[channel] * effectiveRightRow_[channel];
+    const auto* const leftValues = channels + leftChannel_ * frames;
+    const auto* const rightValues = channels + rightChannel_ * frames;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      left[frame] = leftValues[frame] * compensation_;
+      right[frame] = rightValues[frame] * compensation_;
     }
-    preWidthLeft = left;
-    preWidthRight = right;
+  } else {
+    // Accumulates each frame in Channel order. The product is its own
+    // statement so no compiler fuses it into the sum: v1.0.0 summed
+    // unfused products wherever its vectorised loop covered the Channels,
+    // and a fused or unfused choice that varied with the chunk length would
+    // break block-size independence (issue #163).
+    std::fill_n(left, frames, Sample{0});
+    std::fill_n(right, frames, Sample{0});
+    for (std::size_t channel = 0; channel < inputChannels_; ++channel) {
+      const auto* const values = channels + channel * frames;
+      const auto leftWeight = effectiveLeftRow_[channel];
+      const auto rightWeight = effectiveRightRow_[channel];
+      for (std::size_t frame = 0; frame < frames; ++frame) {
+        const auto leftProduct = values[frame] * leftWeight;
+        const auto rightProduct = values[frame] * rightWeight;
+        left[frame] += leftProduct;
+        right[frame] += rightProduct;
+      }
+    }
   }
   if (identityWidth_) {
-    outputs[0][frame] = preWidthLeft;
-    outputs[1][frame] = preWidthRight;
     return;
   }
-  outputs[0][frame] =
-      widthMatrix_[0] * preWidthLeft + widthMatrix_[1] * preWidthRight;
-  outputs[1][frame] =
-      widthMatrix_[2] * preWidthLeft + widthMatrix_[3] * preWidthRight;
+  for (std::size_t frame = 0; frame < frames; ++frame) {
+    const auto preWidthLeft = left[frame];
+    const auto preWidthRight = right[frame];
+    left[frame] =
+        widthMatrix_[0] * preWidthLeft + widthMatrix_[1] * preWidthRight;
+    right[frame] =
+        widthMatrix_[2] * preWidthLeft + widthMatrix_[3] * preWidthRight;
+  }
 }
 
 std::size_t Downmix::inputChannelCount() const noexcept {
