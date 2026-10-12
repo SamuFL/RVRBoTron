@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(RVRBoTron VERSION 1.0.0 LANGUAGES CXX)
+project(RVRBoTron VERSION 1.1.0 LANGUAGES CXX)
 
 # Included as a subproject, RVRBoTron builds only the DSP core and its typed
 # configuration: no CLI, WAV or JSON targets, no fetched dependencies, and
