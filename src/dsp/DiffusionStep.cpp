@@ -3,7 +3,10 @@
 #include "rvrbotron/dsp/AllpassState.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 
+#include <algorithm>
+#include <cassert>
 #include <stdexcept>
 #include <vector>
 
@@ -14,7 +17,7 @@ DiffusionStep::DiffusionStep(const ResolvedDiffusionStep& config)
       delayLine_(config.delaysSamples, config.bufferSizes),
       permutation_(config.permutation),
       mix_(nullptr),
-      delayedValues_(channels_) {
+      delayedValues_(channels_ * kMaxChunkFrames) {
   if (permutation_.size() != channels_ ||
       config.polaritySigns.size() != channels_) {
     throw std::invalid_argument(
@@ -66,41 +69,69 @@ DiffusionStep::~DiffusionStep() = default;
 
 void DiffusionStep::processFrame(const Sample* const inputs,
                                  Sample* const outputs) noexcept {
+  if (inputs != outputs) {
+    std::copy_n(inputs, channels_, outputs);
+  }
+  processBlock(outputs, 1);
+}
+
+void DiffusionStep::processBlock(Sample* const channels,
+                                 const std::size_t frames) noexcept {
+  assert(frames <= kMaxChunkFrames);
   for (std::size_t channel = 0; channel < channels_; ++channel) {
+    const auto* const input = channels + channel * frames;
+    auto* const delayed = delayedValues_.data() + channel * frames;
     const auto delay = delayLine_.delaySamples(channel);
     if (delay == 0) {
-      delayedValues_[channel] = inputs[channel];
-      continue;
-    }
-    if (modulation_.has_value() && modulation_->isModulated(channel)) {
-      const auto lookback = modulation_->lookbackSamples(channel, delay);
+      std::copy_n(input, frames, delayed);
+    } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
+      // Channels are independent, so one Channel's frames can run back to
+      // back: each read sees exactly the writes it would per frame.
+      double lookbacks[kMaxChunkFrames];
+      modulation_->lookbackBlock(channel, delay, frames, lookbacks);
+      const auto readThenWrite = [&](const auto read) noexcept {
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = read(lookbacks[frame]);
+          delayLine_.write(channel, input[frame]);
+        }
+      };
       switch (interpolation_) {
       case ModulationInterpolation::linear:
-        delayedValues_[channel] = delayLine_.readFractionLinear(channel, lookback);
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFractionLinear(channel, lookback);
+        });
         break;
       case ModulationInterpolation::allpass:
-        delayedValues_[channel] = delayLine_.readFractionAllpass(
-            channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFractionAllpass(
+              channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+        });
         break;
       case ModulationInterpolation::lagrange3:
-        delayedValues_[channel] = delayLine_.readFraction(channel, lookback);
+        readThenWrite([&](const double lookback) noexcept {
+          return delayLine_.readFraction(channel, lookback);
+        });
         break;
       }
     } else {
-      delayedValues_[channel] = delayLine_.read(channel);
+      delayLine_.delayBlock(channel, input, delayed, frames);
     }
-    delayLine_.write(channel, inputs[channel]);
   }
 
   for (std::size_t channel = 0; channel < channels_; ++channel) {
-    outputs[channel] =
-        delayedValues_[permutation_[channel]] * polarity_[channel];
+    const auto* const source =
+        delayedValues_.data() + permutation_[channel] * frames;
+    const auto sign = polarity_[channel];
+    auto* const output = channels + channel * frames;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      output[frame] = source[frame] * sign;
+    }
   }
 
-  mix_->mix(outputs);
+  mix_->mixBlock(channels, frames);
 
   if (modulation_.has_value()) {
-    modulation_->advanceFrame();
+    modulation_->advanceFrames(frames);
   }
 }
 

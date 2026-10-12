@@ -10,6 +10,7 @@
 #include "rvrbotron/dsp/MathConstants.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/Modulation.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 #include "rvrbotron/dsp/Reverb.h"
 #include "rvrbotron/dsp/Split.h"
 
@@ -587,6 +588,110 @@ void processMonoToStereoInChunks(
         left.data() + offset, right.data() + offset};
     reverb.process(offsetInputs, 1, offsetOutputs, 2, frames);
   }
+}
+
+// Two Compositions that between them reach every chunked code path
+// (issue #163): a 6-Channel one, whose Channel count is not a multiple of
+// a vector width, with RandomOrthogonal and Householder mixing, all three
+// modulation interpolations, both Damping shelves, a dense Downmix with
+// Width, Early Reflections, Pre-delay, and dry/wet; and a 16-Channel
+// all-Hadamard one with an allpass-modulated Feedback Loop. The 6-Channel
+// loop's delays are shorter than kMaxChunkFrames, so its Block-size bound
+// decides the chunk length; the 16-Channel loop's are longer, so the chunk
+// cap does.
+rvrbotron::dsp::ResolvedConfig chunkInvarianceConfig(const bool wide) {
+  using namespace rvrbotron::config;
+  namespace dsp = rvrbotron::dsp;
+
+  SplitConfig split;
+  split.channels = wide ? 16U : 6U;
+  split.strategy = dsp::SplitStrategyType::duplicate;
+
+  ModulationConfig stepModulation;
+  stepModulation.depthMs = wide ? 0.03 : 0.2;
+  stepModulation.rateHz = 2.0;
+  stepModulation.shape =
+      wide ? dsp::ModulationShape::smoothedRandom : dsp::ModulationShape::sine;
+  stepModulation.channelFraction = 0.6;
+  stepModulation.interpolation = wide
+      ? dsp::ModulationInterpolation::allpass
+      : dsp::ModulationInterpolation::linear;
+
+  DiffusionStepConfig step;
+  step.mix = wide ? dsp::MixMatrixType::hadamard
+                  : dsp::MixMatrixType::randomOrthogonal;
+  step.modulation = stepModulation;
+
+  DiffuserConfig diffuser;
+  diffuser.steps = wide ? 5U : 3U;
+  diffuser.totalMs = wide ? 300.0 : 80.0;
+  diffuser.step = step;
+  if (!wide) {
+    DiffusionStepOverride override;
+    override.index = 1;
+    override.step.mix = dsp::MixMatrixType::householder;
+    ModulationConfig overrideModulation = stepModulation;
+    overrideModulation.shape = dsp::ModulationShape::smoothedRandom;
+    overrideModulation.interpolation = dsp::ModulationInterpolation::allpass;
+    override.step.modulation = overrideModulation;
+    diffuser.stepOverrides = std::vector<DiffusionStepOverride>{override};
+  }
+
+  DampingConfig damping;
+  damping.highRatio = 0.5;
+  damping.lowRatio = 0.7;
+
+  // The 6-Channel loop sweeps every Channel through a full, deep
+  // triangle every 240 frames, so its shortest lookbacks keep reaching the
+  // Block-size bound: a chunk that read past it would read samples not yet
+  // written.
+  ModulationConfig loopModulation;
+  loopModulation.depthMs = wide ? 0.4 : 0.5;
+  loopModulation.rateHz = wide ? 0.9 : 200.0;
+  loopModulation.shape = dsp::ModulationShape::triangle;
+  loopModulation.channelFraction = wide ? 0.5 : 1.0;
+  loopModulation.interpolation = wide
+      ? dsp::ModulationInterpolation::allpass
+      : dsp::ModulationInterpolation::lagrange3;
+
+  FeedbackLoopConfig loop;
+  loop.delayMinMs = wide ? 4.0 : 1.0;
+  loop.delayMaxMs = wide ? 9.0 : 2.4;
+  loop.rt60Sec = 0.5;
+  loop.mix = wide ? dsp::MixMatrixType::hadamard
+                  : dsp::MixMatrixType::householder;
+  loop.damping = damping;
+  loop.modulation = loopModulation;
+
+  DownmixConfig downmix;
+  downmix.strategy = wide ? dsp::DownmixStrategy::halves
+                          : dsp::DownmixStrategy::orthogonalRows;
+  downmix.widthDeg = 120.0;
+
+  CompositionConfig composition;
+  composition.stagesSpecified = true;
+  composition.stages.emplace_back(split);
+  composition.stages.emplace_back(diffuser);
+  composition.stages.emplace_back(loop);
+  composition.stages.emplace_back(downmix);
+  if (!wide) {
+    DownmixConfig earlyDownmix;
+    earlyDownmix.strategy = dsp::DownmixStrategy::sumAll;
+    EarlyConfig early;
+    early.taps = std::vector<EarlyTapConfig>{{0, -3.0}, {2, std::nullopt}};
+    early.downmix = earlyDownmix;
+    composition.early = early;
+    composition.preDelayMs = 3.0;
+    composition.wetOnly = false;
+    composition.dryDb = -2.0;
+    composition.wetDb = -1.0;
+  }
+
+  ReverbConfig requested;
+  requested.formatVersion = 2;
+  requested.seed = wide ? 0x5eedULL : 0xc0ffeeULL;
+  requested.composition = std::move(composition);
+  return resolveConfig(requested, 48000, 1);
 }
 
 bool reverbDiffusionStepIsAllPass(
@@ -3323,15 +3428,17 @@ int main() {
     // and only its own backing-vector allocations
     // (Downmix::ownedStorageBytes()) should be added on top. A `select`
     // Downmix's dense rows stay empty (issue #108's fast path), so its
-    // only owned storage here is the accumulator and the one-tap taps_
-    // array -- exactly sized to expose an extra, wrongly-added
-    // sizeof(Downmix) if the bug regresses.
+    // only owned storage here is the accumulator (one planar chunk of
+    // its 2 Channels, issue #163) and the one-tap taps_ array -- exactly
+    // sized to expose an extra, wrongly-added sizeof(Downmix) if the bug
+    // regresses.
     {
       const rvrbotron::dsp::EarlyReflections earlyDsp(
           *diffuserOnlyResolved.composition.early);
       const auto expectedOwnedBytes =
           sizeof(rvrbotron::dsp::EarlyReflections) +
-          2 * sizeof(rvrbotron::dsp::Sample) +
+          2 * rvrbotron::dsp::kMaxChunkFrames *
+              sizeof(rvrbotron::dsp::Sample) +
           diffuserOnlyResolved.composition.early->taps.size() *
               sizeof(rvrbotron::dsp::DiffuserEarlyTap);
       if (earlyDsp.ownedBytes() != expectedOwnedBytes) {
@@ -6118,6 +6225,45 @@ int main() {
       std::cerr << "an Excursion far exceeding the resolved delay was "
                    "not rejected for a Diffusion Step\n";
       return 1;
+    }
+  }
+
+  // Reverb::process runs its stages over planar chunks whose length
+  // follows the caller's block (issue #163). Every per-sample operation
+  // must be independent of that length, so any legal block size renders
+  // bit-identically to one frame at a time.
+  for (const bool wide : {false, true}) {
+    const auto config = chunkInvarianceConfig(wide);
+    const auto& loop =
+        std::get<rvrbotron::dsp::ResolvedFeedbackLoop>(
+            config.composition.stages[2]);
+    constexpr std::size_t kFrames = 4800;
+    std::vector<rvrbotron::dsp::Sample> input(kFrames);
+    std::uint64_t noise = 0x1234567ULL;
+    for (std::size_t frame = 0; frame < kFrames / 2; ++frame) {
+      input[frame] = nextInputSample(noise);
+    }
+    const auto render = [&](const std::size_t blockSize) {
+      rvrbotron::dsp::Reverb reverb(config);
+      std::vector<rvrbotron::dsp::Sample> left(kFrames);
+      std::vector<rvrbotron::dsp::Sample> right(kFrames);
+      processMonoToStereoInChunks(reverb, input, left, right, blockSize);
+      return std::make_pair(left, right);
+    };
+    const auto frameByFrame = render(1);
+    const auto bound = static_cast<std::size_t>(loop.blockSizeBoundSamples);
+    for (const auto blockSize :
+         {std::size_t{7}, bound - 1, bound, std::size_t{128},
+          std::size_t{129}}) {
+      if (blockSize > bound) {
+        continue;
+      }
+      if (render(blockSize) != frameByFrame) {
+        std::cerr << (wide ? "16" : "6")
+                  << "-Channel Composition rendered differently in "
+                  << blockSize << "-frame blocks than frame by frame\n";
+        return 1;
+      }
     }
   }
 

@@ -3,7 +3,10 @@
 #include "rvrbotron/dsp/AllpassState.h"
 #include "rvrbotron/dsp/MixMatrix.h"
 #include "rvrbotron/dsp/OwnedBytes.h"
+#include "rvrbotron/dsp/ProcessChunk.h"
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -26,7 +29,7 @@ FeedbackLoop::FeedbackLoop(const ResolvedFeedbackLoop& config)
       blockSizeBoundSamples_(config.blockSizeBoundSamples),
       delayLine_(config.delaysSamples, config.bufferSizes),
       mix_(nullptr),
-      fedBack_(channels_) {
+      fedBack_(channels_ * kMaxChunkFrames) {
   if (config.gains.size() != channels_) {
     throw std::invalid_argument(
         "Feedback Loop requires one resolved gain per Channel");
@@ -146,67 +149,99 @@ FeedbackLoop::~FeedbackLoop() = default;
 
 void FeedbackLoop::processFrame(const Sample* const inputs,
                                 Sample* const outputs) noexcept {
+  processBlock(inputs, outputs, 1);
+}
+
+void FeedbackLoop::processBlock(const Sample* const inputs,
+                                Sample* const outputs,
+                                const std::size_t frames) noexcept {
+  assert(frames <= kMaxChunkFrames);
+  assert(frames == 1 || frames < blockSizeBoundSamples_);
   for (std::size_t channel = 0; channel < channels_; ++channel) {
+    auto* const delayed = outputs + channel * frames;
+    auto* const fedBack = fedBack_.data() + channel * frames;
     const auto delay = delayLine_.delaySamples(channel);
-    Sample delayed;
     if (delay == 0) {
-      delayed = Sample{0};
+      std::fill_n(delayed, frames, Sample{0});
     } else if (modulation_.has_value() && modulation_->isModulated(channel)) {
-      const auto lookback = modulation_->lookbackSamples(channel, delay);
+      double lookbacks[kMaxChunkFrames];
+      modulation_->lookbackBlock(channel, delay, frames, lookbacks);
       switch (interpolation_) {
       case ModulationInterpolation::linear:
-        delayed = delayLine_.readFractionLinear(channel, lookback);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFractionLinear(
+              channel, lookbacks[frame], frame);
+        }
         break;
-      case ModulationInterpolation::allpass:
-        delayed = delayLine_.readFractionAllpass(
-            channel, lookback, allpassState_[allpassStateIndex_[channel]]);
+      case ModulationInterpolation::allpass: {
+        auto& state = allpassState_[allpassStateIndex_[channel]];
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+          delayed[frame] = delayLine_.readFractionAllpass(
+              channel, lookbacks[frame], state, frame);
+        }
         break;
+      }
       case ModulationInterpolation::lagrange3:
-        delayed = delayLine_.readFraction(channel, lookback);
+        delayLine_.readFractionBlock(channel, lookbacks, delayed, frames);
         break;
       }
     } else {
-      delayed = delayLine_.read(channel);
+      delayLine_.readBlock(channel, delayed, frames);
     }
-    outputs[channel] = delayed;
-    fedBack_[channel] = delayed * gains_[channel];
+    const auto gain = gains_[channel];
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      fedBack[frame] = delayed[frame] * gain;
+    }
   }
 
-  if (!highShelfBypassed_) {
-    for (std::size_t channel = 0; channel < channels_; ++channel) {
-      const auto input = fedBack_[channel];
-      const auto output = highShelfB0_[channel] * input +
-          highShelfB1_[channel] * highShelfPrevInput_[channel] -
-          highShelfA1_[channel] * highShelfPrevOutput_[channel];
-      highShelfPrevInput_[channel] = input;
-      highShelfPrevOutput_[channel] = output;
-      fedBack_[channel] = output;
+  // Frame-major over the planar chunk: every Channel's recurrence is
+  // independent, so stepping all of them per frame lets them overlap
+  // instead of waiting on one Channel's chain.
+  const auto shelve = [this, frames](
+                          const std::vector<Sample>& b0,
+                          const std::vector<Sample>& b1,
+                          const std::vector<Sample>& a1,
+                          std::vector<Sample>& prevInput,
+                          std::vector<Sample>& prevOutput) noexcept {
+    auto* const values = fedBack_.data();
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      for (std::size_t channel = 0; channel < channels_; ++channel) {
+        auto& value = values[channel * frames + frame];
+        const auto input = value;
+        const auto output = b0[channel] * input +
+            b1[channel] * prevInput[channel] -
+            a1[channel] * prevOutput[channel];
+        prevInput[channel] = input;
+        prevOutput[channel] = output;
+        value = output;
+      }
     }
+  };
+  if (!highShelfBypassed_) {
+    shelve(highShelfB0_, highShelfB1_, highShelfA1_,
+           highShelfPrevInput_, highShelfPrevOutput_);
   }
   if (!lowShelfBypassed_) {
-    for (std::size_t channel = 0; channel < channels_; ++channel) {
-      const auto input = fedBack_[channel];
-      const auto output = lowShelfB0_[channel] * input +
-          lowShelfB1_[channel] * lowShelfPrevInput_[channel] -
-          lowShelfA1_[channel] * lowShelfPrevOutput_[channel];
-      lowShelfPrevInput_[channel] = input;
-      lowShelfPrevOutput_[channel] = output;
-      fedBack_[channel] = output;
-    }
+    shelve(lowShelfB0_, lowShelfB1_, lowShelfA1_,
+           lowShelfPrevInput_, lowShelfPrevOutput_);
   }
 
-  mix_->mix(fedBack_.data());
+  mix_->mixBlock(fedBack_.data(), frames);
 
   for (std::size_t channel = 0; channel < channels_; ++channel) {
     if (delayLine_.delaySamples(channel) == 0) {
       continue;
     }
-    delayLine_.write(
-        channel, flushDenormal(inputs[channel] + fedBack_[channel]));
+    const auto* const input = inputs + channel * frames;
+    auto* const fedBack = fedBack_.data() + channel * frames;
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      fedBack[frame] = flushDenormal(input[frame] + fedBack[frame]);
+    }
+    delayLine_.writeBlock(channel, fedBack, frames);
   }
 
   if (modulation_.has_value()) {
-    modulation_->advanceFrame();
+    modulation_->advanceFrames(frames);
   }
 }
 

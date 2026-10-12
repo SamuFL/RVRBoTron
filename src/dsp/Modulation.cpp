@@ -33,18 +33,11 @@ double catmullRom(
        (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
-double smoothedRandomTrajectory(
-    const std::uint64_t channelSeed, const double t) noexcept {
-  const auto base = std::floor(t);
-  const auto frac = t - base;
+// The target index of a trajectory position, from its floor.
+std::int64_t targetIndexOf(const double base) noexcept {
   constexpr double kMaxTargetIndex = 9.0e18;
-  const auto index = static_cast<std::int64_t>(
+  return static_cast<std::int64_t>(
       std::clamp(base, -kMaxTargetIndex, kMaxTargetIndex));
-  const auto p0 = targetValue(channelSeed, index - 1);
-  const auto p1 = targetValue(channelSeed, index);
-  const auto p2 = targetValue(channelSeed, index + 1);
-  const auto p3 = targetValue(channelSeed, index + 2);
-  return std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
 }
 
 double sineTrajectory(const double t) noexcept {
@@ -66,21 +59,50 @@ Modulation::Modulation(const ResolvedModulation& config)
       channelPhases_(config.channelPhases),
       channelModulated_(config.channelModulated),
       shape_(config.shape),
-      excursionSamples_(config.excursionSamples) {}
+      excursionSamples_(config.excursionSamples),
+      smoothedRandomTargets_(
+          config.shape == ModulationShape::smoothedRandom
+              ? config.channelSeeds.size()
+              : 0) {}
 
 bool Modulation::isModulated(const std::size_t channel) const noexcept {
   return channelModulated_[channel];
 }
 
+const double* Modulation::smoothedRandomTargets(
+    const std::size_t channel, const std::int64_t index) noexcept {
+  auto& targets = smoothedRandomTargets_[channel];
+  if (!targets.valid || targets.index != index) {
+    for (std::int64_t point = 0; point < 4; ++point) {
+      targets.points[point] =
+          targetValue(channelSeeds_[channel], index - 1 + point);
+    }
+    targets.index = index;
+    targets.valid = true;
+  }
+  return targets.points;
+}
+
+double Modulation::smoothedRandomTrajectory(
+    const std::size_t channel, const double t) noexcept {
+  const auto base = std::floor(t);
+  const auto frac = t - base;
+  const auto* const p = smoothedRandomTargets(channel, targetIndexOf(base));
+  return std::clamp(catmullRom(p[0], p[1], p[2], p[3], frac), -1.0, 1.0);
+}
+
 double Modulation::lookbackSamples(
-    const std::size_t channel, const std::uint64_t nominalDelaySamples) const noexcept {
+    const std::size_t channel,
+    const std::uint64_t nominalDelaySamples,
+    const std::uint64_t frameOffset) noexcept {
   const auto t =
-      static_cast<double>(frameIndex_) * channelTargetsPerSample_[channel] +
+      static_cast<double>(frameIndex_ + frameOffset) *
+          channelTargetsPerSample_[channel] +
       channelPhases_[channel];
   double trajectory;
   switch (shape_) {
   case ModulationShape::smoothedRandom:
-    trajectory = smoothedRandomTrajectory(channelSeeds_[channel], t);
+    trajectory = smoothedRandomTrajectory(channel, t);
     break;
   case ModulationShape::sine:
     trajectory = sineTrajectory(t);
@@ -93,15 +115,63 @@ double Modulation::lookbackSamples(
       trajectory * excursionSamples_;
 }
 
+void Modulation::lookbackBlock(
+    const std::size_t channel,
+    const std::uint64_t nominalDelaySamples,
+    const std::size_t frames,
+    double* const lookbacks) noexcept {
+  // Each expression below is the one lookbackSamples() and
+  // smoothedRandomTrajectory() evaluate, so every lookback is identical;
+  // only the target lookup moves out of the loop. A non-negative rate
+  // makes t non-decreasing, so equal first and last target indices mean
+  // the whole chunk shares one set of targets.
+  const auto rate = channelTargetsPerSample_[channel];
+  const auto phase = channelPhases_[channel];
+  const auto at = [this, rate, phase](const std::size_t frame) noexcept {
+    return static_cast<double>(frameIndex_ + frame) * rate + phase;
+  };
+  const auto index =
+      frames > 0 ? targetIndexOf(std::floor(at(0))) : std::int64_t{0};
+  const bool oneTargetSet = shape_ == ModulationShape::smoothedRandom &&
+      frames > 0 && rate >= 0.0 &&
+      index == targetIndexOf(std::floor(at(frames - 1)));
+  if (!oneTargetSet) {
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+      lookbacks[frame] =
+          lookbackSamples(channel, nominalDelaySamples, frame);
+    }
+    return;
+  }
+
+  const auto nominal = static_cast<double>(nominalDelaySamples);
+  const auto* const p = smoothedRandomTargets(channel, index);
+  const auto p0 = p[0];
+  const auto p1 = p[1];
+  const auto p2 = p[2];
+  const auto p3 = p[3];
+  for (std::size_t frame = 0; frame < frames; ++frame) {
+    const auto t = at(frame);
+    const auto frac = t - std::floor(t);
+    const auto trajectory =
+        std::clamp(catmullRom(p0, p1, p2, p3, frac), -1.0, 1.0);
+    lookbacks[frame] = nominal + trajectory * excursionSamples_;
+  }
+}
+
 void Modulation::advanceFrame() noexcept {
   ++frameIndex_;
+}
+
+void Modulation::advanceFrames(const std::uint64_t frames) noexcept {
+  frameIndex_ += frames;
 }
 
 std::size_t Modulation::ownedBytes() const noexcept {
   return ownedVectorBytes(channelSeeds_) +
       ownedVectorBytes(channelTargetsPerSample_) +
       ownedVectorBytes(channelPhases_) +
-      ownedVectorBytes(channelModulated_);
+      ownedVectorBytes(channelModulated_) +
+      ownedVectorBytes(smoothedRandomTargets_);
 }
 
 } // namespace rvrbotron::dsp

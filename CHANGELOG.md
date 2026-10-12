@@ -13,11 +13,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RVRBOTRON_BUILD_TOOLS` and `RVRBOTRON_BUILD_TESTS` both default to on only
   when RVRBoTron is the top-level project, so a subproject fetches nothing and
   builds no tools or tests (#161).
-- CI builds a minimal consumer from the commit's source archive with GCC,
-  Apple Clang, and MSVC (#161).
+- CI builds a minimal consumer from the commit's source archive with Apple
+  Clang and MSVC (#161, #165).
 
 ### Changed
 
+- `dsp::Reverb::process` renders about six times faster offline. It runs
+  its stages over planar chunks instead of one frame at a time, caches
+  smoothed-random Modulation targets, and tightens the delay, modulation,
+  shelf, and Hadamard loops. Cloud renders byte-identically to v1.0.0.
+  Dense mixes over a Channel count that is not a multiple of 4, or in
+  float64 builds, can differ from v1.0.0 by about one ulp. Every block size
+  still renders the same bits (ADR-0008, #163).
 - The Windows CI jobs build and test with MSVC instead of the runner's
   MinGW GCC (#162).
 - The test suite is gated by `RVRBOTRON_BUILD_TESTS` instead of
